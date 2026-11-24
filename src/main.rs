@@ -2457,8 +2457,8 @@ fn cmd_workspaces() -> Result<()> {
 
 fn cmd_dump() -> Result<()> {
     let root = require_service_up()?;
-    let (cards, next_topic_id, locks) = dump_view(&root)?;
-    dump::run(&root, &cards, next_topic_id, &locks)
+    let (cards, next_topic_id, locks, coordinates) = dump_view(&root)?;
+    dump::run(&root, &cards, next_topic_id, &locks, &coordinates)
 }
 
 /// What a dump holds, read in one read transaction: the Cards, the next Topic id, the archive
@@ -2466,7 +2466,9 @@ fn cmd_dump() -> Result<()> {
 /// archive state (R314, S13-AC01). In WAL mode a read transaction sees one committed state while
 /// other clients write, so a dump takes no edit lock and never refuses because a write is under
 /// way (#253). The dump module only serializes what this view read.
-fn dump_view(root: &Path) -> Result<(Vec<dump::DumpCard>, u64, serde_json::Value)> {
+fn dump_view(
+    root: &Path,
+) -> Result<(Vec<dump::DumpCard>, u64, serde_json::Value, serde_json::Value)> {
     let conn = open_db(root)?;
     let view = conn.unchecked_transaction()?;
     let cards = load_cards(&view)?
@@ -2495,8 +2497,10 @@ fn dump_view(root: &Path) -> Result<(Vec<dump::DumpCard>, u64, serde_json::Value
         .collect::<Result<Vec<_>>>()?;
     let next_topic_id = next_topic_id(&view)?;
     let locks = tree_lock::dump_export(&view)?;
+    // The coordinate storage of the same read: identities, handles, trees, stations, connections.
+    let coordinates = coord::dump_export(&view)?;
     let _ = view.rollback();
-    Ok((cards, next_topic_id, locks))
+    Ok((cards, next_topic_id, locks, coordinates))
 }
 
 /// `zt clear` is now `zt del --all` (R245). The notice needs no service, asks nothing and deletes
@@ -5145,7 +5149,7 @@ mod tests {
         initialize_database(temp.path()).expect("initialize database");
         ops::create_topic(temp.path(), Access::Owner, Workspace::Human, "# 主题\n").expect("topic");
         let held = acquire_edit_lock(temp.path(), "another client").expect("edit lock");
-        let (cards, next_topic_id, locks) = dump_view(temp.path()).expect("a dump while another client writes");
+        let (cards, next_topic_id, locks, _coordinates) = dump_view(temp.path()).expect("a dump while another client writes");
         drop(held);
         assert_eq!(cards.len(), 1);
         assert_eq!(next_topic_id, 1);

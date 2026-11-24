@@ -1437,3 +1437,83 @@ pub(crate) fn follow_anchor_moves(conn: &Connection, mapping: &BTreeMap<String, 
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------------------------
+// Dump
+// ---------------------------------------------------------------------------------------------
+
+/// The version of `coordinates.json` in a dump.
+pub(crate) const DUMP_VERSION: u64 = 1;
+
+fn table_rows(conn: &Connection, sql: &str) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(sql)?;
+    let names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let rows = stmt.query_map([], |r| {
+        let mut map = serde_json::Map::new();
+        for (i, name) in names.iter().enumerate() {
+            let value: rusqlite::types::Value = r.get(i)?;
+            let value = match value {
+                rusqlite::types::Value::Null => Value::Null,
+                rusqlite::types::Value::Integer(n) => json!(n),
+                rusqlite::types::Value::Real(f) => json!(f),
+                rusqlite::types::Value::Text(t) => json!(t),
+                rusqlite::types::Value::Blob(_) => Value::Null,
+            };
+            map.insert(name.clone(), value);
+        }
+        Ok(Value::Object(map))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [name],
+        |r| r.get(0),
+    )?)
+}
+
+/// `coordinates.json`: every identity (live ones with their current address, retired ones with
+/// their last address and title), every issued handle, the Connection trees, stations, tree
+/// connections, retired station IDs, the allocators, and the coordinate Lock evidence, read in the
+/// dump's one read transaction. The Card bodies travel once, in the dump's Card files.
+pub(crate) fn dump_export(conn: &Connection) -> Result<Value> {
+    if !installed(conn) {
+        return Ok(json!({"version": DUMP_VERSION, "installed": false}));
+    }
+    let metadata = |key: &str| -> Result<Option<String>> {
+        Ok(conn
+            .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |r| r.get(0))
+            .optional()?)
+    };
+    let mut lock_evidence = serde_json::Map::new();
+    for table in [
+        "lock_coordinate_seals",
+        "lock_placements",
+        "lock_connections",
+        "lock_placement_pins",
+        "lock_source_reviews",
+    ] {
+        if table_exists(conn, table)? {
+            lock_evidence.insert(table.to_string(), json!(table_rows(conn, &format!("SELECT * FROM {table} ORDER BY 1, 2"))?));
+        }
+    }
+    Ok(json!({
+        "version": DUMP_VERSION,
+        "installed": true,
+        "archive_id": metadata("archive_id")?,
+        "archive_revision": crate::link_index::revision(conn)?,
+        "next_connection_id": metadata("next_connection_id")?,
+        "identities": table_rows(conn,
+            "SELECT i.card_id, i.status, COALESCE(c.location, c.citation_key, i.last_address) AS address,
+                    i.last_address, i.last_title, i.retired_at_rev
+             FROM card_identity i LEFT JOIN cards c ON c.row_id = i.card_row ORDER BY i.card_id")?,
+        "handles": table_rows(conn, "SELECT handle, card_id, origin_tree_id, local_seq FROM card_handles ORDER BY handle")?,
+        "connection_trees": table_rows(conn, "SELECT tree_id, display_num, workspace, root_card_id, purpose, next_local_seq, created_at FROM connection_trees ORDER BY display_num")?,
+        "placements": table_rows(conn, "SELECT placement_id, host_kind, host_tree_key, card_id, parent_id, anchor_card_id, edge, ordinal, gloss FROM placements ORDER BY host_tree_key, placement_id")?,
+        "placement_edges": table_rows(conn, "SELECT * FROM placement_edges ORDER BY tree_id, connection_id")?,
+        "retired_placements": table_rows(conn, "SELECT * FROM retired_placements ORDER BY placement_id")?,
+        "lock_evidence": Value::Object(lock_evidence),
+    }))
+}

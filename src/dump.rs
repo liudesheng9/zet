@@ -23,6 +23,9 @@ const MANIFEST: &str = "archive.json";
 /// dump writes it even when the archive holds no Lock, so a reader never has to guess whether an
 /// archive was inspected for Locks.
 const LOCKS: &str = "locks.json";
+/// The multi-tree coordinate storage (identities, handles, Connection trees, stations, tree
+/// connections, Lock evidence), versioned on its own (docs/multi-tree-coordinates-proposal.md §8.4).
+const COORDINATES: &str = "coordinates.json";
 
 pub(crate) struct DumpCard {
     address: String,
@@ -569,6 +572,7 @@ pub(crate) fn run(
     cards: &[DumpCard],
     next_topic_id: u64,
     locks: &serde_json::Value,
+    coordinates: &serde_json::Value,
 ) -> Result<()> {
     let options = require_detected_options(detect_compression_options())?;
 
@@ -612,6 +616,7 @@ pub(crate) fn run(
     // immediately after the manifest, so a reader can inspect every Lock promise after old roots
     // disappear (R315/R316, S13-AC02/S13-AC04).
     fs::write(staging.join(LOCKS), serde_json::to_vec(locks)?)?;
+    fs::write(staging.join(COORDINATES), serde_json::to_vec(coordinates)?)?;
     for (filename, text) in &payload.files {
         fs::write(staging.join(filename), text.as_bytes())?;
     }
@@ -619,6 +624,7 @@ pub(crate) fn run(
         format!("{archive_name}/mapping.json"),
         format!("{archive_name}/{MANIFEST}"),
         format!("{archive_name}/{LOCKS}"),
+        format!("{archive_name}/{COORDINATES}"),
     ];
     entries.extend(
         payload

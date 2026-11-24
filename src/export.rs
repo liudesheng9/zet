@@ -74,6 +74,7 @@ pub(crate) fn write(
     if !snapshot.by_address.contains_key(&root_address) {
         bail!("tree `{tree}` does not exist");
     }
+    let connection = tree.starts_with('~');
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("system clock is before the Unix epoch")?
@@ -86,7 +87,11 @@ pub(crate) fn write(
         bail!("{} already exists and is not empty", folder.display());
     }
 
-    let export = collect(root, snapshot, &tree, &root_address, seconds)?;
+    let export = if connection {
+        collect_connection(root, snapshot, &tree, seconds)?
+    } else {
+        collect(root, snapshot, &tree, &root_address, seconds)?
+    };
     let viewer = portable_viewer();
     let cards = serde_json::to_vec(&export.document)?;
     publish(&folder, &cards, viewer.as_bytes())?;
@@ -472,4 +477,152 @@ mod tests {
         assert_eq!(folder_name("Smith2024"), "Smith2024");
         assert_eq!(folder_name("a:b/c"), "a-b-c");
     }
+}
+
+/// The portable export version of a Connection tree: version 2 plus the `connection_tree` section.
+const CONNECTION_VERSION: u64 = 3;
+
+/// Export one Connection tree `~n` (docs/multi-tree-coordinates-proposal.md §8.4): its stations in
+/// placement order with package-local station IDs, one rendered copy of each included Card (a
+/// mounted tree root contributes its root Card only, never its home tree), the tree connections by
+/// local endpoints, and the state of every reference offline: an in-package local assertion, an
+/// in-package authored Link, a Missing mount (deleted in the archive), a Card outside this export,
+/// or a Link broken in the archive. Internal `place:<uuid>` bookmarks are remapped to local IDs.
+fn collect_connection(root: &Path, snapshot: &Snapshot, tree_name: &str, seconds: u64) -> Result<Export> {
+    let conn = crate::open_db(root)?;
+    let read = conn.unchecked_transaction()?;
+    if crate::link_index::revision(&read)? != snapshot.revision() {
+        bail!("the archive changed while the export was read; export again");
+    }
+    let tree = crate::coord::resolve_tree(&read, tree_name)?;
+    let shape = crate::coord::load_tree_shape(&read, &tree)?;
+    let handle = tree.handle();
+    let mut local: BTreeMap<String, String> = BTreeMap::new();
+    for (i, id) in shape.order.iter().enumerate() {
+        local.insert(id.clone(), format!("s{}", i + 1));
+    }
+    let mut included: Vec<&Card> = Vec::new();
+    let mut included_set = BTreeSet::new();
+    let mut stations = Vec::new();
+    for id in &shape.order {
+        let p = &shape.by_id[id];
+        let identity = crate::coord::identity(&read, &p.card_id)?.context("unknown Card")?;
+        let address = crate::coord::address_of_card_id(&read, &p.card_id)?;
+        let mut station = json!({
+            "station": local[id],
+            "coord": shape.coord[id],
+            "edge": p.edge.id(),
+            "parent": p.parent_id.as_ref().map(|parent| local[parent].clone()),
+            "gloss": p.gloss,
+        });
+        match address.and_then(|a| snapshot.by_address.get(&a)) {
+            Some(card) => {
+                station["address"] = json!(card.address);
+                station["title"] = json!(snapshot.title(&card.address));
+                station["state"] = json!("in-package");
+                station["origin"] = json!(if crate::coord::Handle::parse(&card.address).is_some_and(|h| h.tree == tree.display_num) { "native" } else { "mount" });
+                if included_set.insert(card.address.clone()) {
+                    included.push(card);
+                }
+            }
+            None => {
+                station["address"] = json!(identity.last_address);
+                station["title"] = json!(identity.last_title);
+                station["state"] = json!("missing");
+                station["detail"] = json!("Missing mount (deleted in archive)");
+            }
+        }
+        stations.push(station);
+    }
+    let connections: Vec<Value> = crate::connection::edges_of_tree(&read, &tree.tree_id)?
+        .iter()
+        .map(|e| {
+            json!({
+                "from": local.get(&e.from),
+                "to": local.get(&e.to),
+                "direction": if e.directed { "directed" } else { "neutral" },
+                "relation_label": e.label,
+                "relation_kind": e.kind,
+                "note": e.note,
+                "state": "in-package local assertion",
+                "provenance": format!("In this tree · {handle}"),
+            })
+        })
+        .collect();
+    let portable = Portable::new(&handle);
+    let mut cards = Vec::with_capacity(included.len());
+    let mut outside: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut authored = Vec::new();
+    let mut heads = BTreeSet::new();
+    // Station bookmarks inside this tree read as package-local stations.
+    let bookmarks: Vec<(String, String)> = local.iter().map(|(id, s)| (format!("place:{id}"), format!("place:{s}"))).collect();
+    for card in &included {
+        let (mut value, _) = card_value(snapshot, card, &portable, &handle, &mut heads);
+        for target in snapshot.summary(card)["links"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            if included_set.contains(target) {
+                authored.push(json!({"from": card.address, "to": target, "state": "in-package authored Link"}));
+            } else {
+                outside.entry(target.to_string()).or_default().push(card.address.clone());
+            }
+        }
+        for field in ["text", "html"] {
+            if let Some(text) = value[field].as_str() {
+                let mut text = text.to_string();
+                for (from, to) in &bookmarks {
+                    text = text.replace(from.as_str(), to);
+                }
+                value[field] = json!(text);
+            }
+        }
+        cards.push(value);
+    }
+    let broken: Vec<Value> = snapshot
+        .broken(None)?
+        .into_iter()
+        .filter(|row| row["source"].as_str().is_some_and(|source| included_set.contains(source)))
+        .map(|mut row| {
+            row["state"] = json!("broken in archive");
+            row
+        })
+        .collect();
+    let (charts, figures) = portable.gathered();
+    let (mut artifacts, missing) = artifacts(root, &figures);
+    add_explanations(root, &mut artifacts);
+    let outside: Vec<Value> = outside
+        .into_iter()
+        .map(|(address, from)| json!({"address": address, "title": snapshot.title(&address), "from": from, "state": "outside this export"}))
+        .collect();
+    let outside_count = outside.len();
+    let root_address = handle.clone();
+    let document = json!({
+        "format": FORMAT,
+        "version": CONNECTION_VERSION,
+        "tree": {
+            "id": handle,
+            "root": root_address,
+            "kind": "connection",
+            "workspace": tree.workspace.id(),
+            "title": snapshot.title(&root_address),
+        },
+        "exported": {
+            "at": timestamp(root, seconds)?,
+            "zt": env!("CARGO_PKG_VERSION"),
+            "archive_revision": snapshot.revision(),
+        },
+        "cards": cards,
+        "models": BTreeMap::<String, Value>::new(),
+        "broken": broken,
+        "artifacts": artifacts,
+        "charts": charts,
+        "outside": outside,
+        "connection_tree": {
+            "handle": handle,
+            "purpose": tree.purpose,
+            "stations": stations,
+            "connections": connections,
+            "authored_links": authored,
+        },
+    });
+    let _ = read.rollback();
+    Ok(Export { document, cards: included.len(), outside: outside_count, missing })
 }

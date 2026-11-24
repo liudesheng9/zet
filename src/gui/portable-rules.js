@@ -48,7 +48,7 @@
   /** Why a parsed file is no export this reader opens, or `null` when it is one. */
   function refusal(data) {
     if (!data || data.format !== FORMAT) return 'This file is not a ZET export.';
-    if (data.version !== VERSION) return `This export has version ${data.version}; this page reads version ${VERSION}.`;
+    if (data.version !== VERSION && !(data.version === 3 && data.connection_tree)) return `This export has version ${data.version}; this page reads version ${VERSION}.`;
     if (!Array.isArray(data.cards) || !data.cards.length) return 'This export holds no Cards.';
     return null;
   }
