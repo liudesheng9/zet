@@ -288,6 +288,87 @@
     return { mode, results: all.slice(0, SEARCH_LIMIT), total: all.length, workspaces: { [ix.data.tree.workspace]: seen }, types };
   }
 
+  /**
+   * The Connection tree of a version-3 export (docs/multi-tree-coordinates-proposal.md §8.4): its
+   * stations by package-local ID, its connections by local endpoints, read-only. Every answer has
+   * the shape the service gives, so the page's station view works offline.
+   */
+  function connectionTree(ix) {
+    const ct = ix.data.connection_tree;
+    if (!ct) return null;
+    if (ix.connection) return ix.connection;
+    const role = (address) => /^~/.test(address || '') ? 'connection' : /^\d/.test(address || '') ? 'topic' : 'literature';
+    const ordinals = new Map();
+    const placements = (ct.stations || []).map((s) => {
+      let ordinal = null;
+      if (s.edge === 'side') {
+        const n = (ordinals.get(s.parent) || 0) + 1;
+        ordinals.set(s.parent, n);
+        ordinal = n;
+      }
+      const missing = s.state === 'missing';
+      return {
+        placement_id: s.station, coord: s.coord, card_id: s.address, edge: s.edge, parent_id: s.parent || null, ordinal,
+        gloss: s.gloss || null, host: ct.handle, host_workspace: ix.data.tree.workspace,
+        status: missing ? 'missing' : 'live', home_address: s.address, home_role: role(s.address),
+        home_workspace: ix.data.tree.workspace, title: s.title, origin: s.origin || 'mount',
+        can_edit_card: false, can_edit_placement: false, citation: `[[${s.address}]]`,
+        bookmark: `place:${s.station}`, offline_state: missing ? (s.detail || 'Missing mount (deleted in archive)') : 'in-package',
+      };
+    });
+    const byId = new Map(placements.map((p) => [p.placement_id, p]));
+    const end = (id) => {
+      const p = byId.get(id) || {};
+      return { placement_id: id, coord: p.coord, card_id: p.card_id, title: p.title, status: p.status };
+    };
+    const connections = (ct.connections || []).map((c, i) => {
+      const from = end(c.from);
+      const to = end(c.to);
+      const predicate = c.relation_label || c.relation_kind || (c.direction === 'directed' ? 'connects to' : '');
+      const sentence = c.direction === 'directed' ? `${from.title} ${predicate} ${to.title}` : (predicate ? `${from.title} — ${predicate} — ${to.title}` : `${from.title} — ${to.title}`);
+      return { connection_id: `c${i + 1}`, direction: c.direction, from, to, relation_label: c.relation_label || null, relation_kind: c.relation_kind || null, note: c.note || null, provenance: c.provenance, sentence, state: c.state };
+    });
+    const native = placements.filter((p) => p.origin === 'native' && p.edge !== 'root').length;
+    const tree = {
+      tree: ct.handle, tree_id: ct.handle, title: ix.data.tree.title, workspace: ix.data.tree.workspace, purpose: ct.purpose || null,
+      root_placement_id: placements.length ? placements[0].placement_id : null, placements, total_placements: placements.length,
+      connections, mounted: placements.length - 1 - native, native, missing: placements.filter((p) => p.status === 'missing').length,
+      locked: false, can_edit_tree: false, counts: `${placements.length - 1 - native} mounted · ${native} native · ${connections.length} connections`,
+    };
+    ix.connection = tree;
+    return tree;
+  }
+
+  /** The read tools of the station view, answered from the package; writes are not offline. */
+  function connectionAnswer(ix, request) {
+    const tree = connectionTree(ix);
+    const tool = request && request.tool;
+    const args = (request && request.args) || {};
+    const ok = (value) => ({ status: 200, body: value });
+    if (!tree) return { status: 400, body: { error: 'This export holds no Connection tree.' } };
+    switch (tool) {
+      case 'list_connection_trees':
+        return ok({ trees: [{ ...tree, placements: undefined, connections: tree.connections.length }].map(({ placements, ...t }) => ({ ...t, connections: tree.connections.length })) });
+      case 'get_connection_tree':
+        return ok(tree);
+      case 'list_placements': {
+        const at = String(args.at || '');
+        const station = at.startsWith('place:') ? tree.placements.find((p) => p.placement_id === at.slice(6)) : tree.placements.find((p) => p.home_address === at || p.card_id === args.card_id);
+        if (!station) return ok({ placements: [], home: ix.byAddress.has(at) ? at : null });
+        return ok({ card_id: station.card_id, home: station.status === 'live' ? station.home_address : null, placements: [station] });
+      }
+      case 'list_connections': {
+        const focus = args.placement_id;
+        const mine = tree.connections.filter((c) => !focus || c.from.placement_id === focus || c.to.placement_id === focus);
+        return ok({ tree: tree.tree, connections: mine });
+      }
+      case 'list_side_mounts':
+        return ok({ at: args.at, mounts: [] });
+      default:
+        return { status: 409, body: { error: notice('This function'), portable: true } };
+    }
+  }
+
   const locksEmpty = () => ({
     locks: [],
     events: [],
@@ -323,6 +404,7 @@
         default:
       }
     }
+    if (method === 'POST' && route === 'connection') return connectionAnswer(ix, body);
     if (method === 'POST' && route === 'spreads') {
       ix.spreads = body;
       return ok(body);
@@ -342,7 +424,7 @@
 
   /** Whether one attribute of Card HTML stays. Nothing here can carry a script or an address out. */
   function keepAttr(tag, name, value) {
-    if (name === 'href') return tag === 'a' && value.startsWith('#/card/');
+    if (name === 'href') return tag === 'a' && (value.startsWith('#/card/') || value.startsWith('#/place/'));
     if (name === 'alt' || name === 'loading') return tag === 'img' || (name === 'loading' && tag === 'iframe');
     if (name === 'style') return /^text-align:\s*(left|right|center)$/.test(value);
     if (name === 'start') return tag === 'ol';

@@ -1526,6 +1526,16 @@
     state.conn = null;
     const match = location.hash.match(/^#\/card\/(.+)$/);
     const pointer = match ? decodeURIComponent(match[1]) : null;
+    // A Link to a Connection root opens its tree; a Link to a native Card opens its home station.
+    if (pointer && /^~\d+$/.test(pointer)) { openConnTree(pointer); return; }
+    if (pointer && /^~\d+#\d+$/.test(pointer)) {
+      connApi('list_placements', { at: pointer }).then((listed) => {
+        const home = (listed.placements || []).find((p) => p.host === pointer.split('#')[0]);
+        if (home) openStation(home.placement_id);
+        else go(listed.home || null);
+      }).catch(fail);
+      return;
+    }
     const moved = pointer !== state.pointer;
     state.pointer = pointer;
     nav.arrive(pointer);
@@ -1649,7 +1659,7 @@
     if (change.graph) { state.tree = null; state.outline = null; }
     if (change.graph || change.fetch.length || change.drop.length) sky.invalidate();
     state.prints = prints;
-    if (!PORTABLE) await loadConnTrees();
+    await loadConnTrees();
     renderRail();
     renderTopbar();
     // A station view reloads its tree and station by placement ID (a write elsewhere may have moved
@@ -9316,7 +9326,7 @@
       state.locks = locks;
       state.locksPrint = locks ? overview.locks : null;
       paintLocks();
-      if (!PORTABLE) loadConnTrees().catch(() => {});
+      loadConnTrees().catch(() => {});
       route();
     } catch (error) {
       fail(error);

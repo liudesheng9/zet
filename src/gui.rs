@@ -2421,6 +2421,7 @@ pub(crate) fn portable_viewer() -> String {
         "<script src=\"/ask.js\" defer></script>",
         "<script src=\"/features.js\" defer></script>",
         "<script src=\"/lock.js\" defer></script>",
+        "<script src=\"/connections.js\" defer></script>",
         "<script src=\"/app.js\" defer></script>",
     ] {
         assert!(page.contains(tag), "the GUI page no longer loads {tag}");
@@ -2545,7 +2546,9 @@ fn render_card(body: &str, snapshot: &Snapshot, target: Target<'_>) -> String {
     flush(&mut pending, &mut events, in_code_block);
     let mut output = String::new();
     html::push_html(&mut output, events.into_iter());
-    output
+    // A station bookmark `[label](place:<id>)` opens the station view (proposal §5): its route is
+    // the placement ID, never a coordinate.
+    output.replace("href=\"place:", "href=\"#/place/")
 }
 
 /// An artifact shown in a Card: the image, framed like a print clipped to the
@@ -3527,6 +3530,48 @@ mod tests {
     /// The Connection-tree page rules (`src/gui/connections.js`, proposal §9.1), run under Node.
     fn connections_js(expression: &str) -> Option<Value> {
         page_module_js("connections.js", CONNECTIONS_JS, "C", expression)
+    }
+
+    /// Review finding P1.8: the portable viewer answers the station view's reads from a version-3
+    /// Connection-tree export (stations by local ID, connections, Missing mounts) and refuses writes.
+    #[test]
+    fn the_portable_viewer_reads_a_connection_tree_export_offline() {
+        let Some(value) = page_module_js(
+            "portable-rules.js",
+            PORTABLE_RULES_JS,
+            "R",
+            "(() => {
+               const data = { format: 'zt-portable-export', version: 3,
+                 tree: { id: '~1', root: '~1', kind: 'connection', workspace: 'agent', title: 'Map' },
+                 cards: [{ address: '~1', title: 'Map', text: '# Map\\n' }, { address: 'Hart1995', title: 'Firms', text: '# Firms\\n' }],
+                 connection_tree: { handle: '~1', purpose: null,
+                   stations: [
+                     { station: 's1', coord: '~1/0', edge: 'root', parent: null, address: '~1', title: 'Map', state: 'in-package', origin: 'native' },
+                     { station: 's2', coord: '~1/1', edge: 'direct', parent: 's1', address: 'Hart1995', title: 'Firms', state: 'in-package', origin: 'mount', gloss: 'Here.' },
+                     { station: 's3', coord: '~1/1|a', edge: 'side', parent: 's2', address: 'Gone/1', title: 'Gone', state: 'missing', detail: 'Missing mount (deleted in archive)' } ],
+                   connections: [{ from: 's3', to: 's2', direction: 'directed', relation_label: 'uses', state: 'in-package local assertion', provenance: 'In this tree · ~1' }] } };
+               const ix = R.open(data);
+               const post = (tool, args) => R.respond(ix, 'POST', '/api/connection', { tool, args });
+               return {
+                 refusal: R.refusal(data),
+                 tree: post('get_connection_tree', { tree: '~1' }).body,
+                 place: post('list_placements', { at: 'place:s2' }).body,
+                 write: post('connect_placements', {}).status,
+                 href: R.keepAttr('a', 'href', '#/place/s2'),
+               };
+             })()",
+        ) else {
+            return;
+        };
+        assert_eq!(value["refusal"], Value::Null, "a version-3 Connection-tree export opens");
+        assert_eq!(value["tree"]["placements"].as_array().unwrap().len(), 3);
+        assert_eq!(value["tree"]["placements"][2]["status"], "missing");
+        assert_eq!(value["tree"]["placements"][2]["ordinal"], 1);
+        assert_eq!(value["tree"]["connections"][0]["sentence"], "Gone uses Firms");
+        assert_eq!(value["place"]["placements"][0]["gloss"], "Here.");
+        assert_eq!(value["place"]["home"], "Hart1995");
+        assert_eq!(value["write"], 409, "writes are not offline");
+        assert_eq!(value["href"], true, "a station bookmark stays a link offline");
     }
 
     #[test]

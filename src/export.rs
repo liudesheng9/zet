@@ -555,7 +555,10 @@ fn collect_connection(root: &Path, snapshot: &Snapshot, tree_name: &str, seconds
     let mut authored = Vec::new();
     let mut heads = BTreeSet::new();
     // Station bookmarks inside this tree read as package-local stations.
-    let bookmarks: Vec<(String, String)> = local.iter().map(|(id, s)| (format!("place:{id}"), format!("place:{s}"))).collect();
+    let bookmarks: Vec<(String, String)> = local
+        .iter()
+        .flat_map(|(id, s)| [(format!("place:{id}"), format!("place:{s}")), (format!("#/place/{id}"), format!("#/place/{s}"))])
+        .collect();
     for card in &included {
         let (mut value, _) = card_value(snapshot, card, &portable, &handle, &mut heads);
         for target in snapshot.summary(card)["links"].as_array().into_iter().flatten().filter_map(Value::as_str) {
