@@ -657,20 +657,6 @@ body.holding, body.holding * { -webkit-user-select: none !important; user-select
   background: var(--paper); border: 1px solid var(--hairline); border-radius: 8px; box-shadow: var(--shadow-lift);
   padding: 5px 10px; font-size: 12.5px; white-space: nowrap;
 }
-.legend {
-  position: absolute; left: 16px; bottom: 14px; display: flex; gap: 16px;
-  font-size: 11.5px; color: var(--ink-faint); background: var(--glass); backdrop-filter: blur(10px);
-  padding: 6px 12px; border-radius: 10px; border: 1px solid var(--hairline); box-shadow: var(--shadow);
-}
-.legend i { display: inline-block; width: 18px; height: 0; vertical-align: middle; margin-right: 6px; border-top: 2px solid var(--ink-faint); }
-.legend .lg-side { border-top-style: dotted; }
-.legend .lg-link { border-top: 2px dashed var(--link); }
-.legend .lg-term { border-top: 2px dotted var(--ink-soft); }
-.legend .lg-fold {
-  font: 600 9.5px/16px var(--mono); padding: 0 6px; margin-right: 6px; border-radius: 99px;
-  background: var(--line-soft); color: var(--ink-soft);
-  box-shadow: 2px 2px 0 -1px var(--paper), 2px 2px 0 0 var(--stock-edge);
-}
 
 /* ---------- reader: the index card ---------- */
 .reader {
@@ -1099,7 +1085,6 @@ details.term-uses[open] > .chips { animation: term-uses-open .3s ease-in-out; }
   .trail { display: none; }
   .command { flex-basis: 0; }
   .command-hint { display: none; }
-  .legend { display: none; }
   .dlg-body { grid-template-columns: 1fr; }
   .pane + .pane { border-left: 0; border-top: 1px solid var(--hairline); }
   .pane textarea { min-height: 30vh; }
@@ -3145,7 +3130,7 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 :root { --tree-l: 56%; --tree-c: .15; --tree-stock: 11%; }
 :root[data-theme="dark"] { --tree-l: 74%; --tree-c: .14; --tree-stock: 14%; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --tree-l: 74%; --tree-c: .14; --tree-stock: 14%; } }
-.node.station, .beside-tab, .legend .tk { --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170)); }
+.node.station, .beside-tab { --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170)); }
 .node.station {
   background-color: color-mix(in oklab, var(--tree-ink) var(--tree-stock), var(--stock));
   border-color: color-mix(in oklab, var(--tree-ink) 30%, var(--stock-edge));

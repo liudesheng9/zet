@@ -2665,8 +2665,6 @@
       for (const id of ['#desk', '#table-plane', '#term-toggle', '#sky', '#table-tools', '#table-empty', '#table-hand', '#ask-bar']) $(id).hidden = true;
       $('#stage-title').hidden = false;
       $('#plane').hidden = false;
-      // A Connection tree needs no legend: each card wears its tree's colour and stamps.
-      $('#legend').hidden = true;
       $('.zoom').hidden = false;
       $('#viewport').classList.remove('table-mode');
       $('#app').classList.remove('at-table');
@@ -2698,7 +2696,6 @@
     if (!onTableMode) { $('#table-empty').hidden = true; $('#table-hand').hidden = true; $('#ask-bar').hidden = true; }
     $('#sky').hidden = state.mode !== 'constellation';
     $('#sky-label').hidden = true;
-    $('#legend').hidden = !inTree;
     $('.zoom').hidden = state.mode === 'map' && !state.card;
     renderTableCount();
     const lens = $('#lens-toggle');
@@ -2713,7 +2710,6 @@
     terms.title = state.termEdges
       ? 'Term uses are drawn as dotted pencil lines marked “term”: hide them again'
       : 'Show the Term uses: a dotted pencil line from a Card to the Term it uses (a word, not a reasoning Link)';
-    $('#legend .lg-term-row').hidden = !state.termEdges;
     const title = $('#stage-title');
     if (state.mode === 'constellation') {
       title.textContent = `Constellation · ${state.overview.trees.length} trees · ${state.nodes.length} cards`;

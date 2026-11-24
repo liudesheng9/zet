@@ -6666,7 +6666,6 @@ mod tests {
         assert_eq!(INDEX_HTML.matches("id=\"term-toggle\"").count(), 1, "one switch for every view");
         let bar = &INDEX_HTML[INDEX_HTML.find("<div class=\"stage-bar\">").unwrap()..INDEX_HTML.find("<div class=\"viewport\"").unwrap()];
         assert!(bar.contains("id=\"term-toggle\""), "the switch sits in the view controls");
-        assert!(INDEX_HTML.contains("<span class=\"lg-term-row\" hidden><i class=\"lg-term\"></i>term use</span>"));
         // Off by default, kept like the other view options, shown in all three graph views.
         assert!(APP_JS.contains("termEdges: store.get('zt-term-edges') === '1',"));
         let set = app_function("setTermEdges");
@@ -6713,7 +6712,6 @@ mod tests {
         assert!(thread.contains("stroke-dasharray: .2 4"), "{thread}");
         assert!(css_rule(".thread.hot.kind-term .line").contains("var(--ink-soft)"), "a hot Term thread stays pencil");
         assert!(css_rule(".term-toggle:focus-visible").contains("outline: 2px solid var(--accent)"));
-        assert!(css_rule(".legend .lg-term").contains("dotted"));
     }
 
     #[test]
