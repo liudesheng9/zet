@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 use crate::*;
 
 mod command;
+mod station;
 
 use command::{CommandResult, Execution, Interaction, Pointer, SessionState};
 
@@ -146,6 +147,11 @@ fn cmd_line_session(root: PathBuf) -> Result<()> {
             break;
         }
         let line = line.trim_end_matches(['\r', '\n']).to_string();
+        // A station detached (or a Card deleted) by another client since the last view is reported
+        // before this command runs, never acted on.
+        if let Some(notice) = command::recover_missing_pointer(&root, &mut state)? {
+            println!("{notice}");
+        }
         let execution = {
             let mut interaction = LineInteraction { input: &mut input };
             command::execute(&root, &mut state, &line, &mut interaction)
@@ -359,6 +365,13 @@ fn card_marks(conn: &Connection, row_id: i64) -> Result<String> {
 fn view_lines(conn: &Connection, pointer: &Pointer, workspace: Workspace) -> Result<Vec<ViewLine>> {
     let mut lines = Vec::new();
     match pointer {
+        Pointer::Station(id) => {
+            let (header, home) = station::header_lines(conn, id)?;
+            lines.extend(header.into_iter().map(ViewLine::Plain));
+            if let Some(home) = home {
+                lines.extend(view_lines(conn, &Pointer::Card(home), workspace)?);
+            }
+        }
         Pointer::Root => {
             lines.push(ViewLine::Plain("ROOT".to_string()));
             let other = Workspace::ALL
@@ -2747,6 +2760,14 @@ fn cards_for_list(
                 ),
                 listed,
             ))
+        }
+        Pointer::Station(id) => {
+            let (heading, addresses) = station::listing(conn, id)?;
+            let listed = addresses
+                .iter()
+                .filter_map(|address| load_card(conn, address).ok())
+                .collect::<Vec<_>>();
+            Ok((heading, listed))
         }
         Pointer::Card(target) => {
             let current = load_card(conn, target)?;

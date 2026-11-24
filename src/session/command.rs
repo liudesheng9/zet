@@ -10,6 +10,8 @@ pub(super) enum PointerContext {
     /// A Topic Card or Literature Card.
     TreeRoot,
     Regular,
+    /// A station of a Connection tree or a Topic-side mount: one occurrence of a Card.
+    Station,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,6 +20,10 @@ enum Availability {
     OnCard,
     OnTreeRoot,
     OnRegular,
+    /// At a station (an occurrence of a Card in a Connection tree or beside a Topic Card).
+    OnStation,
+    /// At a home Card or at a station.
+    OnCardOrStation,
 }
 
 const COMMANDS: &[(&str, &str, Availability)] = &[
@@ -139,6 +145,42 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         "set the Math form of the current Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary",
         Availability::OnRegular,
     ),
+    (
+        "go ~<n> | ~<n>/<coord> | <loc>+<k> | place:<id>",
+        "enter a Connection tree at its root, or go to one station (an occurrence of a Card)",
+        Availability::Always,
+    ),
+    ("n", "go to the next station (the Direct successor) in this tree", Availability::OnStation),
+    ("p", "go to the previous station (the structural predecessor)", Availability::OnStation),
+    ("b [<k>]", "go to a Side branch of this station (the k-th when there are several)", Availability::OnStation),
+    ("home", "open the Card at its home; back returns to this station", Availability::OnStation),
+    ("e", "edit the Card at this station (its home Card)", Availability::OnStation),
+    ("places", "list every tree this Card stands in, with coordinates and glosses", Availability::OnCardOrStation),
+    ("conns", "list the tree connections of this station (incoming, outgoing, neutral)", Availability::OnStation),
+    (
+        "place <target> [side] [gloss...]",
+        "mount a Card after this station (Direct, spliced in) or as a Side branch",
+        Availability::OnStation,
+    ),
+    ("unplace [reattach|detach]", "detach this station; the Card stays at its home", Availability::OnStation),
+    (
+        "connect <station> [directed] [<label>...]",
+        "record a tree connection from this station to another station of the tree",
+        Availability::OnStation,
+    ),
+    (
+        "edit-conn <connection-id> <field>=<value>|<field>=none ...",
+        "change a connection: direction, label, kind or note",
+        Availability::OnStation,
+    ),
+    ("unconnect <connection-id>", "delete one tree connection", Availability::OnStation),
+    ("edit-gloss <text>|none", "set or clear this station's positional gloss", Availability::OnStation),
+    (
+        "move-place <parent-station> [side]",
+        "move this station (with its Side branches) under another station",
+        Availability::OnStation,
+    ),
+    ("promote <location>", "move a native Connection-tree Card's home into a Topic tree", Availability::OnCardOrStation),
     ("stats", "count cards by kind", Availability::Always),
     ("status", "show service status", Availability::Always),
     ("lsbk", "list broken links", Availability::Always),
@@ -153,9 +195,13 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
 fn command_available(availability: Availability, context: PointerContext) -> bool {
     match availability {
         Availability::Always => true,
-        Availability::OnCard => context != PointerContext::Root,
+        Availability::OnCard => {
+            context == PointerContext::TreeRoot || context == PointerContext::Regular
+        }
         Availability::OnTreeRoot => context == PointerContext::TreeRoot,
         Availability::OnRegular => context == PointerContext::Regular,
+        Availability::OnStation => context == PointerContext::Station,
+        Availability::OnCardOrStation => context != PointerContext::Root,
     }
 }
 
@@ -184,6 +230,7 @@ fn show_check(accepted: &crate::gate::Accepted) {
 
 pub(super) fn pointer_context(root: &Path, pointer: &Pointer) -> Result<PointerContext> {    match pointer {
         Pointer::Root => Ok(PointerContext::Root),
+        Pointer::Station(_) => Ok(PointerContext::Station),
         Pointer::Card(target) => {
             let conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, target)?;
@@ -220,6 +267,9 @@ pub(super) trait Interaction {
 pub(super) enum Pointer {
     Root,
     Card(String),
+    /// One occurrence of a Card: a station of a Connection tree or a Topic-side mount, named by
+    /// its placement ID. Its coordinate is derived afresh at every view.
+    Station(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -252,6 +302,10 @@ impl SessionState {
 
     pub(super) fn pointer(&self) -> &Pointer {
         &self.pointer
+    }
+
+    pub(super) fn set_pointer(&mut self, pointer: Pointer) {
+        self.pointer = pointer;
     }
 
     pub(super) fn workspace(&self) -> crate::Workspace {
@@ -307,6 +361,11 @@ impl SessionState {
             {
                 continue;
             }
+            if let Pointer::Station(id) = &pointer
+                && crate::coord::placement(&conn, id)?.is_none()
+            {
+                continue;
+            }
             let here = self.visit();
             if forward {
                 self.back.push(here);
@@ -321,6 +380,17 @@ impl SessionState {
 
     /// Adopt the Workspace of the Card under the Pointer, if there is one.
     pub(super) fn sync_workspace(&mut self, root: &Path) {
+        if let Pointer::Station(id) = &self.pointer
+            && let Ok(conn) = crate::open_db(root)
+            && let Ok(Some(station)) = crate::coord::placement(&conn, id)
+            && let Ok(host) = crate::connection::host_of(&conn, &station)
+        {
+            self.workspace = match host {
+                crate::connection::Host::Connection(tree) => tree.workspace,
+                crate::connection::Host::Topic { workspace, .. } => workspace,
+            };
+            return;
+        }
         if let Pointer::Card(target) = &self.pointer
             && let Ok(conn) = crate::open_db(root)
             && let Ok(card) = crate::load_card(&conn, target)
@@ -333,6 +403,9 @@ impl SessionState {
         match &self.pointer {
             Pointer::Root => bail!("{command} needs a Card; use go <target> first"),
             Pointer::Card(target) => Ok(target.clone()),
+            Pointer::Station(_) => bail!(
+                "{command} acts on a Card at its home; this is a station of a tree: use `home` first, or the station verbs (place, unplace, move-place, connect)"
+            ),
         }
     }
 
@@ -435,6 +508,31 @@ pub(super) fn recover_missing_pointer(
     root: &Path,
     state: &mut SessionState,
 ) -> Result<Option<String>> {
+    if let Pointer::Station(id) = &state.pointer {
+        let conn = crate::open_db(root)?;
+        if crate::coord::placement(&conn, id)?.is_some() {
+            return Ok(None);
+        }
+        // The station was detached (or its tree deleted) while the Session stood on it: say so,
+        // and open the surviving Card at its home rather than another Card at the old coordinate.
+        let card: Option<String> = conn
+            .query_row(
+                "SELECT card_id FROM retired_placements WHERE placement_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .ok();
+        let home = match card {
+            Some(card_id) => crate::coord::address_of_card_id(&conn, &card_id)?,
+            None => None,
+        };
+        let message = match &home {
+            Some(home) => format!("placement removed: this station was detached; opened its Card at home `{home}`"),
+            None => "placement removed: this station was detached and its Card no longer exists".to_string(),
+        };
+        state.pointer = home.map(Pointer::Card).unwrap_or(Pointer::Root);
+        return Ok(Some(message));
+    }
     let Pointer::Card(target) = &state.pointer else {
         return Ok(None);
     };
@@ -529,6 +627,99 @@ fn tree_command(
     Ok(Execution::Continue(CommandResult::Changed))
 }
 
+/// `e`: edit the Card under the Pointer (at a station, the Session points this at the home Card).
+pub(super) fn execute_edit(
+    root: &Path,
+    state: &mut SessionState,
+    interaction: &mut dyn Interaction,
+) -> Result<Execution> {
+        let at = state.current_card("e")?;
+        let _lock = crate::acquire_edit_lock(root, "session e")?;
+        let mut conn = crate::open_db(root)?;
+        let card = crate::load_card(&conn, &at)?;
+        // R232 (S08-AC02): the Locked Card refuses before the part choice or the editor opens.
+        // The writers check again, so an editor opened before a Lock cannot save into it.
+        crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Edit(card.row_id))?;
+        if card.is_lit {
+            return match interaction.choose_literature_edit_part()? {
+                crate::EditPart::Metadata => {
+                    let old_key = card
+                        .citation_key
+                        .as_deref()
+                        .context("Literature Card is missing its Citation key")?;
+                    let initial = card
+                        .bibtex
+                        .as_deref()
+                        .context("Literature Card is missing its BibTeX metadata")?;
+                    let mut accepted = None;
+                    let mut save = |text: &str| {
+                        let metadata = crate::literature::parse_metadata(text)?;
+                        if metadata.citation_key != old_key
+                            && (metadata.citation_key.eq_ignore_ascii_case(old_key)
+                                || crate::citation_key_conflicts(
+                                    &conn,
+                                    &metadata.citation_key,
+                                    card.row_id,
+                                )?)
+                        {
+                            bail!(
+                                "Citation key `{}` conflicts with an existing Literature Card",
+                                metadata.citation_key
+                            );
+                        }
+                        accepted = Some((text.to_string(), metadata));
+                        Ok(())
+                    };
+                    if !interaction.edit(initial, "metadata edit", &mut save)? {
+                        return Ok(Execution::Continue(CommandResult::Changed));
+                    }
+                    let (bibtex, metadata) =
+                        accepted.context("validated Literature metadata is missing")?;
+                    if metadata.citation_key != old_key {
+                        let lines = crate::citation_rename_lines(
+                            &conn,
+                            old_key,
+                            &metadata.citation_key,
+                        )?;
+                        interaction.confirm("move", &lines)?;
+                    }
+                    let accepted = crate::update_literature_metadata(
+                        &mut conn,
+                        &card,
+                        &metadata.citation_key,
+                        &bibtex,
+                        &metadata.title,
+                    )?;
+                    interaction.check(&accepted);
+                    state.pointer = Pointer::Card(metadata.citation_key);
+                    Ok(Execution::Continue(CommandResult::Changed))
+                }
+                crate::EditPart::Text => {
+                    let mut accepted = None;
+                    let mut save = |text: &str| {
+                        accepted = Some(crate::update_literature_text(&mut conn, &card, text)?);
+                        Ok(())
+                    };
+                    interaction.edit(&card.text, "edit mode", &mut save)?;
+                    if let Some(accepted) = accepted {
+                        interaction.check(&accepted);
+                    }
+                    Ok(Execution::Continue(CommandResult::Changed))
+                }
+            };
+        }
+        let mut accepted = None;
+        let mut save = |text: &str| {
+            accepted = Some(crate::update_card_text(&mut conn, &card, text)?);
+            Ok(())
+        };
+        interaction.edit(&card.text, "edit mode", &mut save)?;
+        if let Some(accepted) = accepted {
+            interaction.check(&accepted);
+        }
+        Ok(Execution::Continue(CommandResult::Changed))
+}
+
 pub(super) fn execute(
     root: &Path,
     state: &mut SessionState,
@@ -552,6 +743,9 @@ fn execute_command(
     interaction: &mut dyn Interaction,
 ) -> Result<Execution> {
     let parts: Vec<&str> = line.split_whitespace().collect();
+    if let Some(execution) = super::station::execute(root, state, &parts, line, interaction)? {
+        return Ok(execution);
+    }
     match parts.as_slice() {
         [] => Ok(Execution::Continue(CommandResult::Noop)),
         ["q"] => Ok(Execution::Exit),
@@ -561,10 +755,25 @@ fn execute_command(
         }
         ["go", target] => {
             let conn = crate::open_db(root)?;
-            if !crate::target_exists(&conn, target)? {
-                bail!("target `{target}` does not exist");
+            let target = target.trim_matches(|c| c == '\'' || c == '"');
+            // A coordinate or a station bookmark goes to that occurrence; `go ~7` enters the
+            // Connection tree at its root station; a handle opens the Card at its home.
+            if crate::coord::is_coordinate(target) || crate::coord::place_bookmark(target).is_some() {
+                let station = crate::coord::resolve_station(&conn, target)?;
+                state.pointer = Pointer::Station(station.placement_id);
+                return Ok(Execution::Continue(CommandResult::Navigated));
             }
-            state.pointer = Pointer::Card((*target).to_string());
+            if let Some(handle) = crate::coord::Handle::parse(target).filter(|h| h.local.is_none())
+                && let Some(tree) = crate::coord::tree_by_num(&conn, handle.tree)?
+            {
+                let shape = crate::coord::load_tree_shape(&conn, &tree)?;
+                state.pointer = Pointer::Station(shape.root);
+                return Ok(Execution::Continue(CommandResult::Navigated));
+            }
+            let Some(address) = crate::coord::canonical(&conn, target)? else {
+                bail!("target `{target}` does not exist");
+            };
+            state.pointer = Pointer::Card(address);
             Ok(Execution::Continue(CommandResult::Navigated))
         }
         ["go", _, _, ..] => bail!("usage: go [<target>]"),
@@ -785,93 +994,7 @@ fn execute_command(
             }
             Ok(Execution::Continue(CommandResult::Changed))
         }
-        ["e"] => {
-            let at = state.current_card("e")?;
-            let _lock = crate::acquire_edit_lock(root, "session e")?;
-            let mut conn = crate::open_db(root)?;
-            let card = crate::load_card(&conn, &at)?;
-            // R232 (S08-AC02): the Locked Card refuses before the part choice or the editor opens.
-            // The writers check again, so an editor opened before a Lock cannot save into it.
-            crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Edit(card.row_id))?;
-            if card.is_lit {
-                return match interaction.choose_literature_edit_part()? {
-                    crate::EditPart::Metadata => {
-                        let old_key = card
-                            .citation_key
-                            .as_deref()
-                            .context("Literature Card is missing its Citation key")?;
-                        let initial = card
-                            .bibtex
-                            .as_deref()
-                            .context("Literature Card is missing its BibTeX metadata")?;
-                        let mut accepted = None;
-                        let mut save = |text: &str| {
-                            let metadata = crate::literature::parse_metadata(text)?;
-                            if metadata.citation_key != old_key
-                                && (metadata.citation_key.eq_ignore_ascii_case(old_key)
-                                    || crate::citation_key_conflicts(
-                                        &conn,
-                                        &metadata.citation_key,
-                                        card.row_id,
-                                    )?)
-                            {
-                                bail!(
-                                    "Citation key `{}` conflicts with an existing Literature Card",
-                                    metadata.citation_key
-                                );
-                            }
-                            accepted = Some((text.to_string(), metadata));
-                            Ok(())
-                        };
-                        if !interaction.edit(initial, "metadata edit", &mut save)? {
-                            return Ok(Execution::Continue(CommandResult::Changed));
-                        }
-                        let (bibtex, metadata) =
-                            accepted.context("validated Literature metadata is missing")?;
-                        if metadata.citation_key != old_key {
-                            let lines = crate::citation_rename_lines(
-                                &conn,
-                                old_key,
-                                &metadata.citation_key,
-                            )?;
-                            interaction.confirm("move", &lines)?;
-                        }
-                        let accepted = crate::update_literature_metadata(
-                            &mut conn,
-                            &card,
-                            &metadata.citation_key,
-                            &bibtex,
-                            &metadata.title,
-                        )?;
-                        interaction.check(&accepted);
-                        state.pointer = Pointer::Card(metadata.citation_key);
-                        Ok(Execution::Continue(CommandResult::Changed))
-                    }
-                    crate::EditPart::Text => {
-                        let mut accepted = None;
-                        let mut save = |text: &str| {
-                            accepted = Some(crate::update_literature_text(&mut conn, &card, text)?);
-                            Ok(())
-                        };
-                        interaction.edit(&card.text, "edit mode", &mut save)?;
-                        if let Some(accepted) = accepted {
-                            interaction.check(&accepted);
-                        }
-                        Ok(Execution::Continue(CommandResult::Changed))
-                    }
-                };
-            }
-            let mut accepted = None;
-            let mut save = |text: &str| {
-                accepted = Some(crate::update_card_text(&mut conn, &card, text)?);
-                Ok(())
-            };
-            interaction.edit(&card.text, "edit mode", &mut save)?;
-            if let Some(accepted) = accepted {
-                interaction.check(&accepted);
-            }
-            Ok(Execution::Continue(CommandResult::Changed))
-        }
+        ["e"] => execute_edit(root, state, interaction),
         // S8 (#236): span and outline commands run the shared tree-operation executor.
         ["mv", span, place, at] if span.contains("..") => {
             let (from, through) = span_bounds(state, "mv", span)?;
