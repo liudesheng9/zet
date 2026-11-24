@@ -29,7 +29,7 @@ enum Availability {
 const COMMANDS: &[(&str, &str, Availability)] = &[
     (
         "go [<target>]",
-        "go to a Location or Citation key; bare go returns to ROOT",
+        "go to a Location, Citation key or handle (~7#4); a coordinate (~7/2, 3/2+1), place:<id> or ~7 opens a station; bare go returns to ROOT",
         Availability::Always,
     ),
     ("root", "return to ROOT", Availability::Always),
@@ -145,17 +145,12 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         "set the Math form of the current Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary",
         Availability::OnRegular,
     ),
-    (
-        "go ~<n> | ~<n>/<coord> | <loc>+<k> | place:<id>",
-        "enter a Connection tree at its root, or go to one station (an occurrence of a Card)",
-        Availability::Always,
-    ),
     ("n", "go to the next station (the Direct successor) in this tree", Availability::OnStation),
     ("p", "go to the previous station (the structural predecessor)", Availability::OnStation),
     ("b [<k>]", "go to a Side branch of this station (the k-th when there are several)", Availability::OnStation),
     ("home", "open the Card at its home; back returns to this station", Availability::OnStation),
     ("e", "edit the Card at this station (its home Card)", Availability::OnStation),
-    ("places", "list every tree this Card stands in, with coordinates and glosses", Availability::OnCardOrStation),
+    ("places", "list every tree this Card stands in, with coordinates and glosses (also at a home Card)", Availability::OnStation),
     ("conns", "list the tree connections of this station (incoming, outgoing, neutral)", Availability::OnStation),
     (
         "place <target> [side] [gloss...]",
@@ -180,7 +175,7 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         "move this station (with its Side branches) under another station",
         Availability::OnStation,
     ),
-    ("promote <location>", "move a native Connection-tree Card's home into a Topic tree", Availability::OnCardOrStation),
+    ("promote <location>", "move a native Connection-tree Card's home into a Topic tree (also at its home Card)", Availability::OnStation),
     ("stats", "count cards by kind", Availability::Always),
     ("status", "show service status", Availability::Always),
     ("lsbk", "list broken links", Availability::Always),

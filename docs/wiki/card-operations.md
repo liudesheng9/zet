@@ -537,6 +537,7 @@ Pitfalls:
 - `rustfmt --check --edition 2024 src/place.rs` already reports drift (the long `set(&[...])` lines in its tests). Format only what you change.
 
 ## Change history
+- `2026-11-24` — zt 0.65.0: `ops::kind` answers `connection` for a Connection root and `ops::zone` `connection` for its Cards; `ops::delete` refuses a delete pinned by a locked Connection tree or Topic (`pinned-delete`) and adds the coordinate impact lines to its plan.
 - `2026-11-08` — zt 0.61.0 (af6e89e4): the write gate passes a part of an empirical model its model's design (`Facts.design`, from the head's **设计** through `zt_check::empirical::design_of`), so EM5 can advise on a test the design needs. Test: the gate EM case in `tests/model_levels.rs`.
 - `2026-11-05` — zt 0.58.0: `set_literature_type(root, access, at, type)` changes a Literature type (Workspace Access applies, a Lock does not). `create_literature_tx` takes an optional type; `create_literature` (the GUI and Session route) leaves it `others`.
 - `2026-11-03` — #258 (zt 0.56.0): `Snapshot::model_heads(address)` lists the models a Card belongs to, its home model first, so `zt export` can store each model once under its head instead of asking `model_in` for every part.

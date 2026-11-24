@@ -517,6 +517,8 @@ fn dump(home: &TestHome) -> Dump {
                 dump.manifest = serde_json::from_str(&body).expect("manifest JSON");
             }
             "locks.json" => dump.locks = serde_json::from_str(&body).expect("locks JSON"),
+            // The coordinate storage has its own round-trip test (tests/connection_portability.rs).
+            "coordinates.json" => {}
             _ if relative.starts_with("artifacts/") => {
                 archives.push(relative);
             }

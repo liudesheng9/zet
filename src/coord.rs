@@ -569,6 +569,8 @@ pub(crate) fn strip_for_legacy_fixture(conn: &Connection) {
         .prepare(
             "SELECT name FROM sqlite_master WHERE type = 'trigger'
              AND (name LIKE 'writer_epoch_%' OR name LIKE 'identity_%'
+                  OR name LIKE 'coord_lock_%' OR name LIKE 'coord_pin_%'
+                  OR name LIKE 'lock_source_reviews_%'
                   OR name IN ('cards_row_id_immutable', 'card_identity_id_immutable',
                               'card_identity_never_deleted', 'card_handles_permanent_update',
                               'card_handles_permanent_delete'))",
@@ -584,7 +586,16 @@ pub(crate) fn strip_for_legacy_fixture(conn: &Connection) {
         conn.execute_batch(&format!("DROP TRIGGER {trigger};"))
             .expect("drop trigger");
     }
-    for table in COORDINATE_TABLES.iter().rev() {
+    for table in [
+        "lock_source_reviews",
+        "lock_placement_pins",
+        "lock_connections",
+        "lock_placements",
+        "lock_coordinate_seals",
+    ]
+    .iter()
+    .chain(COORDINATE_TABLES.iter().rev())
+    {
         conn.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))
             .expect("drop table");
     }

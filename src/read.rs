@@ -966,7 +966,11 @@ pub(crate) fn broken(root: &Path, workspace: Option<crate::Workspace>) -> Result
     // never a Broken textual Link.
     let missing_mounts = crate::coord::missing_mounts(&tx, workspace)?;
     tx.commit()?;
-    Ok(json!({"broken":broken,"missing_mounts":missing_mounts}))
+    let mut value = json!({"broken":broken});
+    if !missing_mounts.is_empty() {
+        value["missing_mounts"] = json!(missing_mounts);
+    }
+    Ok(value)
 }
 
 /// The persisted random archive identity and its resolved path: the evidence every bulk read and

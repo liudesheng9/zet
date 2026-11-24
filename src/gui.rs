@@ -4583,7 +4583,8 @@ mod tests {
         let apply = app_function("applyFeatures");
         assert!(apply.contains("if (!ZtFeatures.changed(state.features, next)) return;"), "{apply}");
         assert!(apply.contains("paintFeatures();"));
-        assert!(apply.contains("renderReader(); paintDistant();"), "the Reply actions come and go with the switch");
+        // `paintReader` paints the Card reader (`renderReader`) and, at a station, its station block.
+        assert!(apply.contains("paintReader(); paintDistant();"), "the Reply actions come and go with the switch");
     }
 
     #[test]

@@ -844,7 +844,7 @@
   // --------------------------------------------------------------- commands
   // Same vocabulary and availability as the terminal Session.
   const COMMANDS = [
-    ['go [<target>]', 'go to a Location or Citation key; bare go returns to ROOT', 'always'],
+    ['go [<target>]', 'go to a Location, Citation key or handle (~7#4); a coordinate (~7/2, 3/2+1), place:<id> or ~7 opens a station; bare go returns to ROOT', 'always'],
     ['root', 'return to ROOT', 'always'],
     ['ws [<workspace>]', 'list workspaces, or switch to the human or agent workspace ROOT', 'always'],
     ['up', 'go to the parent card; a tree root goes to ROOT', 'card'],
@@ -1051,7 +1051,9 @@
       }
       const ok = await confirmPlan(title, answer.lines || [], answer.confirm);
       if (!ok) return null;
-      answer = await connApi(tool, { ...args, ...extra, confirm: answer.confirm, plan_hash: answer.plan_hash, expected_revision: answer.expected_revision });
+      const confirmed = { ...args, ...extra, confirm: answer.confirm, expected_revision: answer.expected_revision };
+      confirmed['plan_hash'] = answer.plan_hash;
+      answer = await connApi(tool, confirmed);
     }
     return answer;
   }
@@ -1349,7 +1351,7 @@
     if (!address || (p && p.status === 'missing')) throw new Error('that end is a Missing mount');
     const card = await api('card?at=' + enc(address));
     state.conn.companion = { card, mark };
-    renderReader();
+    paintReader();
   }
 
   function companionPane(entry) {
@@ -1365,7 +1367,7 @@
       h('header', {},
         h('b', { text: `${card.address} · ${card.title}` }),
         h('button', { class: 'link-btn', text: 'Open', onclick: () => go(card.address) }),
-        h('button', { class: 'link-btn', text: 'Close', onclick: () => { state.conn ? (state.conn.companion = null) : (state.companionHome = null); renderReader(); } })),
+        h('button', { class: 'link-btn', text: 'Close', onclick: () => { state.conn ? (state.conn.companion = null) : (state.companionHome = null); paintReader(); } })),
       body);
   }
 
@@ -1378,7 +1380,7 @@
     const lens = await connApi('get_dependencies', args);
     if (state.conn) state.conn.lens = lens;
     else state.lensHome = lens;
-    renderReader();
+    paintReader();
   }
 
   function lensPane(lens) {
@@ -1390,7 +1392,7 @@
     return h('section', { class: 'lens-pane' },
       h('header', {}, h('h3', { text: `Dependency Lens · ${lens.focus.address} · ${lens.scope}` }),
         h('button', { class: 'link-btn', text: 'Seed a Connection tree', onclick: () => seedFromLens(lens).catch(fail) }),
-        h('button', { class: 'link-btn', text: 'Close', onclick: () => { if (state.conn) state.conn.lens = null; else state.lensHome = null; renderReader(); } })),
+        h('button', { class: 'link-btn', text: 'Close', onclick: () => { if (state.conn) state.conn.lens = null; else state.lensHome = null; paintReader(); } })),
       h('h4', { text: `Depends on · ${prereqs.length}` }),
       h('ul', {}, prereqs.map((e) => h('li', {}, h('button', { class: 'link-btn', text: e.to, onclick: () => go(e.to) }), h('ul', {}, e.evidence.map(evidence))))),
       h('h4', { text: `Used by · ${(lens.dependents || []).length}` }),
@@ -1406,7 +1408,7 @@
     const card = await api('card?at=' + enc(ev.carrier));
     const entry = { card, mark: ev.macro_byte_range };
     if (state.conn) state.conn.companion = entry; else state.companionHome = entry;
-    renderReader();
+    paintReader();
   }
 
   async function seedFromLens(lens) {
@@ -4794,8 +4796,8 @@
     }, label, key ? h('kbd', { text: key }) : null);
   }
 
-  function renderReader() {
-    renderCardReader();
+  function paintReader() {
+    renderReader();
     const reader = $('#reader');
     if (state.conn) {
       // A station: where the Card stands and why, above the Card itself (or alone, when missing).
@@ -4810,7 +4812,7 @@
     }
   }
 
-  function renderCardReader() {
+  function renderReader() {
     const reader = $('#reader');
     const card = state.card;
     if (!card) {
@@ -5359,7 +5361,7 @@
     const openBlock = (b) => {
       if (!PLAIN[b.kind]) return go(b.head);
       shelfOpen = open && open.id === b.id ? null : { head: model.head.address, id: b.id };
-      if (onHead) renderReader();
+      if (onHead) paintReader();
       else go(model.head.address);
     };
     const edges = model.block_edges || [];
@@ -5440,7 +5442,7 @@
       const edge = flag.edges.find((e) => e.kind === 'rests-on') || flag.edges[0];
       const cards = [here, ...(edge.pairs || []).flatMap((p) => [p.from, p.to]), ...[edge.from_block, edge.to_block].map((id) => blocks[index.get(id)].head)];
       bridgeOpen = { head: model.head.address, from_block: edge.from_block, to_block: edge.to_block, kind: edge.kind, cards };
-      renderReader();
+      paintReader();
     };
     // The Card pairs behind one flag, beside it: one row per Card that writes the Links.
     let hideTimer = 0;
@@ -5595,7 +5597,7 @@
         openBlock(blocks[index.get(document.activeElement.dataset.block)]);
       } else if ((event.key === 'Escape' || event.key === 'Home') && open) {
         event.preventDefault();
-        if (shelf) { shelfOpen = null; renderReader(); } else go(model.head.address);
+        if (shelf) { shelfOpen = null; paintReader(); } else go(model.head.address);
       }
     });
 
@@ -5605,7 +5607,7 @@
       onclick: () => {
         refersOn = !refersOn;
         try { localStorage.setItem('zt-refers-edges', refersOn ? 'on' : 'off'); } catch { /* the switch still works this session */ }
-        renderReader();
+        paintReader();
       },
     }, 'Refers');
 
@@ -5958,7 +5960,7 @@
     const close = () => {
       bridgeOpen = null;
       document.removeEventListener('keydown', onKey, true);
-      renderReader();
+      paintReader();
     };
     const onKey = (event) => {
       if (event.key === 'Escape' && document.body.contains(view)) { event.preventDefault(); event.stopPropagation(); close(); }
@@ -6963,7 +6965,7 @@
     renderTopbar();
     renderRail();
     renderStage();
-    renderReader();
+    paintReader();
   }
 
   // ---------------------------------------------------------------- dialogs
@@ -9247,7 +9249,7 @@
     state.features = next;
     paintFeatures();
     if (!next.search && finder.isOpen) finder.close();
-    if (replyMoved && state.card) { renderReader(); paintDistant(); }
+    if (replyMoved && state.card) { paintReader(); paintDistant(); }
   }
 
   // ------------------------------------------------------------------ boot

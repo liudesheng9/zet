@@ -2988,7 +2988,7 @@ fn empty_dump_creates_timestamped_zip_with_empty_mapping() {
 
     let mut archive =
         zip::ZipArchive::new(File::open(&archive_path).expect("open ZIP")).expect("read ZIP");
-    assert_eq!(archive.len(), 3);
+    assert_eq!(archive.len(), 4, "mapping, archive, locks and coordinates");
     let mut mapping = archive
         .by_name(&format!("{archive_name}/mapping.json"))
         .expect("mapping entry");
@@ -3076,7 +3076,7 @@ fn dump_preserves_card_text_hash_mapping_and_location_order() {
     let expected_entries: Vec<String> = [
         format!("{archive_name}/mapping.json"),
         format!("{archive_name}/archive.json"),
-        format!("{archive_name}/locks.json"),
+        format!("{archive_name}/locks.json"), format!("{archive_name}/coordinates.json"),
     ]
     .into_iter()
     .chain(
@@ -3160,7 +3160,7 @@ fn dump_adds_hashed_literature_markdown_and_exact_citation_key_bibtex() {
         vec![
             format!("{archive_name}/mapping.json"),
             format!("{archive_name}/archive.json"),
-            format!("{archive_name}/locks.json"),
+            format!("{archive_name}/locks.json"), format!("{archive_name}/coordinates.json"),
             format!("{archive_name}/{markdown_name}"),
             format!("{archive_name}/DumpKey.bib"),
         ]
@@ -3255,7 +3255,7 @@ fn dump_orders_mixed_markdown_by_address_then_bibtex_by_citation_key() {
         vec![
             format!("{archive_name}/mapping.json"),
             format!("{archive_name}/archive.json"),
-            format!("{archive_name}/locks.json"),
+            format!("{archive_name}/locks.json"), format!("{archive_name}/coordinates.json"),
             format!("{archive_name}/{topic_md}"),
             format!("{archive_name}/{alpha_md}"),
             format!("{archive_name}/{zebra_md}"),
@@ -3388,6 +3388,7 @@ fn selecting_tar_gz_creates_the_same_timestamped_payload() {
             entry.clone(),
             format!("{archive_name}/archive.json"),
             locks_entry.clone(),
+            format!("{archive_name}/coordinates.json"),
         ]
     );
     assert_eq!(dump_entry_text(&archive_path, &entry), "{}");
@@ -3455,6 +3456,7 @@ fn selecting_tar_zst_creates_the_same_timestamped_payload() {
             entry.clone(),
             format!("{archive_name}/archive.json"),
             locks_entry.clone(),
+            format!("{archive_name}/coordinates.json"),
         ]
     );
     assert_eq!(dump_entry_text(&archive_path, &entry), "{}");
@@ -3575,6 +3577,7 @@ fn selecting_7zz_creates_the_same_timestamped_payload() {
             entry.clone(),
             format!("{archive_name}/archive.json"),
             locks_entry.clone(),
+            format!("{archive_name}/coordinates.json"),
         ]
     );
     assert_eq!(dump_entry_text(&archive_path, &entry), "{}");

@@ -4381,10 +4381,23 @@ fn ordinary_status_reports_the_lock_scope_and_its_integrity() {
         .expect("tables")
         .collect::<std::result::Result<Vec<_>, _>>()
         .expect("tables");
+    // The four evidence tables, plus the coordinate evidence of multi-tree coordinates (proposal
+    // §8.1: frozen stations and connections, pins on mounted targets, append-only reviews). Neither
+    // set holds a persisted check result.
     assert_eq!(
         tables,
-        ["lock_events", "lock_members", "lock_pins", "locks"],
-        "the Lock schema is still the four evidence tables"
+        [
+            "lock_connections",
+            "lock_coordinate_seals",
+            "lock_events",
+            "lock_members",
+            "lock_pins",
+            "lock_placement_pins",
+            "lock_placements",
+            "lock_source_reviews",
+            "locks"
+        ],
+        "the Lock schema is the four evidence tables and the coordinate evidence"
     );
 
     // An ended Lock counts nowhere: its members are history, not an active promise.

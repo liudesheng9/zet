@@ -469,6 +469,7 @@ Gaps: the PTY fixtures need `powershell` for the fake editor, so the suite is ef
 - PTY tests match against all frames ever drawn: wait for "one more" occurrence than before a key, never only for a string that an earlier frame already showed.
 
 ## Change history
+- `2026-11-24` — zt 0.65.0: `Pointer::Station(placement_id)` and `src/session/station.rs`. `go ~7`, `go ~7/2|a`, `go 3/2+1`, `go place:<id>` stand on a station; `n`/`p`/`b` walk the Connection tree there (at a home Card they still create); `home`, `places`, `conns`, `place`, `unplace`, `connect`, `edit-conn`, `unconnect`, `edit-gloss`, `move-place`, `promote` run the shared plans as the owner; `del`/`mv`/`ins`/`ty` at a station are refused; a station detached elsewhere is reported before the next command and its Card opened at home. `e` is `command::execute_edit`. Tests: `tests/connection_session.rs`.
 - `2026-11-08` — zt 0.61.0 (af6e89e4): `lv` sets a Model Card to `concept`, `formal` or `empirical`. Tests: `tests/model_levels.rs`.
 - `2026-11-05` — zt 0.58.0: `lt <type>` and `Availability::OnTreeRoot`.
 - `2026-11-03` — `tests/term_session.rs::accepted_write_warnings_stay_on_the_session_status_row` edits a Topic Card: the status row is unchanged, but a Literature note's row turns R3 off (#184), so a note gave the test no warning to show.

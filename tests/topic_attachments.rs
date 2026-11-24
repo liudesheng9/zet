@@ -142,6 +142,6 @@ fn side_mounts_follow_their_anchor_and_their_source() {
     let plan = mcp.ok("delete_card", json!({"at": "1/1|a"}));
     mcp.ok("delete_card", json!({"at": "1/1|a", "confirm": plan["confirm"]}));
     let broken = mcp.ok("list_broken_links", json!({}));
-    assert_eq!(broken["missing_mounts"].as_array().unwrap().len(), 0, "{broken}");
+    assert!(broken.get("missing_mounts").is_none(), "{broken}");
     assert_eq!(mcp.ok("list_placements", json!({"at": "Ev1984/1"}))["placements"].as_array().unwrap().len(), 0);
 }

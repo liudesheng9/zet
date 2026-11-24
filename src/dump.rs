@@ -23,8 +23,8 @@ const MANIFEST: &str = "archive.json";
 /// dump writes it even when the archive holds no Lock, so a reader never has to guess whether an
 /// archive was inspected for Locks.
 const LOCKS: &str = "locks.json";
-/// The multi-tree coordinate storage (identities, handles, Connection trees, stations, tree
-/// connections, Lock evidence), versioned on its own (docs/multi-tree-coordinates-proposal.md §8.4).
+/// The multi-tree coordinate storage (identities, handles, trees, stations, tree connections, Lock
+/// evidence), versioned on its own (docs/multi-tree-coordinates-proposal.md §8.4).
 const COORDINATES: &str = "coordinates.json";
 
 pub(crate) struct DumpCard {

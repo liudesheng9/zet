@@ -101,6 +101,42 @@ A Topic and all Regular Cards whose Location starts with `<topic>/`. Also called
 A Literature Card and all Regular Cards whose Location starts with `<citation-key>/`. Its Cards can never move to another tree, and Topic tree Cards can never move into it.
 _Avoid_: Reference tree
 
+**Connection tree**:
+关联树. An authored Folgezettel tree `~<n>` in which a person or agent mounts Cards from anywhere in the archive, arranges them on a spine (`~7/1`, `~7/2`, Side branches `~7/2|a`), writes native Cards in it (`~7#4`), and records Tree connections between any two of its stations. It starts with only a title; a short shelf tag `purpose` is optional metadata. Each Card stands in it at most once. Its root Card `~7` is citable as `[[~7]]`. Its number is never reused. See docs/multi-tree-coordinates-proposal.md.
+_Avoid_: Reading tree, working tree, relation tree, graph tree
+
+**Card identity**:
+The immutable `card_id` a Card receives once when it is created, independent of its Location or Citation key. A deleted Card's identity is retired (with its last address and title), never deleted or reused.
+
+**Home**:
+The single tree that owns a Card (Topic, Literature or Connection tree). It decides the Card's Workspace, its Lock, its write gate context and every structural report (Model, Math, Term, Cited, Hub). A mount never changes it; promotion (`move_home`) does.
+
+**Handle**:
+A permanent citation address issued by a Connection tree: `~7` for its root and `~7#4` for its fourth native Card. A handle is never reused and keeps naming its Card after the Card is promoted into a Topic tree and after its Connection tree is deleted. `/` always means tree traversal; `#` always means a handle.
+
+**Station**:
+One occurrence (placement, `placement_id`) of a Card in a Connection tree or beside a Topic Card. Its coordinate (`~7/2|a`, `3/2+1`) is derived from its position and changes when the tree is reorganized, so a coordinate is navigation only and is refused inside `[[…]]`. A station bookmark `[label](place:<uuid>)` follows the station.
+_Avoid_: Copy, reference (a station is no copy of the Card)
+
+**Mount**:
+A station whose Card has its Home in another tree. Mounting places one Card by identity and writes nothing in it; a mounted tree root stands as one portal station and never expands its home tree.
+
+**Topic-side mount**:
+An ordered station `<loc>+k` beside a Topic home Card, for outside evidence. It takes no `|a` slot, rewrites no Link, and earns no Hub coverage; it follows its anchor Card by identity.
+
+**Positional gloss**:
+An optional one-line plain-text note (at most 240 characters, no Links) on a non-root station: why this Card sits at this spot. A move that changes a station's structural predecessor asks for the gloss to be reviewed.
+
+**Tree connection**:
+An authored association recorded by a Connection tree's editor between two of its stations (`connection_id`): neutral (a blank quick-connect, no claim) or directed, with an optional free label (1–32 characters, never translated), an optional canonical Relation kind (for local filtering) and an optional plain note (at most 400 characters). It follows its two placement IDs through every reorganization and is never a Link: it writes no Card, no Reverse link and no Model report. Its provenance reads "In this tree · ~7".
+_Avoid_: Link (a Link is authored inside a Card body), edge
+
+**Missing mount**:
+A station whose Card was deleted at its Home. It keeps its coordinate, gloss, children and Tree connections; a new Card at the old Location never revives it; its host's owner repairs it by rebinding (deciding every connection) or detaching it.
+
+**Dependency Lens**:
+A read-only, revision-bound view of the authored reasoning Links (`rests-on` by default) of one Card or one Model/Math unit across books: prerequisites, dependents, cycles, reach-in diagnostics and the exact invoking sentence of every edge. A Connection tree's connections may be overlaid for comparison but never enter the closure or the seed order.
+
 **Citation key**:
 The client-assigned, case-significant string address of a Literature Card. It is exactly the entry key in that Card's BibTeX metadata, is never a valid Location, and cannot differ from another Citation key only by case.
 _Avoid_: Literature Location, Literature ID
