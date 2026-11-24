@@ -200,9 +200,28 @@ fn http_file(port: u16, path: &str) -> String {
         "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
     )
     .expect("request file");
-    let mut response = String::new();
-    stream.read_to_string(&mut response).expect("read file");
-    response
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).expect("read file");
+    // A large file arrives in chunks counted in bytes; one character can straddle two of them, so
+    // the chunks are joined as bytes before the answer is read as text.
+    let Some(end) = response.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return String::from_utf8_lossy(&response).to_string();
+    };
+    let head = String::from_utf8_lossy(&response[..end]).to_string();
+    if !head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+        return String::from_utf8_lossy(&response).to_string();
+    }
+    let mut bytes = Vec::new();
+    let mut rest = &response[end + 4..];
+    while let Some(line) = rest.windows(2).position(|w| w == b"\r\n") {
+        let size = usize::from_str_radix(String::from_utf8_lossy(&rest[..line]).trim(), 16).expect("chunk size");
+        if size == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&rest[line + 2..line + 2 + size]);
+        rest = &rest[line + 2 + size + 2..];
+    }
+    format!("{head}\r\n\r\n{}", String::from_utf8_lossy(&bytes))
 }
 
 /// A query value for `/api/search`, percent-encoded byte by byte.

@@ -5438,11 +5438,14 @@ mod tests {
         let stamp = js_function("function addressStamp(");
         assert_eq!(APP_JS.matches("class: 'stamp'").count(), 1, "no stamp is built outside addressStamp");
         assert!(stamp.contains("class: 'stamp'"), "{stamp}");
-        assert_eq!(APP_JS.matches("addressStamp(card.address").count(), 2, "the reader and the search preview");
-        assert_eq!(APP_JS.matches("addressStamp(address, () =>").count(), 2, "the pulled-out card and the study desk");
+        // One stamp for every coordinate (zt 0.68.0): it copies what it prints and never navigates.
+        assert_eq!(APP_JS.matches("addressStamp(card.address").count(), 1, "the search preview");
+        assert_eq!(APP_JS.matches("addressStamp(c.coord)").count(), 1, "every coordinate on the reader's card head");
+        assert_eq!(APP_JS.matches("addressStamp(address),").count(), 2, "the pulled-out card and the study desk");
+        assert_eq!(APP_JS.matches("class: 'open-btn'").count(), 2, "opening is a button of its own beside those stamps");
+        assert!(!stamp.contains("onclick: open"), "a stamp never navigates: {stamp}");
 
         assert!(stamp.contains("dataset: { address }") && stamp.contains("class: 'addr-stub'") && stamp.contains("class: 'addr-whole'"), "{stamp}");
-        assert!(stamp.contains("title: 'Open this Card in the reader', onclick: open"), "{stamp}");
         assert!(stamp.contains("role: 'status'"), "the copy is announced: {stamp}");
 
         let copy = js_function("async function copyText(");
@@ -5455,7 +5458,7 @@ mod tests {
         let keys = js_function("function installKeys()");
         assert!(keys.contains("case 'c': return card ? run(() => copyAddress(card.address)) : undefined;"), "{keys}");
         assert!(keys.contains("event.key.toLowerCase() === 'c'") && keys.contains("selection.isCollapsed") && keys.contains("isTyping(event.target)"), "{keys}");
-        assert!(keys.contains("copyAddress(state.card.address)"), "Ctrl+C with nothing selected copies the address: {keys}");
+        assert!(keys.contains("copyAddress(reading)"), "Ctrl+C with nothing selected copies the coordinate being read: {keys}");
 
         assert!(css_rule(".card-meta").contains("flex-wrap: wrap"), "the stamp wraps inside the card");
         let rule = css_rule(".stamp");

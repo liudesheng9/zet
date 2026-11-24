@@ -484,6 +484,9 @@ fn station_value(
         value["excerpt"] = json!(parsed.as_ref().map(|p| crate::ops::excerpt(&p.body)).unwrap_or_default());
         value["type"] = json!(card.card_type.id());
         value["origin"] = json!(if native { "native" } else { "mount" });
+        // How many places the Card stands in (every station and mount), so a Map card can count its
+        // other coordinates without a request of its own.
+        value["places"] = json!(conn.query_row("SELECT COUNT(*) FROM placements WHERE card_id = ?1", [&placement.card_id], |r| r.get::<_, i64>(0))?);
         value["can_edit_card"] = json!(can_edit_card(conn, access, &card));
         value["citation"] = json!(format!("[[{}]]", citation_address(conn, &placement.card_id, &card.address)?));
         if let Some(drift) = crate::coord_lock::drift(conn, &placement.placement_id)? {

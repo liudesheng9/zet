@@ -257,23 +257,25 @@ impl Gui {
         .expect("request asset");
         let mut page = Vec::new();
         stream.read_to_end(&mut page).expect("read asset");
-        let page = String::from_utf8_lossy(&page).to_string();
-        let (head, body) = page.split_once("\r\n\r\n").expect("headers");
-        if !head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
-            return body.to_string();
+        let end = page.windows(4).position(|w| w == b"\r\n\r\n").expect("headers");
+        let head = String::from_utf8_lossy(&page[..end]).to_ascii_lowercase();
+        let body = &page[end + 4..];
+        if !head.contains("transfer-encoding: chunked") {
+            return String::from_utf8_lossy(body).to_string();
         }
-        // A large asset arrives in chunks; a word can straddle two of them.
-        let mut text = String::new();
+        // A large asset arrives in chunks, counted in bytes: a word, or one character, can straddle
+        // two of them, so the chunks are joined as bytes before they are read as text.
+        let mut bytes = Vec::new();
         let mut rest = body;
-        while let Some((size, after)) = rest.split_once("\r\n") {
-            let size = usize::from_str_radix(size.trim(), 16).expect("chunk size");
+        while let Some(line) = rest.windows(2).position(|w| w == b"\r\n") {
+            let size = usize::from_str_radix(String::from_utf8_lossy(&rest[..line]).trim(), 16).expect("chunk size");
             if size == 0 {
                 break;
             }
-            text.push_str(&after[..size]);
-            rest = &after[size + 2..];
+            bytes.extend_from_slice(&rest[line + 2..line + 2 + size]);
+            rest = &rest[line + 2 + size + 2..];
         }
-        text
+        String::from_utf8_lossy(&bytes).to_string()
     }
 
     fn register(&self) -> Value {

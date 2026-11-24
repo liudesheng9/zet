@@ -3155,15 +3155,6 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .node.station.slip { background-color: color-mix(in oklab, var(--tree-ink) var(--tree-stock), color-mix(in srgb, var(--stock) 82%, var(--desk))); }
 .node.station.root { background-color: color-mix(in oklab, var(--tree-ink) calc(var(--tree-stock) * 2), var(--stock)); }
 .node.station.root .addr, .node.station.portal .addr { color: var(--tree-ink); font-weight: 600; }
-/* The home stamp: a small rubber stamp in the home tree's ink, as a library stamps its books. */
-.node.station .home-stamp {
-  flex: none; font: 500 9.5px/14px var(--mono); color: var(--tree-ink); white-space: nowrap;
-  padding: 0 4px; border: 1px solid color-mix(in oklab, var(--tree-ink) 55%, transparent); border-radius: 2px;
-  rotate: -1.5deg;
-}
-.node.station.slip .home-stamp { margin-left: auto; rotate: 0deg; }
-.node.station.native .home-stamp { border-style: dashed; }
-.node.station .badge.portal { background: color-mix(in oklab, var(--tree-ink) 16%, transparent); color: var(--tree-ink); }
 /* The curator's gloss: a pencil line under the title of the lifted card. */
 .node.focus.station .gloss {
   margin-top: 3px; opacity: 1; color: var(--ink-soft); font: italic 12.5px/20px var(--serif);
@@ -3177,7 +3168,6 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
   border: 1.5px dashed color-mix(in srgb, var(--broken) 50%, var(--ink-faint)); box-shadow: none;
 }
 .node.station.missing .t { color: var(--ink-faint); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--broken) 55%, transparent); }
-.node.station.missing .home-stamp { color: var(--broken); border-color: color-mix(in srgb, var(--broken) 50%, transparent); }
 .node.focus.station.missing { border-color: var(--pointer); }
 
 /* The Topic-side mounts beside a Map card: cards tucked behind its right edge, each peeking out
@@ -3191,7 +3181,8 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
   box-shadow: 1px 1px 3px -1px rgba(60, 45, 20, .3);
   transition: translate .22s var(--ease), color .2s;
 }
-.beside-tab b { font: 600 9.5px var(--mono); color: var(--tree-ink); margin-right: 5px; }
+.beside-tab b { font: 600 9.5px var(--mono); color: oklch(var(--tree-l) var(--tree-c) var(--coord-h, 170)); margin-right: 5px; }
+.beside-tab.marked { translate: 6px 0; color: var(--ink); box-shadow: 0 0 0 2px color-mix(in oklab, var(--tree-ink) 50%, transparent); }
 .beside-tab:hover, .beside-tab:focus-visible { translate: 6px 0; color: var(--ink); }
 .beside-tab.missing { background: transparent; border-style: dashed; text-decoration: line-through; }
 .beside-tab.more { font: 500 10px/16px var(--mono); color: var(--ink-faint); background: var(--stock); cursor: default; }
@@ -3211,22 +3202,6 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 /* The Connection tree's own tools, at the desk's lower right. */
 .conn-bar { position: absolute; right: 16px; bottom: 14px; z-index: 6; display: flex; gap: 6px; }
 
-/* ------------------------------------- a Card's coordinates on its head, in every tree
-   The address stamp is the Card's home. Each other place it stands (a Connection-tree station, a
-   mount beside a Topic Card) is a smaller stamp beside it in that tree's ink, pressed a little
-   askew like the address stamp; the station open here is inked in full. */
-.coord-stamps { display: inline-flex; flex-wrap: wrap; gap: 5px; align-items: center; }
-.coord-stamps:empty { display: none; }
-.coord-stamp {
-  --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170));
-  font: 600 11px var(--mono); padding: 2px 7px; border-radius: 4px; cursor: pointer;
-  color: var(--tree-ink); background: none; border: 1.5px solid color-mix(in oklab, var(--tree-ink) 70%, transparent);
-  rotate: 1.5deg; transition: rotate .2s var(--ease), background .15s;
-}
-.coord-stamp:nth-child(even) { rotate: -1deg; }
-.coord-stamp:hover, .coord-stamp:focus-visible { rotate: 0deg; background: color-mix(in oklab, var(--tree-ink) 12%, transparent); }
-.coord-stamp.here { background: color-mix(in oklab, var(--tree-ink) 18%, transparent); border-color: var(--tree-ink); cursor: copy; }
-
 /* The station's note: a pencil line under the title, as on the lifted card in the Map. */
 .station-note { margin: 6px 0 0; font: italic 14px/1.5 var(--serif); color: var(--ink-soft); }
 .station-note::before { content: "✎ "; font-style: normal; color: var(--ink-faint); }
@@ -3237,17 +3212,18 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
    before them in the colour of the far Card's tree. The pencil and the cross lie behind the chip
    until the hand comes near. */
 .conn-chip { --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170)); display: inline-flex; align-items: center; max-width: 100%; position: relative; }
-.conn-chip .chip { border-left: 3px solid var(--tree-ink); }
+.conn-chip .chip { border-left: 3px solid color-mix(in oklab, var(--tree-ink) 45%, transparent); }
 .conn-chip .way { color: var(--ink-faint); font: 600 12px var(--mono); }
 .conn-chip .rel { font: italic 12px var(--serif); color: var(--tree-ink); }
-.conn-chip .addr { color: var(--tree-ink); font-family: var(--mono); font-size: 11px; }
+.conn-chip .addr { color: oklch(var(--tree-l) var(--tree-c) var(--coord-h, 328)); font-family: var(--mono); font-size: 11px; }
 .conn-tools { display: inline-flex; gap: 2px; margin-left: 2px; opacity: 0; transition: opacity .15s; }
 .conn-chip:hover .conn-tools, .conn-chip:focus-within .conn-tools { opacity: 1; }
 .conn-tools button { border: 0; background: none; color: var(--ink-faint); font-size: 13px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
 .conn-tools button:hover { background: var(--line-soft); color: var(--ink); }
 .conn-tools button.danger:hover { color: var(--broken); }
-.beside-chip { --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170)); border-left: 3px solid var(--tree-ink); }
-.beside-chip .addr { color: var(--tree-ink); font-family: var(--mono); font-size: 11px; }
+.beside-chip { --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170)); border-left: 3px solid color-mix(in oklab, var(--tree-ink) 45%, transparent); }
+.beside-chip.marked { box-shadow: 0 0 0 2px color-mix(in oklab, var(--tree-ink) 45%, transparent); }
+.beside-chip .addr { color: oklch(var(--tree-l) var(--tree-c) var(--coord-h, 170)); font-family: var(--mono); font-size: 11px; }
 
 /* The Connect dialog: one labelled field a line. */
 .conn-form { display: grid; gap: 8px; }
@@ -3259,14 +3235,74 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .card.missing-station .title { color: var(--ink-faint); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--broken) 55%, transparent); }
 .card.missing-station .kind-tag { color: var(--broken); }
 
-/* The other coordinates of a card in the Map: small marks on its head in each tree's ink. */
-.coord-marks { display: inline-flex; gap: 3px; align-items: center; flex: none; }
-.coord-mark {
-  --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170));
-  font: 600 9.5px/14px var(--mono); padding: 0 4px; border-radius: 3px; white-space: nowrap;
-  color: var(--tree-ink); border: 1px solid color-mix(in oklab, var(--tree-ink) 60%, transparent);
-  background: color-mix(in oklab, var(--tree-ink) 8%, transparent); cursor: pointer;
+
+/* --------------------------- one stamp for every coordinate, the same on every card head
+   Every coordinate of a Card is the address stamp: the same shape, size and perforated stub
+   everywhere, pressed a little askew, in the ink of the tree the coordinate belongs to. Pressing a
+   stamp copies what it prints. The place being read carries a small solid dot. The home comes
+   first; Places opens the Card at another coordinate. */
+.stamps { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px 7px; margin-left: auto; max-width: 100%; }
+.stamps .stamp { margin-left: 0; }
+.stamps .stamp:nth-of-type(even) { transform: rotate(1.2deg); }
+.stamps .stamp:hover, .stamps .stamp:focus-within { transform: rotate(0deg); }
+.stamp.coord { --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 40)); border-color: color-mix(in oklab, var(--tree-ink) 80%, transparent); color: var(--tree-ink); }
+.stamp.coord .addr-whole:hover { background: color-mix(in oklab, var(--tree-ink) 12%, transparent); }
+.stamp.coord.current::before {
+  content: ""; position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--tree-ink); box-shadow: 0 0 0 2px var(--paper);
 }
-.coord-mark:hover { background: color-mix(in oklab, var(--tree-ink) 20%, transparent); }
-.coord-mark.more { color: var(--ink-faint); border-color: var(--line); background: none; cursor: default; }
-.node.slip .coord-marks { margin-left: auto; }
+.places-btn {
+  font: 500 11px var(--sans); color: var(--ink-faint); background: none; cursor: pointer;
+  border: 1px solid transparent; border-radius: 5px; padding: 3px 7px; transition: color .15s, border-color .15s;
+}
+.places-btn:hover, .places-btn:focus-visible { color: var(--ink); border-color: var(--line); }
+.places-menu {
+  position: fixed; z-index: 60; min-width: 240px; max-width: 420px; display: flex; flex-direction: column; padding: 6px;
+  background: var(--paper); border: 1px solid var(--hairline); border-radius: 10px; box-shadow: var(--shadow-lift);
+  animation: appear .18s var(--ease);
+}
+.pm-item {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 14px; padding: 7px 10px; cursor: pointer;
+  border: 0; border-radius: 6px; background: none; text-align: left; font-size: 12.5px; color: var(--ink);
+}
+.pm-item:hover, .pm-item:focus-visible { background: var(--line-soft); outline: none; }
+.pm-coord { font-family: var(--mono); color: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 40)); }
+.pm-item:not([style]) .pm-coord { color: var(--ink); font-family: var(--sans); }
+.pm-tree { color: var(--ink-faint); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+
+/* The lifted Map card's head: the same stamps, smaller. Every other card shows only where it
+   stands in the tree drawn, and @N when the Card stands in N more places. */
+.node .stamps.mini { flex-wrap: nowrap; justify-content: flex-start; margin-left: 0; min-width: 0; max-width: 78%; overflow: hidden; gap: 6px; }
+.stamp.mini {
+  --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 40));
+  flex: none; font: 600 10.5px/16px var(--mono); padding: 0 6px; border-width: 1.2px; border-radius: 4px; cursor: copy;
+  color: var(--tree-ink); border-color: color-mix(in oklab, var(--tree-ink) 80%, transparent); transform: rotate(-1.5deg);
+}
+.stamp.mini.current::before { left: -3px; top: -3px; width: 6px; height: 6px; }
+.stamp.mini:hover { background: color-mix(in oklab, var(--tree-ink) 12%, transparent); transform: rotate(0deg); }
+.more-places {
+  flex: none; font: 600 10px/15px var(--mono); padding: 0 5px; border-radius: 3px; cursor: pointer;
+  color: var(--ink-soft); border: 1px dashed color-mix(in srgb, var(--ink-faint) 70%, transparent);
+}
+.more-places:hover { color: var(--ink); border-style: solid; }
+.node.slip .more-places { margin-left: auto; }
+.node .badge.missing { background: var(--broken-soft); color: var(--broken); }
+
+/* The action row: the Card's own actions, a hairline, then the actions of the tree it is read in. */
+.actions .act-sep { align-self: stretch; width: 1px; margin: 3px 3px; background: var(--line); }
+/* The pull-out and the study desk: a copy stamp and a separate Open. */
+.open-btn {
+  font: 500 11px var(--sans); color: var(--ink-soft); background: var(--paper); cursor: pointer;
+  border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px;
+}
+.open-btn:hover { color: var(--ink); border-color: var(--ink-faint); }
+
+/* A copied coordinate stamp inks itself in its tree's colour, as the address stamp did in accent. */
+.stamp.coord.copied { background: var(--tree-ink); color: var(--paper); }
+/* On the lifted Map card the stamp being read never clips: the home stamp gives way first. */
+.stamp.mini:not(.current) { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stamp.mini .addr-text { padding: 0; overflow: hidden; text-overflow: ellipsis; }
+.stamp.mini:focus-visible { outline: 2px solid var(--tree-ink); outline-offset: 2px; }
+.places-menu { max-height: min(60vh, 420px); overflow-y: auto; }
+.pm-item.danger .pm-coord { color: var(--broken); font-family: var(--sans); }
+.more-btn { color: var(--ink-soft); }

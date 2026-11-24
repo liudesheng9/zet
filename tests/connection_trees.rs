@@ -435,7 +435,13 @@ fn extracting_a_branch_copies_internal_connections_and_keeps_the_original() {
     assert_ne!(copy["connections"][0]["connection_id"], internal["connection_id"]);
     assert_eq!(copy["connections"][0]["relation_label"], "detail");
     let after = get_tree(&mut mcp, "~1");
-    assert_eq!(after["placements"], before["placements"]);
+    // The original stations stay as they were; only the count of places their Cards stand in grows,
+    // because the extracted tree holds copies of those stations.
+    let without_places = |tree: &Value| -> Vec<Value> {
+        tree["placements"].as_array().unwrap().iter().map(|p| { let mut p = p.clone(); p.as_object_mut().unwrap().remove("places"); p }).collect()
+    };
+    assert_eq!(without_places(&after), without_places(&before));
+    assert_eq!(station(&after, "Hart1995")["places"], 2, "the Card now stands in both trees");
     assert_eq!(after["connections"].as_array().unwrap().len(), 2);
 }
 

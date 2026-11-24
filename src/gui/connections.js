@@ -207,7 +207,7 @@
   // index cards in the same focus lens. Cards pulled from different drawers keep the colour of their
   // drawer: each home tree has one hue, the same in every view, from a palette of ten that stay
   // apart at a glance and leave out the pointer's gold and the Link's blue. A Connection tree's own
-  // Cards are plum. Inside one view no two trees share a hue.
+  // Cards are plum. In one page no two trees share a hue (up to ten).
 
   /** The tree a Card lives in: `~7` for `~7` and `~7#4`, else the part before the first `/`. */
   function treeOf(address) {
@@ -237,9 +237,23 @@
     return hash % PALETTE.length;
   }
 
-  /** The stable hue (OKLCH degrees) of one tree; a Connection tree is plum. */
+  // One hue per tree for the whole page: the Map's card stock, its colour key, the stamps and the
+  // chips all read it here, so a tree never shows in two colours. A tree keeps the first hue it is
+  // given; a tree whose hash meets a hue already given takes the next free one (past ten trees two
+  // share one). A Connection tree is plum.
+  const given = new Map();
+
+  /** The hue (OKLCH degrees) of one tree in this page. */
   function treeHue(tree, role) {
-    return (role || roleOf(tree)) === 'connection' ? OWN_HUE : PALETTE[paletteSlot(tree)];
+    if ((role || roleOf(tree)) === 'connection') return OWN_HUE;
+    const id = String(tree || '');
+    if (given.has(id)) return given.get(id);
+    const taken = new Set(given.values());
+    const start = paletteSlot(id);
+    let hue = PALETTE[start];
+    for (let step = 1; step < PALETTE.length && taken.has(hue); step += 1) hue = PALETTE[(start + step) % PALETTE.length];
+    given.set(id, hue);
+    return hue;
   }
 
   /**
@@ -266,21 +280,6 @@
       if (e.direction !== 'directed') { add(out, b, a); add(inn, a, b); }
     }
     const own = tree && tree.tree;
-    // Two trees whose hashes meet are told apart in this view: a later one takes the next free hue
-    // of the palette. Only past ten trees do two share one.
-    const hues = new Map();
-    const hueOf = (homeTree, role) => {
-      if (hues.has(homeTree)) return hues.get(homeTree);
-      let hue = OWN_HUE;
-      if (role !== 'connection') {
-        const taken = new Set(hues.values());
-        const start = paletteSlot(homeTree);
-        hue = PALETTE[start];
-        for (let step = 1; step < PALETTE.length && taken.has(hue); step += 1) hue = PALETTE[(start + step) % PALETTE.length];
-      }
-      hues.set(homeTree, hue);
-      return hue;
-    };
     let root = null;
     const byCoord = new Map();
     const cards = stations.map((s) => {
@@ -301,9 +300,9 @@
         inbound: (inn.get(s.coord) || []).length,
         kind: s.edge === 'root' ? 'connection' : undefined,
         station: {
-          id: s.placement_id, home, tree: homeTree, role, hue: hueOf(homeTree, role),
+          id: s.placement_id, home, tree: homeTree, role, hue: treeHue(homeTree, role),
           origin: s.edge === 'root' ? 'root' : s.origin || 'mount', status: s.status || 'live',
-          gloss: s.gloss || '', portal: s.portal || null,
+          gloss: s.gloss || '', portal: s.portal || null, places: s.places || 0,
         },
       };
     });

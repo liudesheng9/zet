@@ -188,22 +188,17 @@
   }
 
   /**
-   * The address stamp of a Card. With `open`, the address opens the Card and the stub alone
-   * copies; without it the whole stamp copies.
+   * The address stamp of a Card: one stamp for every coordinate a Card has, in every view. Pressing
+   * it copies the coordinate it prints (the perforated stub shows it copies); it never navigates,
+   * so a stamp means the same thing everywhere.
    */
-  function addressStamp(address, open) {
-    const stamp = h('span', { class: 'stamp' + (open ? ' opens' : ''), dataset: { address } });
+  function addressStamp(address) {
+    const stamp = h('span', { class: 'stamp', dataset: { address } });
     const copy = (event) => { event.stopPropagation(); copyAddress(address, stamp).catch(fail); };
     const label = `Copy the address ${address}`;
-    if (open) {
-      stamp.append(
-        h('button', { class: 'addr-stub', type: 'button', title: `${label} (c copies the open Card's)`, 'aria-label': label, onclick: copy }, copyGlyph()),
-        h('button', { class: 'addr-text', type: 'button', title: 'Open this Card in the reader', onclick: open, text: address }));
-    } else {
-      stamp.append(h('button', { class: 'addr-whole', type: 'button', title: 'Copy the address (c)', 'aria-label': label, onclick: copy },
-        h('span', { class: 'addr-stub' }, copyGlyph()),
-        h('span', { class: 'addr-text', text: address })));
-    }
+    stamp.append(h('button', { class: 'addr-whole', type: 'button', title: 'Copy the address (c)', 'aria-label': label, onclick: copy },
+      h('span', { class: 'addr-stub' }, copyGlyph()),
+      h('span', { class: 'addr-text', text: address })));
     stamp.append(h('span', { class: 'addr-said', role: 'status' }));
     return stamp;
   }
@@ -1137,7 +1132,6 @@
     const conn = state.conn;
     const bar = $('#conn-bar');
     bar.replaceChildren(...[
-      conn.tree.can_edit_tree && conn.station ? h('button', { class: 'mini-btn', text: '+ Mount a Card', title: `Mount a Card after ${conn.station.coord}`, onclick: () => mountHere().catch(fail) }) : null,
       h('button', { class: 'mini-btn', text: 'Lock…', title: 'Lock this Connection tree: its stations, glosses and connections freeze and its mounted Cards are pinned', onclick: () => lockTree(conn.tree.tree).catch(fail) }),
     ].filter(Boolean));
   }
@@ -1187,45 +1181,96 @@
   }
 
   /**
-   * One coordinate of a Card outside its home, as a small stamp in the colour of its tree: a
-   * Connection-tree station opens that station; a Topic-side mount opens the Topic Card it stands
-   * beside. The station open here is inked and copies its bookmark.
+   * Every coordinate of a Card, in the order every card head shows them: its home first, then the
+   * place being read (a station), then the others by coordinate. Each names its tree, whether it is
+   * the home, whether it is where the reader is now, and the station or mount it stands for.
    */
-  function coordStamp(p, here = false) {
-    const tree = CONN.treeOf(p.host);
-    const role = CONN.roleOf(tree);
-    const where = `${p.coord} in ${treeName(tree)}`;
-    return h('button', {
-      class: 'coord-stamp ' + role + (here ? ' here' : ''), type: 'button',
-      style: `--tree-h:${CONN.treeHue(tree, role)}`,
-      title: (here ? `This station: ${where} · click to copy its bookmark` : `Also at ${where} · click to open it there`) + (p.gloss ? `\n✎ ${p.gloss}` : ''),
-      onclick: (event) => {
-        event.stopPropagation();
-        if (here) copyText(`place:${p.placement_id}`);
-        else if (role === 'connection') openStation(p.placement_id);
-        else go(p.coord.split('+')[0]);
-      },
-    }, p.coord);
-  }
-
-  /** The coordinate stamps of the open Card, filled now or when its placements arrive. */
-  function coordSlot(card) {
-    const slot = h('span', { class: 'coord-stamps', id: 'coord-stamps' });
-    fillCoords(slot, card);
-    return slot;
-  }
-
-  function fillCoords(slot, card) {
+  function cardCoordinates(card) {
     const conn = state.conn;
-    let list = null;
-    if (conn) {
-      list = conn.places && conn.places.placements ? conn.places.placements : conn.station ? [{ ...conn.station, host: conn.tree.tree }] : [];
-    } else if (card && state.homeExtras && state.homeExtras.address === card.address && state.homeExtras.places) {
-      list = state.homeExtras.places.placements || [];
+    const station = conn && conn.station;
+    const places = conn
+      ? (conn.places && conn.places.placements) || (station ? [{ ...station, host: conn.tree.tree }] : [])
+      : (card && state.homeExtras && state.homeExtras.address === card.address && state.homeExtras.places && state.homeExtras.places.placements) || [];
+    const all = [];
+    if (card) all.push({ coord: card.address, tree: CONN.treeOf(card.address), home: true, current: !station });
+    for (const p of places) {
+      if (card && p.coord === card.address) continue;
+      all.push({ coord: p.coord, tree: CONN.treeOf(p.host), home: false, current: !!station && p.placement_id === station.placement_id, placement_id: p.placement_id, gloss: p.gloss });
     }
-    if (!list) return;
-    const here = conn && conn.station ? conn.station.placement_id : null;
-    slot.replaceChildren(...[...list].sort((a, b) => String(a.coord).localeCompare(String(b.coord))).map((p) => coordStamp(p, p.placement_id === here)));
+    const rank = (c) => (c.home ? 0 : c.current ? 1 : 2);
+    return all.sort((a, b) => rank(a) - rank(b) || a.coord.localeCompare(b.coord));
+  }
+
+  /** One coordinate as the address stamp, in its tree's ink; the place being read carries a dot. */
+  function coordinateStamp(c) {
+    const role = CONN.roleOf(c.tree);
+    const stamp = addressStamp(c.coord);
+    stamp.classList.add('coord', role);
+    if (c.current) stamp.classList.add('current');
+    stamp.style.setProperty('--tree-h', CONN.treeHue(c.tree, role));
+    const where = c.home ? `home, in ${treeName(c.tree)}` : `in ${treeName(c.tree)}`;
+    stamp.title = `${c.coord} · ${where}${c.current ? ' · you are reading it here' : ''}${c.gloss ? `\n✎ ${c.gloss}` : ''}\nPress to copy`;
+    stamp.querySelector('.addr-whole').setAttribute('aria-label', `Copy ${c.coord}, ${where}${c.current ? ', current location' : ''}`);
+    return stamp;
+  }
+
+  /** The stamps on a card's head: one per coordinate, and Places to open the Card at another one. */
+  function coordinateHead(card) {
+    const list = cardCoordinates(card);
+    return h('span', { class: 'stamps', id: 'coord-stamps' }, ...list.map(coordinateStamp), placesButton(list));
+  }
+
+  /** Refill the head's stamps once the Card's places have been read. */
+  function fillCoords(slot, card) {
+    slot.replaceWith(coordinateHead(card));
+  }
+
+  /** Places: open the Card at another of its coordinates, or copy this station's bookmark. */
+  function placesButton(list) {
+    const others = list.filter((c) => !c.current);
+    const station = state.conn && state.conn.station;
+    if (!others.length && !station) return null;
+    const button = h('button', { class: 'places-btn', type: 'button', 'aria-haspopup': 'menu', title: 'Open this Card at another of its places', text: 'Places ▾' });
+    button.addEventListener('click', (event) => { event.stopPropagation(); placesMenu(button, others, station); });
+    return button;
+  }
+
+  let closePlaces = null;
+  function placesMenu(anchor, others, station) {
+    if (closePlaces) closePlaces();
+    const close = () => { menu.remove(); document.removeEventListener('pointerdown', outside, true); window.removeEventListener('hashchange', close); closePlaces = null; };
+    const item = (label, sub, hue, run) => h('button', { class: 'pm-item', type: 'button', role: 'menuitem', style: hue == null ? null : `--tree-h:${hue}`, onclick: () => { close(); Promise.resolve().then(run).catch(fail); } },
+      h('span', { class: 'pm-coord', text: label }), sub ? h('span', { class: 'pm-tree', text: sub }) : null);
+    const menu = h('div', { class: 'places-menu', role: 'menu', 'aria-label': 'Places' },
+      ...others.map((c) => item(`Open at ${c.coord}`, c.home ? `home · ${treeName(c.tree)}` : treeName(c.tree), CONN.treeHue(c.tree, CONN.roleOf(c.tree)), () => openPlace(c))),
+      station ? item('Copy station bookmark', `place:${station.placement_id}`, null, async () => { if (await copyText(`place:${station.placement_id}`)) toast('station bookmark copied'); }) : null);
+    const outside = (event) => { if (!menu.contains(event.target) && event.target !== anchor) close(); };
+    menu.addEventListener('keydown', (event) => {
+      event.stopPropagation();
+      const items = [...menu.querySelectorAll('.pm-item')];
+      const at = items.indexOf(document.activeElement);
+      if (event.key === 'Escape') { event.preventDefault(); close(); anchor.focus(); }
+      else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); const next = items[(at + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]; if (next) next.focus(); }
+    });
+    const box = anchor.getBoundingClientRect();
+    menu.style.top = `${Math.round(box.bottom + 6)}px`;
+    menu.style.right = `${Math.round(Math.max(8, window.innerWidth - box.right))}px`;
+    document.body.append(menu);
+    document.addEventListener('pointerdown', outside, true);
+    window.addEventListener('hashchange', close);
+    closePlaces = close;
+    const first = menu.querySelector('button');
+    if (first) first.focus();
+  }
+
+  /** Open the Card at one of its coordinates: its home (from a station, with a way back), a station,
+   *  or a mount beside a Topic Card (that Card opens, its tab for this mount marked). */
+  function openPlace(c) {
+    if (c.home) return state.conn && state.conn.station ? excursion(state.conn.station) : go(c.coord);
+    if (CONN.roleOf(c.tree) === 'connection') return openStation(c.placement_id);
+    state.markMount = c.placement_id;
+    state.markAnchor = c.coord.split('+')[0];
+    return go(state.markAnchor);
   }
 
   /** The station's note: the curator's pencil line under the title, as the Map shows it. */
@@ -1257,7 +1302,7 @@
       const tree = p.edge === 'root' ? conn.tree.tree : CONN.treeOf(p.home_address || conn.tree.tree);
       const role = CONN.roleOf(tree);
       const word = e.relation_label || e.relation_kind;
-      return h('span', { class: 'conn-chip ' + way, style: `--tree-h:${CONN.treeHue(tree, role)}` },
+      return h('span', { class: 'conn-chip ' + way, style: `--tree-h:${CONN.treeHue(tree, role)};--coord-h:${CONN.OWN_HUE}` },
         h('button', {
           class: 'chip', type: 'button',
           title: CONN.sentence(e) + (e.note ? `\n\n${e.note}` : '') + '\n\nA connection recorded in this tree, not a Link in either Card',
@@ -1275,34 +1320,52 @@
   }
 
   /** The station's row of actions, in the place and the form of a Card's. */
-  function stationActions() {
-    const conn = state.conn;
-    const s = conn.station;
-    const card = state.card;
+  /** The actions of the station: those of the Connection tree it stands in. The Card's own actions
+   *  come first in the same row, as they do at home. */
+  function stationTreeActions() {
+    const s = state.conn.station;
     const editHost = s.can_edit_placement;
     const root = s.edge === 'root';
     const live = s.status === 'live';
     const readOnly = 'This tree is read-only here';
     const off = (title) => ({ disabled: true, title });
-    return h('div', { class: 'actions' },
-      live && card ? actionButton(spreads.has(card.address) ? 'On the Table ✓' : 'To the Table', 'p', () => toggleTable(card.address), {
-        title: spreads.has(card.address) ? 'Put it back in the box' : 'Lay the Card on the Table beside the cards you are gathering', cls: 'table-btn',
-      }) : null,
-      live ? actionButton('Edit', 'e', () => excursion(s), s.can_edit_card
-        ? { primary: true, title: 'Edit the Card at its home; Back to station returns here' }
-        : off('This Card is not yours to edit here (its home Workspace or Lock)')) : null,
+    const more = [
+      editHost && !root ? ['Move this station', () => moveStation(s)] : null,
+      s.status === 'missing' && editHost ? ['Rebind to another Card', () => rebindStation(s)] : null,
+      s.origin === 'native' && !root && live ? ['Promote to a Topic home', () => promoteNative(s)] : null,
+      editHost && !root && s.origin !== 'native' ? ['Unplace from this tree', () => unplaceStation(s), true] : null,
+    ].filter(Boolean);
+    return [
       actionButton('Note', null, () => editGloss(s), editHost && !root ? { title: 'Why this Card stands here: one line, pencilled on the card' } : off(root ? 'The root has no note' : readOnly)),
       actionButton('Connect', null, () => connectDialog(), editHost ? { title: 'Record a connection from this station to another station of the tree' } : off(readOnly)),
       actionButton('Mount', 'n', () => mountHere(), editHost ? { title: 'Mount a Card after this station' } : off(readOnly)),
       actionButton('Side', 'b', () => mountHere(undefined, true), editHost && !root ? { title: 'Mount a Card as a Side branch of this station' } : off(root ? 'The root takes no Side branch' : readOnly)),
-      actionButton('Move', 'm', () => moveStation(s), editHost && !root ? { title: 'Move this station within the tree' } : off(root ? 'The root stays' : readOnly)),
-      s.status === 'missing' ? actionButton('Rebind', null, () => rebindStation(s), editHost ? { title: 'Put another Card on this station, keeping its note and connections' } : off(readOnly)) : null,
-      s.origin === 'native' && !root && live ? actionButton('Promote', null, () => promoteNative(s), { title: 'Give this Card a home in a Topic tree; its handle keeps working' }) : null,
-      live ? actionButton('Lens', null, () => dependencyLens(s.home_address), { title: 'Dependency Lens: what this Card rests on and what rests on it, across books' }) : null,
-      actionButton('Unplace', 'del', () => unplaceStation(s), editHost && !root && s.origin !== 'native'
-        ? { danger: true, title: 'Take the Card off this station; its home stays' }
-        : off(root ? 'The root stays' : s.origin === 'native' ? 'A Card written here is deleted at home, not unplaced' : readOnly)),
-    );
+      more.length ? moreButton(more) : null,
+    ];
+  }
+
+  /** More ▾: the occasional actions of a station, in a small menu beside the frequent ones. */
+  function moreButton(entries) {
+    const button = h('button', { class: 'btn more-btn', type: 'button', 'aria-haspopup': 'menu', title: 'Move, unplace and the other occasional actions of this station', text: 'More ▾' });
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (closePlaces) closePlaces();
+      const close = () => { menu.remove(); document.removeEventListener('pointerdown', outside, true); window.removeEventListener('hashchange', close); closePlaces = null; };
+      const menu = h('div', { class: 'places-menu', role: 'menu', 'aria-label': 'More actions' },
+        ...entries.map(([label, run, danger]) => h('button', { class: 'pm-item' + (danger ? ' danger' : ''), type: 'button', role: 'menuitem', onclick: () => { close(); Promise.resolve().then(run).catch(fail); } }, h('span', { class: 'pm-coord', text: label }))));
+      const outside = (e) => { if (!menu.contains(e.target) && e.target !== button) close(); };
+      menu.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') { close(); button.focus(); } });
+      const box = button.getBoundingClientRect();
+      menu.style.top = `${Math.round(box.bottom + 6)}px`;
+      menu.style.left = `${Math.round(Math.min(box.left, window.innerWidth - 260))}px`;
+      document.body.append(menu);
+      document.addEventListener('pointerdown', outside, true);
+      window.addEventListener('hashchange', close);
+      closePlaces = close;
+      const first = menu.querySelector('button');
+      if (first) first.focus();
+    });
+    return button;
   }
 
   /** A station whose Card was deleted at home: the same card, empty, keeping its place. */
@@ -1311,11 +1374,11 @@
     if (!s) return [h('div', { class: 'welcome' }, h('p', { text: 'This station no longer exists.' }))];
     return [h('article', { class: 'card missing-station' },
       h('header', { class: 'card-head' },
-        h('div', { class: 'card-meta' }, h('span', { class: 'kind-tag', text: 'Missing mount' }), coordSlot(null)),
+        h('div', { class: 'card-meta' }, h('span', { class: 'kind-tag', text: 'Missing mount' }), coordinateHead(null)),
         h('h1', { class: 'title' }, s.title || s.home_address),
         stationNote()),
       h('div', { class: 'md' }, h('p', { class: 'empty', text: `Its Card ${s.home_address} was deleted at home. The station keeps its place, its note and its connections: rebind it to another Card, or unplace it.` }))),
-    h('div', { class: 'card-tools' }, connectionChips(), stationActions())];
+    h('div', { class: 'card-tools' }, connectionChips(), h('div', { class: 'actions' }, ...stationTreeActions()))];
   }
 
   /** Connect this station to another one: the far station, the direction, a word, a kind, a note. */
@@ -1579,7 +1642,8 @@
       const tree = CONN.treeOf(m.home_address);
       const role = CONN.roleOf(tree);
       return h('button', {
-        class: 'chip beside-chip' + (m.status === 'missing' ? ' broken' : ''), type: 'button', style: `--tree-h:${CONN.treeHue(tree, role)}`,
+        class: 'chip beside-chip' + (m.status === 'missing' ? ' broken' : '') + (state.markMount === m.placement_id ? ' marked' : ''), type: 'button',
+        style: `--tree-h:${CONN.treeHue(tree, role)};--coord-h:${CONN.treeHue(CONN.treeOf(m.coord), 'topic')}`,
         title: `${m.coord} · ${m.home_address}${m.gloss ? '\n✎ ' + m.gloss : ''}`,
         onclick: () => (m.status === 'live' ? go(m.home_address) : toast('Missing mount: its Card was deleted at home', 'warn')),
       }, h('span', { class: 'addr', text: '+' + m.coord.split('+').pop() }), h('span', { class: 't', text: m.status === 'missing' ? 'missing' : m.title }));
@@ -1593,14 +1657,15 @@
 
   /** The Topic-side mounts of a Map card, tucked behind its right edge: three tabs and a +N. */
   function besideTabs(anchor, mounts) {
-    const shown = mounts.slice(0, 3);
+    const marked = mounts.find((m) => m.placement_id === state.markMount);
+    const shown = marked && mounts.indexOf(marked) >= 3 ? [...mounts.slice(0, 2), marked] : mounts.slice(0, 3);
     const tab = (m) => {
       const tree = CONN.treeOf(m.home_address);
       const role = CONN.roleOf(tree);
       const missing = m.status === 'missing';
       return h('span', {
-        class: 'beside-tab ' + role + (missing ? ' missing' : ''), role: 'button', tabindex: '0',
-        style: `--tree-h:${CONN.treeHue(tree, role)}`,
+        class: 'beside-tab ' + role + (missing ? ' missing' : '') + (state.markMount === m.placement_id ? ' marked' : ''), role: 'button', tabindex: '0',
+        style: `--tree-h:${CONN.treeHue(tree, role)};--coord-h:${CONN.treeHue(CONN.treeOf(m.coord), 'topic')}`,
         title: `${m.coord} · ${missing ? 'missing: ' : ''}${m.home_address} · ${m.title}${m.gloss ? ' — ' + m.gloss : ''}`,
         onclick: (event) => { event.stopPropagation(); if (missing) toast('Missing mount: its Card was deleted at home', 'warn'); else go(m.home_address); },
       }, h('b', { text: '+' + m.coord.split('+').pop() }), m.title);
@@ -1612,6 +1677,8 @@
 
   // --------------------------------------------------------------- routing
   function go(address) {
+    // A mount opened from Places stays marked for that one arrival.
+    if (state.markMount && !(address && state.markMount && address === state.markAnchor)) state.markMount = state.markAnchor = null;
     // A Connection-tree root, a coordinate or a station bookmark opens the station view.
     if (address && /^~\d+$/.test(address)) return openConnTree(address);
     if (address && (/^~\d+\//.test(address) || /\+\d+$/.test(address))) return openConnTree(address);
@@ -1625,11 +1692,15 @@
     const parsed = CONN.parseHash(location.hash);
     if (parsed.kind === 'place' || parsed.kind === 'conn') {
       if (/\+\d+$/.test(parsed.value)) {
-        // A Topic-side mount coordinate: open the Card standing there, unless the reader has
-        // moved on before the answer came.
+        // A Topic-side mount coordinate opens the Topic Card it stands beside, its tab marked, as
+        // Places does; unless the reader has moved on before the answer came.
         const seq = pointerLoads.begin();
         connApi('list_placements', { at: parsed.value }).then((listed) => {
-          if (pointerLoads.isLatest(seq)) go(listed.home);
+          if (!pointerLoads.isLatest(seq)) return;
+          const mount = (listed.placements || [])[0];
+          state.markMount = mount ? mount.placement_id : null;
+          state.markAnchor = parsed.value.split('+')[0];
+          go(state.markAnchor);
         }).catch(fail);
         return;
       }
@@ -2788,16 +2859,16 @@
       const slash = card.address.indexOf('/');
       // Inside a Literature tree the long Citation key is known, so cards show the rest.
       const short = card.edge !== 'root' && slash > 4 ? '…' + card.address.slice(slash) : card.address;
-      const marks = elsewhere ? coordMarks(elsewhere, n.lod === 'focus') : null;
+      const others = elsewhere ? elsewhere.length : 0;
       if (n.lod === 'slip') {
-        el.replaceChildren(...[h('span', { class: 'addr', text: short }), title, marks, typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form), fold].filter(Boolean));
+        el.replaceChildren(...[h('span', { class: 'addr', text: short }), title, morePlaces(card.address, others), typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form), fold].filter(Boolean));
         return;
       }
       el.replaceChildren(...[
         h('span', { class: 'top' },
-          h('span', { class: 'addr', text: n.lod === 'focus' ? card.address : short }),
+          n.lod === 'focus' ? mapStamps([{ coord: card.address, tree: CONN.treeOf(card.address), current: true }]) : h('span', { class: 'addr', text: short }),
           h('span', { class: 'badges' },
-            marks,
+            morePlaces(card.address, others),
             typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form),
             card.inbound ? h('span', { class: 'badge in', title: `Referred by ${card.inbound}`, text: '←' + card.inbound }) : null,
             external ? h('span', { class: 'badge', title: 'Links to other trees', text: '↗' + external }) : null,
@@ -2824,7 +2895,7 @@
         state.linkedIn && state.linkedIn.has(card.address) ? 'in' : '',
         state.linkedOut && state.linkedOut.has(card.address) ? 'out' : '',
       ].filter(Boolean).join(' '));
-      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.inbound, card.excerpt, st.home, st.status, st.gloss, st.hue].join('\u0001');
+      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.inbound, card.excerpt, st.home, st.status, st.gloss, st.hue, st.places].join('\u0001');
       if (el.dataset.sig === signature) return;
       el.dataset.sig = signature;
       el.style.setProperty('--tree-h', st.hue);
@@ -2833,19 +2904,25 @@
         + (st.gloss ? `\n\n${st.gloss}` : '') + (card.excerpt ? `\n\n${card.excerpt}` : '');
       const fold = n.folded ? h('span', { class: 'badge fold', title: `${n.folded} more station${n.folded === 1 ? '' : 's'} filed behind`, text: '+' + n.folded }) : null;
       const title = h('span', { class: 't' + (card.title ? '' : ' untitled') }, card.title ? titleNodes(card.title) : 'untitled');
-      // The home stamp: where the Card lives. A native Card is written here and needs none.
-      const stampText = st.origin === 'root' ? null : missing ? 'missing' : st.origin === 'native' ? 'native' : (n.lod === 'focus' ? st.home : shortHome(st.home));
-      const stamp = stampText ? h('span', { class: 'home-stamp', title: missing ? 'Its Card was deleted at home; the station keeps its place, gloss and connections' : st.origin === 'native' ? `Written in this tree · ${st.home}` : `Its home: ${st.home}`, text: stampText }) : null;
+      // The Card's coordinates: its home and this station, which the lifted card stamps; @N counts
+      // only the places beyond those two, so a plain mount carries no mark.
+      const places = missing ? 0 : st.places || 1;
+      const coords = [
+        missing ? null : { coord: st.home, tree: st.tree, home: true, current: false },
+        { coord: card.address, tree: thisTree(), home: false, current: true },
+      ].filter(Boolean);
+      const others = missing ? 0 : Math.max(0, places - 1);
+      const gone = missing ? h('span', { class: 'badge missing', title: 'Its Card was deleted at home; the station keeps its place, note and connections', text: 'missing' }) : null;
       const portal = st.portal ? h('span', { class: 'badge portal', text: CONN.portalLabel({ portal: st.portal }) }) : null;
       if (n.lod === 'slip') {
-        el.replaceChildren(...[h('span', { class: 'addr', text: card.address }), title, stamp, fold].filter(Boolean));
+        el.replaceChildren(...[h('span', { class: 'addr', text: card.address }), title, gone, morePlaces(card.address, others), fold].filter(Boolean));
         return;
       }
       el.replaceChildren(...[
         h('span', { class: 'top' },
-          h('span', { class: 'addr', text: card.address }),
+          n.lod === 'focus' ? mapStamps(coords) : h('span', { class: 'addr', text: card.address }),
           h('span', { class: 'badges' },
-            stamp, portal,
+            gone, portal, morePlaces(card.address, others),
             typeStamp(card.type, null),
             card.inbound ? h('span', { class: 'badge in', title: `${card.inbound} tree connection(s) point here`, text: '←' + card.inbound }) : null,
             fold,
@@ -2857,37 +2934,41 @@
       ].filter(Boolean));
     }
 
-    /**
-     * The other coordinates of a Map card, on its head in each tree's colour. The lifted card shows
-     * each coordinate; the others show each tree once, so a glance tells where else a Card stands.
-     */
-    function coordMarks(list, full) {
-      const byTree = new Map();
-      for (const p of list) {
-        const tree = CONN.treeOf(p.host);
-        if (!byTree.has(tree)) byTree.set(tree, []);
-        byTree.get(tree).push(p);
-      }
-      const mark = (tree, places, text) => {
-        const role = CONN.roleOf(tree);
-        const first = places[0];
-        return h('span', {
-          class: 'coord-mark ' + role, role: 'button', tabindex: '-1', style: `--tree-h:${CONN.treeHue(tree, role)}`,
-          title: places.map((p) => `${p.coord}${p.gloss ? ' — ' + p.gloss : ''}`).join(' · ') + ' · click to open it there',
-          onclick: (event) => { event.stopPropagation(); if (role === 'connection') openStation(first.placement_id); else go(first.coord.split('+')[0]); },
-        }, text);
-      };
-      const shown = full ? list.slice(0, 3).map((p) => mark(CONN.treeOf(p.host), [p], p.coord)) : [...byTree].slice(0, 3).map(([tree, places]) => mark(tree, places, tree));
-      const rest = full ? list.length - shown.length : byTree.size - shown.length;
-      return h('span', { class: 'coord-marks' }, ...shown, rest > 0 ? h('span', { class: 'coord-mark more', text: '+' + rest }) : null);
+    /** The Connection tree being drawn, for the coordinates of its stations. */
+    function thisTree() {
+      return state.conn && state.conn.tree ? state.conn.tree.tree : '';
     }
 
-    /** A home address short enough for a stamp: a long Citation key keeps its start and its tail. */
-    function shortHome(address) {
-      const slash = address.indexOf('/');
-      if (slash < 0) return address.length > 14 ? address.slice(0, 12) + '…' : address;
-      const key = address.slice(0, slash);
-      return (key.length > 8 ? key.slice(0, 6) + '…' : key) + address.slice(slash);
+    /**
+     * The lifted card's head: the same stamps as the reader's, smaller (its home, then where it
+     * stands here), each copying what it prints; @N in the badges counts every other coordinate.
+     */
+    function mapStamps(coords) {
+      const stamp = (c) => {
+        const role = CONN.roleOf(c.tree);
+        const el = h('span', {
+          class: 'stamp mini coord ' + role + (c.current ? ' current' : ''), role: 'button', tabindex: '0',
+          dataset: { address: c.coord }, style: `--tree-h:${CONN.treeHue(c.tree, role)}`,
+          title: `${c.coord}${c.home ? ' · home' : ''}${c.current ? ' · this place' : ''} · press to copy`,
+          'aria-label': `Copy ${c.coord}${c.home ? ', home' : ''}${c.current ? ', current location' : ''}`,
+          onclick: (event) => { event.stopPropagation(); copyAddress(c.coord, el).catch(fail); },
+          onkeydown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); copyAddress(c.coord, el).catch(fail); } },
+        }, h('span', { class: 'addr-text', text: c.coord }), h('span', { class: 'addr-said', role: 'status' }));
+        return el;
+      };
+      const ordered = [...coords].sort((a, b) => (a.home ? 0 : 1) - (b.home ? 0 : 1));
+      return h('span', { class: 'stamps mini' }, ...ordered.map(stamp));
+    }
+
+    /** @N: the Card stands in N more places; pressing it opens the Card, whose head lists them all. */
+    function morePlaces(address, count) {
+      if (!count) return null;
+      return h('span', {
+        class: 'more-places', role: 'button', tabindex: '-1',
+        title: `Also at ${count} other place${count === 1 ? '' : 's'}: open the Card to see and copy every coordinate`,
+        'aria-label': `Show ${count} more coordinate${count === 1 ? '' : 's'}`,
+        onclick: (event) => { event.stopPropagation(); go(address); },
+      }, '@' + count);
     }
 
     /** A bundle (#239): the slips a long list's window leaves out, as one thick stack of slip
@@ -5145,8 +5226,7 @@
           card.kind === 'literature' ? shelfTag(card) : null,
           h('span', { class: 'ws-tag ' + card.workspace, title: `${wsLabel(card.workspace)} workspace — ${(WORKSPACES[card.workspace] || WORKSPACES.human).mcp}`, text: wsLabel(card.workspace) }),
           typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form),
-          addressStamp(card.address, state.conn && state.conn.station ? () => excursion(state.conn.station) : null),
-          coordSlot(card),
+          coordinateHead(card),
         ),
         card.hubs && card.hubs.length ? h('nav', { class: 'hub-climb', 'aria-label': 'Hubs that list this card' }, card.hubs.map((hub) => h('button', {
           class: 'hub-chip' + (HUB_LEVELS[hub.level] ? ' hub-' + hub.level : ''),
@@ -5193,7 +5273,7 @@
       // selected Bridge report's one-line status (S20, #112).
       card.context === 'regular' ? distantSlot('reader') : null,
       card.context === 'regular' ? bridgeStatusSlot() : null,
-      state.conn ? stationActions() : h('div', { class: 'actions' },
+      h('div', { class: 'actions' },
         actionButton(spreads.has(card.address) ? 'On the Table ✓' : 'To the Table', 'p', () => toggleTable(card.address), {
           title: spreads.has(card.address) ? 'Put it back in the box' : 'Lay it on the Table beside the cards you are gathering (P: with every card it relates to)',
           cls: 'table-btn',
@@ -5212,11 +5292,15 @@
           title: 'Use one existing Bridge report as the distant slot’s first source; it is read only and no proposal is applied',
           cls: 'bridge-btn',
         }) : null,
+        // The Card's own actions above, the actions of the tree it is read in below the rule.
+        h('span', { class: 'act-sep', 'aria-hidden': 'true' }),
+        ...(state.conn && state.conn.station ? stationTreeActions() : [
         actionButton('Direct', 'n', () => newCard('direct'), writeOpts('direct', { title: 'New direct successor' })),
         actionButton('Side', 'b', () => newCard('side'), regular ? writeOpts('side', { title: 'New side successor' }) : { disabled: true, title: 'Tree roots have no side successors' }),
         actionButton('Insert', 'i', insertCard, regular ? writeOpts('insert', { title: 'Insert a new card in this place; this card and its successors move down' }) : { disabled: true, title: 'Nothing goes before a tree root' }),
         actionButton('Move', 'm', () => moveCard(), regular ? writeOpts('move', { title: 'Move with successors, alone, or into another card’s place' }) : { disabled: true, title: 'Tree roots cannot move' }),
         actionButton('Delete', 'del', deleteCard, writeOpts('delete', { danger: true })),
+        ]),
       ),
       card.context === 'tree-root' ? lockLine(card) : null,
       cardLockLine(card),
@@ -6489,7 +6573,8 @@
       h('div', { class: 'pullout-card' },
         h('header', { class: 'pullout-head' },
           unitHead ? typeStamp(card.type, null, null, null, card.level, card.form) : h('span', { class: 'sd-facet', text: facetLabel(card.facet) || card.type }),
-          addressStamp(address, () => { study.close(); dropBack(); go(address); }),
+          addressStamp(address),
+          h('button', { class: 'open-btn', type: 'button', title: 'Open this Card in the reader', text: 'Open', onclick: () => { study.close(); dropBack(); go(address); } }),
           h('button', { class: 'pullout-close', title: 'Drop it back into the box (Esc)', 'aria-label': 'Drop back', text: '×', onclick: () => dropBack() })),
         h('h3', { class: 'pullout-title' }, titleNodes(card.title || address)),
         study.canEnter(card) ? h('button', {
@@ -6934,7 +7019,8 @@
               head ? typeStamp(card.type, null, null, null, card.level, card.form) : h('span', { class: 'sd-facet', text: facetLabel(facet) }),
               crux ? h('span', { class: 'sd-crux', title: 'The crux step: the idea of the proof', text: 'crux' }) : null,
               labels && !head ? h('span', { class: 'sd-uses', title: 'The labels this Card uses' }, labels.split(' ').map((label) => h('span', { class: 'lchip small', tabindex: '0', dataset: { label }, text: label }))) : null,
-              addressStamp(address, () => { close(); go(address); })),
+              addressStamp(address),
+              h('button', { class: 'open-btn', type: 'button', title: 'Open this Card in the reader', text: 'Open', onclick: () => { close(); go(address); } })),
             h('h3', { class: 'sd-title' }, titleNodes(card.title || address)),
             lean && as !== 'focus' ? null : md),
           down ? h('div', { class: 'sd-face back', 'aria-label': 'Face down' },
@@ -9387,9 +9473,10 @@
       // item in focus; a selection and a field keep the ordinary copy.
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'c') {
         const selection = getSelection();
-        if (!state.card || isTyping(event.target) || (selection && !selection.isCollapsed && String(selection).trim())) return;
+        const reading = state.conn && state.conn.station ? state.conn.station.coord : state.card && state.card.address;
+        if (!reading || isTyping(event.target) || (selection && !selection.isCollapsed && String(selection).trim())) return;
         event.preventDefault();
-        copyAddress(state.card.address).catch(fail);
+        copyAddress(reading).catch(fail);
         return;
       }
       // Alt+← / Alt+→ step back and forward, as in a file browser.
@@ -9401,7 +9488,8 @@
       }
       // Alt+↑ / Alt+↓ move the open card one place among its siblings (S7, #235).
       if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
-        if (isTyping(event.target) || !state.card || state.card.context !== 'regular') return;
+        // At a station the Card's home order is not what the reader sees: Alt+↑/↓ do nothing there.
+        if (isTyping(event.target) || !state.card || state.card.context !== 'regular' || state.conn) return;
         event.preventDefault();
         stepCard(event.key === 'ArrowUp' ? -1 : 1).catch(fail);
         return;
@@ -9411,17 +9499,20 @@
       const run = (fn) => { event.preventDefault(); Promise.resolve().then(fn).catch(fail); };
       // At a station the writing keys act on the station and the arrows walk its tree; the Card at
       // home is edited from there with e (Back to station returns).
-      if (state.conn && state.conn.station && state.conn.map) {
+      if (state.conn && state.conn.station) {
         const s = state.conn.station;
-        const cards = state.conn.map.cards;
+        const cards = state.conn.map ? state.conn.map.cards : [];
         const here = cards.find((c) => c.address === s.coord);
         const child = (edge) => cards.filter((c) => c.parent === s.coord && c.edge === edge).map((c) => c.address).sort()[0];
+        // The keys do what the station's buttons do, under the same permission.
+        const editHost = s.can_edit_placement;
         switch (event.key) {
-          case 'n': return run(() => mountHere());
-          case 'b': return s.edge === 'root' ? undefined : run(() => mountHere(undefined, true));
-          case 'm': return s.edge === 'root' ? undefined : run(() => moveStation(s));
-          case 'Delete': return s.edge === 'root' || s.origin === 'native' ? undefined : run(() => unplaceStation(s));
-          case 'e': return s.status === 'live' ? run(() => excursion(s)) : undefined;
+          case 'n': return editHost ? run(() => mountHere()) : undefined;
+          case 'b': return editHost && s.edge !== 'root' ? run(() => mountHere(undefined, true)) : undefined;
+          case 'm': return editHost && s.edge !== 'root' ? run(() => moveStation(s)) : undefined;
+          case 'Delete': return editHost && s.edge !== 'root' && s.origin !== 'native' ? run(() => unplaceStation(s)) : undefined;
+          case 'e': return s.status === 'live' && s.can_edit_card ? run(editCard) : undefined;
+          case 'c': return run(() => copyAddress(s.coord));
           case 'i': case 'Tab': return undefined;
           case 'u': case 'ArrowUp': case 'ArrowLeft': return here && here.parent ? run(() => go(here.parent)) : undefined;
           case 'ArrowDown': { const next = child('direct'); return next ? run(() => go(next)) : undefined; }
