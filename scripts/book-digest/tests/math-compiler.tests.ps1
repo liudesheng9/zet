@@ -282,6 +282,16 @@ try {
             @{ address = $last; verdict = 'fix'; reason = '补出 x0>a。'; body = "$old`n由 (H2)，x0>a。" },
             @{ address = $steps[2]; verdict = 'fix'; reason = '删掉链接。'; body = '没有链接的正文。' },
             @{ address = $th; verdict = 'fix'; reason = '结论漏了 x0 的范围。'; body = ($statement -replace '存在 x0 使', '存在 x0∈[a,b] 使') }) }
+    # The review's self-check prints the apply's own judgement and the ledger's completeness rule (owner 2026-11-23:
+    # the criteria a DeepSeek job is given are the final criteria).
+    Assert ($pjob.Contains('-Step proof-check') -and $pjob.Contains('-Job p-01')) 'proof: the review job carries its self-check'
+    $pcheck = @(Run 'proof-check' @('-Job', 'p-01'))
+    $pcheckText = $pcheck -join "`n"
+    Assert ($pcheckText.Contains("[[$($steps[2])]] 的改写被退回：drops Links")) "proof-check: a fix that drops Links is the apply's refusal ($pcheckText)"
+    $plannedSteps = @((Get-Content -Raw (Join-Path $staging 'math\proof\plan.json') | ConvertFrom-Json -AsHashtable).units | ForEach-Object { $_.steps } | ForEach-Object { $_.address })
+    $unanswered = @($plannedSteps | Where-Object { $_ -ne $last -and $_ -ne $steps[2] })
+    Assert ($unanswered.Count -eq 0 -or $pcheckText.Contains("[[$($unanswered[0])]] 没有判定")) "proof-check: a planned step without a verdict is a fault, as the ledger finish refuses it ($pcheckText)"
+    Assert ($pcheck[-1] -match '^faults: [1-9]') 'proof-check: the count line'
     $papplied = Last (Run 'proof-apply')
     Assert ($papplied.fixed -eq 2 -and $papplied.refused -eq 1) 'proof-apply: writes the Link-keeping step fix and the statement fix on the head, refuses one that drops Links'
     $headAfter = (Read-Card $th).body
@@ -294,7 +304,9 @@ try {
     $rjob = Get-Content -Raw $rplan.jobs[0].files[1]
     Assert ($rjob.Contains("## [[$($steps[2])]]") -and $rjob.Contains('没有链接的正文。') -and $rjob.Contains($old2.Split("`n")[0])) 'proof-repair: the job holds the current text and the refused text'
     Assert (-not $rjob.Contains("## [[$last]]")) 'proof-repair: an accepted fix is not sent back'
+    Assert ($rjob.Contains('-Step proof-check') -and $rjob.Contains('-Job p-01.r1')) 'proof-repair: the repair job carries its self-check'
     Save-Json (Join-Path $staging 'math\proof\out\p-01.r1.json') @{ verdicts = @(@{ address = $steps[2]; verdict = 'fix'; reason = '补一句，保留链接。'; body = "$old2`n补一句。" }) }
+    Assert ((@(Run 'proof-check' @('-Job', 'p-01.r1')))[-1] -eq 'faults: 0') 'proof-check: the repair answer passes'
     $papplied = Last (Run 'proof-apply')
     Assert ($papplied.fixed -eq 3 -and $papplied.refused -eq 0) 'proof-apply: the repair answer stands in place of the refused verdict; the earlier fixes stay accepted'
     Assert ((Read-Card $steps[2]).body -match '补一句') 'proof-apply: the repaired fix is written'
@@ -302,6 +314,7 @@ try {
     # sees that it changed the step.
     $appliedRec = Get-Content -Raw (Join-Path $staging 'math\proof\applied.json') | ConvertFrom-Json -AsHashtable
     $again = @($appliedRec.reviewed | Where-Object { $_.address -eq $last })[0]
+    Assert ($again.ContainsKey('kept_links') -and @($again.kept_links | Where-Object { $_ }).Count -ge 1) "proof-apply: a fix already in place records the Links it kept, as a written fix does ($(@($again.kept_links) -join ', '))"
     Assert ($again.verdict -eq 'fix' -and $again.before -ne $again.after) "proof-apply: a fix already in place keeps the reviewed text as its before ($($again.before) / $($again.after))"
     # A plan frozen before zt-digest 0.63.0 holds no fingerprints: the before the fix's write recorded stays.
     $planFile = Join-Path $staging 'math\proof\plan.json'

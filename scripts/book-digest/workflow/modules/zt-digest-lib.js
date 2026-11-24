@@ -1,4 +1,6 @@
-// ==== module zt-digest-lib v62 ====
+// ==== module zt-digest-lib v63 ====
+// 63 (the owner, 2026-11-23: a job's criteria are the final criteria): the content managers approve proof-check, the
+// proof review's self-check.
 // 62 (rudin1976principles pilot, 2026-11-23): the content managers follow the shared rate-limit rule (DSMP_RATE_LIMIT)
 // and approve the math self-checks (zt-digest math -Step index-check or boundary-review-check).
 // 61 (the owner, 2026-11-12): the DeepSeek source is OpenCode Go, read from the shared library's one value (ZT_DRIVE_MODEL).
@@ -554,7 +556,7 @@ ${o.table || '(empty)'}
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
-- "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: the Bridge compiler (${ZD_DIGEST} bridge, or bridge-compiler.ps1) with -Step precheck (never -Apply); the check zt-check (read-only); a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}) with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}), the check zt-check (read-only), the figure check (${ZD_DIGEST} figures with -Step precheck), the math self-checks (${ZD_DIGEST} math with -Step index-check or boundary-review-check), a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}, and writing JSON files under "${o.writes || o.dsh}"`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: the Bridge compiler (${ZD_DIGEST} bridge, or bridge-compiler.ps1) with -Step precheck (never -Apply); the check zt-check (read-only); a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}) with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}), the check zt-check (read-only), the figure check (${ZD_DIGEST} figures with -Step precheck), the math self-checks (${ZD_DIGEST} math with -Step index-check, boundary-review-check or proof-check), a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}, and writing JSON files under "${o.writes || o.dsh}"`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - ${DSMP_RATE_LIMIT}
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
@@ -1155,7 +1157,7 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '62', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '63', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

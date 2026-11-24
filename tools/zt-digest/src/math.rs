@@ -57,6 +57,7 @@ const STEPS: &[&str] = &[
     "proof",
     "proof-apply",
     "proof-repair",
+    "proof-check",
     "theory",
     "theory-apply",
     "check",
@@ -447,6 +448,44 @@ pub(crate) fn splice_statement(head: &str, section: &str) -> Option<String> {
         text.push('\n');
     }
     Some(text)
+}
+
+/// The SELF-CHECK section of a proof review job file: the job runs the final criteria before it answers.
+fn proof_self_check(staging: &str, job: &str) -> String {
+    format!(
+        "## 自查（SELF-CHECK）{NL}{NL}写完 JSON 文件后运行下面的命令。它按程序写入时的同一套规则检查你的答案：缺判定的地址、不属于本任务的地址、不是 ok 或 fix 的判定，以及会被退回的改写（没有正文、删掉原正文里的链接）。改好后再运行，直到输出 `faults: 0`。{NL}{NL}```{NL}zt-digest math -Step proof-check -Staging \"{staging}\" -Job {job}{NL}```{NL}"
+    )
+}
+
+/// What the apply does with one `fix` verdict, judged from the Card's current text.
+#[derive(Debug, PartialEq)]
+pub(crate) enum FixJudgement {
+    /// The fix's text already stands in the Card (an earlier round, or the term-link pass since).
+    InPlace,
+    /// The whole body to write, and the Links it keeps.
+    Write { body: String, kept: Vec<String> },
+    /// Why the fix is refused, and the Links it drops.
+    Refused { why: String, dropped: Vec<String> },
+}
+
+/// The one judgement of a proof fix (the owner, 2026-11-23: the criteria a DeepSeek job is given are the final
+/// criteria). `proof-apply` acts on it and `proof-check`, the review job's self-check, prints it, so a review sees
+/// every refusal before it answers. A head fix carries the corrected 陈述 (or 定义) section alone.
+pub(crate) fn judge_fix(current: &str, body: &str, head: bool) -> FixJudgement {
+    if body.trim().is_empty() {
+        return FixJudgement::Refused { why: "no body".into(), dropped: Vec::new() };
+    }
+    let new = if head { splice_statement(current, body).unwrap_or_else(|| body.to_string()) } else { body.to_string() };
+    if fix_in_place(current, &new) {
+        return FixJudgement::InPlace;
+    }
+    let old = ps::select_unique(LINK.captures_iter(current).map(|m| m[1].to_string()));
+    let kept: Vec<String> = LINK.captures_iter(&new).map(|m| m[1].to_string()).collect();
+    let dropped: Vec<String> = old.into_iter().filter(|o| !is_in(o, &kept)).collect();
+    if !dropped.is_empty() {
+        return FixJudgement::Refused { why: format!("drops Links: {}", dropped.join(", ")), dropped };
+    }
+    FixJudgement::Write { body: new, kept }
 }
 
 /// Whether a fix's text already stands in the Card: the same text, or the same once each Term link reads as
@@ -1662,7 +1701,7 @@ impl Compiler {
                 reviews.push(obj(vec![
                     ("id", json!(format!("v-{name}"))),
                     ("files", json!([self.script_file("dsh-math-boundary-review.zh.md"), job])),
-                    ("prompt", json!(format!("按以上说明复核这些补写的分卡，写出 v-{name} 的 JSON 文件。最后只回复一行 JSON。"))),
+                    ("prompt", json!(format!("按以上说明复核这些补写的分卡，写出 v-{name} 的 JSON 文件，运行任务文件末尾的自查直到 `faults: 0`。最后只回复一行 JSON。"))),
                 ]));
             }
         }
@@ -1939,12 +1978,13 @@ impl Compiler {
                 ]));
             }
             batches.insert(name.clone(), Value::Array(share.iter().map(|(u, _, _)| u["address"].clone()).collect()));
+            sb.push_str(&proof_self_check(&self.p.staging, &name));
             let job = join(&pw, &format!("{name}.md"));
             util::write_text(&job, &sb)?;
             jobs.push(obj(vec![
                 ("id", json!(name)),
                 ("files", json!([self.script_file("dsh-math-proof-review.zh.md"), job])),
-                ("prompt", json!(format!("按以上说明复核这些证明，写出 {name} 的 JSON 文件。最后只回复一行 JSON。"))),
+                ("prompt", json!(format!("按以上说明复核这些证明，写出 {name} 的 JSON 文件，运行任务文件末尾的自查直到 `faults: 0`。最后只回复一行 JSON。"))),
             ]));
         }
         // The ledger adapter reads this plan: one proof obligation per selected formal result (R240), and
@@ -2048,59 +2088,48 @@ impl Compiler {
                     ]));
                     continue;
                 }
-                let mut new = field(v, "body");
-                // The statement check answers the corrected 陈述 (or 定义) section of the head alone.
-                if heads.get(&address).is_some() && !new.trim().is_empty() {
-                    if let Some(whole) = splice_statement(&field(&card, "body"), &new) {
-                        new = whole;
+                let refuse = |why: String, dropped: Vec<String>, refused: &mut Vec<Value>, reviewed: &mut Vec<Value>| {
+                    refused.push(obj(vec![("address", json!(address)), ("reason", json!(why))]));
+                    let mut entry = vec![
+                        ("unit", json!(unit)),
+                        ("address", json!(address)),
+                        ("verdict", json!("refused")),
+                        ("reason", json!(why)),
+                        ("before", json!(before)),
+                    ];
+                    if !dropped.is_empty() {
+                        entry.push(("dropped_links", json!(dropped)));
                     }
-                }
-                // A fix already in place (an earlier round, or a run that stopped after writing it) is
-                // accepted as it stands.
-                if fix_in_place(&field(&card, "body"), &new) {
-                    fixed += 1;
-                    accepted.insert(address.clone(), json!(before));
-                    // Its before is the text the review read (the plan froze it), not the fixed text now in place:
-                    // the ledger checks that an accepted fix changed the step (Rudin pilot 2026-11-23, 1|u).
-                    let reviewed_text = frozen.get(&address).or_else(|| written_before.get(&address)).cloned().unwrap_or_else(|| before.clone());
-                    reviewed.push(obj(vec![
-                        ("unit", json!(unit)),
-                        ("address", json!(address)),
-                        ("verdict", json!("fix")),
-                        ("reason", json!(reason)),
-                        ("before", json!(reviewed_text)),
-                        ("after", json!(before)),
-                    ]));
-                    continue;
-                }
-                if new.trim().is_empty() {
-                    let why = format!("no body: {reason}");
-                    refused.push(obj(vec![("address", json!(address)), ("reason", json!(why))]));
-                    reviewed.push(obj(vec![
-                        ("unit", json!(unit)),
-                        ("address", json!(address)),
-                        ("verdict", json!("refused")),
-                        ("reason", json!(why)),
-                        ("before", json!(before)),
-                    ]));
-                    continue;
-                }
-                let old = ps::select_unique(LINK.captures_iter(&field(&card, "body")).map(|m| m[1].to_string()));
-                let kept: Vec<String> = LINK.captures_iter(&new).map(|m| m[1].to_string()).collect();
-                let lost: Vec<String> = old.into_iter().filter(|o| !is_in(o, &kept)).collect();
-                if !lost.is_empty() {
-                    let why = format!("drops Links: {}", lost.join(", "));
-                    refused.push(obj(vec![("address", json!(address)), ("reason", json!(why))]));
-                    reviewed.push(obj(vec![
-                        ("unit", json!(unit)),
-                        ("address", json!(address)),
-                        ("verdict", json!("refused")),
-                        ("reason", json!(why)),
-                        ("before", json!(before)),
-                        ("dropped_links", json!(lost)),
-                    ]));
-                    continue;
-                }
+                    reviewed.push(obj(entry));
+                };
+                let (new, kept) = match judge_fix(&field(&card, "body"), &field(v, "body"), heads.get(&address).is_some()) {
+                    FixJudgement::Refused { why, dropped } => {
+                        let why = if why == "no body" { format!("no body: {reason}") } else { why };
+                        refuse(why, dropped, &mut refused, &mut reviewed);
+                        continue;
+                    }
+                    // A fix already in place (an earlier round, or a run that stopped after writing it) is
+                    // accepted as it stands.
+                    FixJudgement::InPlace => {
+                        fixed += 1;
+                        accepted.insert(address.clone(), json!(before));
+                        // Its before is the text the review read (the plan froze it), not the fixed text now in place:
+                        // the ledger checks that an accepted fix changed the step (Rudin pilot 2026-11-23, 1|u).
+                        let reviewed_text = frozen.get(&address).or_else(|| written_before.get(&address)).cloned().unwrap_or_else(|| before.clone());
+                        reviewed.push(obj(vec![
+                            ("unit", json!(unit)),
+                            ("address", json!(address)),
+                            ("verdict", json!("fix")),
+                            ("reason", json!(reason)),
+                            ("before", json!(reviewed_text)),
+                            ("after", json!(before)),
+                            // The same record a written fix leaves: the ledger checks each kept Link in the Card.
+                            ("kept_links", json!(LINK.captures_iter(&field(&card, "body")).map(|m| m[1].to_string()).collect::<Vec<_>>())),
+                        ]));
+                        continue;
+                    }
+                    FixJudgement::Write { body, kept } => (body, kept),
+                };
                 self.write(&[json!({ "tool": "edit_card", "arguments": { "at": address, "body": new } })], "", "")?;
                 let after = self.get(&json!(address), "get_card")?;
                 if field(&after, "body") != new {
@@ -2205,17 +2234,103 @@ impl Compiler {
                 }
                 sb.push_str(&format!("你上次的理由：{}{NL}{NL}### 现在的正文{NL}{NL}{}{NL}{NL}### 你上次给的改写（被退回）{NL}{NL}{}{NL}{NL}", field(&before, "reason"), field(&card, "body"), field(&before, "body")));
             }
+            sb.push_str(&proof_self_check(&self.p.staging, &format!("{name}.r1")));
             let job = join(&pw, &format!("{name}.r1.md"));
             util::write_text(&job, &sb)?;
             jobs.push(obj(vec![
                 ("id", json!(format!("{name}.r1"))),
                 ("files", json!([self.script_file("dsh-math-proof-review.zh.md"), job])),
-                ("prompt", json!(format!("按以上说明重做 {name} 里被退回的改写，写出 {name}.r1 的 JSON 文件。最后只回复一行 JSON。"))),
+                ("prompt", json!(format!("按以上说明重做 {name} 里被退回的改写，写出 {name}.r1 的 JSON 文件，运行任务文件末尾的自查直到 `faults: 0`。最后只回复一行 JSON。"))),
             ]));
             sent[name.as_str()] = json!({ "addresses": items.iter().map(|r| r["address"].clone()).collect::<Vec<_>>() });
         }
         save_json(&repair_file, &sent)?;
         out_last(&obj(vec![("ok", json!(true)), ("repair", json!(jobs.len())), ("jobs", json!(jobs))]))
+    }
+
+    /// The self-check of one proof review answer (`p-NN`, or a repair answer `p-NN.r1`): one fault per line, then
+    /// `faults: N`. The criteria are the final ones (the owner, 2026-11-23): the apply's own judgement of each fix
+    /// (`judge_fix`), and the ledger finish's completeness, a verdict, `ok` or `fix`, on every planned head and step.
+    fn step_proof_check(&mut self) -> Result<()> {
+        let id = self.p.job.trim().to_string();
+        if id.is_empty() {
+            bail!("-Job is required");
+        }
+        let pw = self.proof_work();
+        let plan = read_json(&join(&pw, "plan.json"))?;
+        let (base, repair) = match id.strip_suffix(".r1") {
+            Some(b) => (b.to_string(), true),
+            None => (id.clone(), false),
+        };
+        let mut heads: CiMap<bool> = CiMap::new();
+        let mut required: Vec<String> = Vec::new();
+        if repair {
+            let sent = read_json(&join(&pw, "repair.json"))?;
+            required = ps::list(&sent[base.as_str()]["addresses"]).iter().map(|a| s(a)).collect();
+            for entry in pipe(&plan["units"]) {
+                if truthy(&entry["model"]) {
+                    heads.insert(&field(entry, "model"), true);
+                }
+            }
+        } else {
+            let units: Vec<String> = ps::list(&plan["batches"][base.as_str()]).iter().map(|u| s(u)).collect();
+            if units.is_empty() {
+                bail!("no proof review job {id} in {}", join(&pw, "plan.json"));
+            }
+            for entry in pipe(&plan["units"]).into_iter().filter(|e| units.iter().any(|u| eq(u, &field(e, "unit")))) {
+                if truthy(&entry["model"]) {
+                    heads.insert(&field(entry, "model"), true);
+                    required.push(field(entry, "model"));
+                }
+                required.extend(pipe(&entry["steps"]).into_iter().map(|st| field(st, "address")));
+            }
+        }
+        let file = join(&pw, &format!("out\\{id}.json"));
+        let mut faults = Vec::new();
+        let answer = if ps::exists(&file) {
+            match read_json(&file) {
+                Ok(a) => Some(a),
+                Err(e) => {
+                    faults.push(format!("答案不是合法的 JSON：{e}"));
+                    None
+                }
+            }
+        } else {
+            faults.push(format!("没有答案文件 {file}"));
+            None
+        };
+        if let Some(answer) = answer {
+            let verdicts = pipe(&answer["verdicts"]);
+            for v in &verdicts {
+                let at = field(v, "address");
+                if !required.iter().any(|r| eq(r, &at)) {
+                    faults.push(format!("[[{at}]] 不是本任务列出的地址"));
+                    continue;
+                }
+                match field(v, "verdict").as_str() {
+                    "ok" => {}
+                    "fix" => {
+                        let card = self.get(&json!(at), "get_card")?;
+                        if let FixJudgement::Refused { why, .. } = judge_fix(&field(&card, "body"), &field(v, "body"), heads.get(&at).is_some()) {
+                            faults.push(format!("[[{at}]] 的改写被退回：{why}"));
+                        }
+                    }
+                    other => faults.push(format!("[[{at}]] 的判定是 {other:?}，只能是 ok 或 fix")),
+                }
+            }
+            for at in &required {
+                match verdicts.iter().filter(|v| eq(&field(v, "address"), at)).count() {
+                    0 => faults.push(format!("[[{at}]] 没有判定")),
+                    1 => {}
+                    n => faults.push(format!("[[{at}]] 有 {n} 条判定，只能有一条")),
+                }
+            }
+        }
+        for f in &faults {
+            println!("{f}");
+        }
+        println!("faults: {}", faults.len());
+        Ok(())
     }
 
     // --- theory ----------------------------------------------------------------------------------
@@ -2761,6 +2876,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "proof" => compiler.step_proof()?,
         "proof-apply" => compiler.step_proof_apply()?,
         "proof-repair" => compiler.step_proof_repair()?,
+        "proof-check" => compiler.step_proof_check()?,
         "boundary-review-check" => compiler.step_boundary_review_check()?,
         "theory" => compiler.step_theory()?,
         "theory-apply" => compiler.step_theory_apply()?,
@@ -2796,6 +2912,26 @@ mod tests {
         assert_eq!(splice_statement("**定义**：旧的一句。\n\n**说明**：甲。", "**定义**：新的一句。").unwrap(), "**定义**：\n新的一句。\n\n**说明**：甲。");
         // Bold words inside a sentence are no heading.
         assert_eq!(splice_statement("**陈述**\n旧。", "设 **f** 连续。").unwrap(), "**陈述**\n设 **f** 连续。");
+    }
+
+    #[test]
+    fn one_judgement_of_a_proof_fix() {
+        let step = "依赖 [[K/1|u|a]]：用到 (H1)。\n\n**论证**\n1. 由[[上界@K/1|ai|h]]得结论。";
+        assert_eq!(judge_fix(step, "", false), FixJudgement::Refused { why: "no body".into(), dropped: Vec::new() });
+        match judge_fix(step, "**论证**\n1. 由上界得结论。", false) {
+            // A Term link is a Link to keep too: the reviewer prompt says so, and the apply refuses its loss.
+            FixJudgement::Refused { dropped, .. } => assert_eq!(dropped, vec!["K/1|u|a".to_string(), "上界@K/1|ai|h".to_string()]),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(judge_fix(step, "依赖 [[K/1|u|a]]：用到 (H1)。\n\n**论证**\n1. 由上界得结论。", false), FixJudgement::InPlace);
+        let kept = "依赖 [[K/1|u|a]]：用到 (H1)。\n\n**论证**\n1. 由[[上界@K/1|ai|h]]与 (H1) 得结论。";
+        assert!(matches!(judge_fix(step, kept, false), FixJudgement::Write { .. }));
+        // A head fix is the 陈述 section alone, spliced in; the 结构 Links stay.
+        let head = "**陈述**\n(H1) 旧。\n\n**结构**\n\n- 前提 [[K/1|u|a]]";
+        match judge_fix(head, "(H1) 新。", true) {
+            FixJudgement::Write { body, .. } => assert_eq!(body, "**陈述**\n(H1) 新。\n\n**结构**\n\n- 前提 [[K/1|u|a]]"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
