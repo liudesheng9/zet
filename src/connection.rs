@@ -2288,6 +2288,7 @@ fn promote(ctx: &mut Ctx) -> Result<Value> {
         }
     }
     conn.execute("UPDATE cards SET location = ?2 WHERE row_id = ?1", params![card.row_id, to])?;
+    crate::spread::follow(conn, &BTreeMap::from([(card.address.clone(), to.to_string())]), &BTreeSet::new())?;
     // The Card is re-keyed as a Link source; authored targets that spell `~7#4` stay as written.
     crate::link_index::source_rekeyed(conn, &card.address, to)?;
     validate_tree(conn, &tree)?;

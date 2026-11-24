@@ -4789,6 +4789,8 @@ fn apply_location_mapping_tx(
             changes.rewrote(&card.address);
         }
     }
+    // Topic-side mounts follow their anchors by identity (proposal §7.3, Phase 4).
+    coord::follow_anchor_moves(conn, mapping)?;
     spread::follow(conn, mapping, &BTreeSet::new())
 }
 

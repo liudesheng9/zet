@@ -1391,3 +1391,49 @@ pub(crate) fn missing_mounts(conn: &Connection, workspace: Option<Workspace>) ->
     }
     Ok(out)
 }
+
+/// After Cards took new addresses: Topic-side mounts follow their anchor by identity. A mount whose
+/// anchor moved into another Topic moves to that Topic's host; a Card moved into a Topic that
+/// mounts it beside one of its Cards, or a mount that would meet the same Card already mounted in
+/// the destination Topic, is refused (a Topic tree holds a Card once).
+pub(crate) fn follow_anchor_moves(conn: &Connection, mapping: &BTreeMap<String, String>) -> Result<()> {
+    if !installed(conn) {
+        return Ok(());
+    }
+    for new in mapping.values() {
+        if new.starts_with("__") || TreeRole::of_address(new) != TreeRole::Topic {
+            continue;
+        }
+        let Ok(card) = crate::load_card(conn, new) else { continue };
+        let card_id = card_id_of_row(conn, card.row_id)?;
+        let topic = crate::tree_id(new).to_string();
+        // The moved Card is mounted beside a Card of the Topic it moved into.
+        if placements_of_host(conn, &topic)?.iter().any(|p| p.card_id == card_id) {
+            bail!(
+                "`{new}` is mounted beside a Card of Topic {topic} (a Topic-side mount); detach that mount before moving the Card into the Topic"
+            );
+        }
+        // Mounts anchored on the moved Card follow it into its new Topic.
+        for p in attachments_of_anchor(conn, &card_id)? {
+            if p.host_tree_key == topic {
+                continue;
+            }
+            if placements_of_host(conn, &topic)?.iter().any(|q| q.card_id == p.card_id) {
+                bail!(
+                    "the Card mounted beside `{new}` is already mounted in Topic {topic}; detach one of the two mounts before this move"
+                );
+            }
+            if let Some(address) = address_of_card_id(conn, &p.card_id)?
+                && TreeRole::of_address(&address) == TreeRole::Topic
+                && crate::tree_id(&address) == topic
+            {
+                bail!("the Card mounted beside `{new}` has its home in Topic {topic}; detach the mount before this move");
+            }
+            conn.execute(
+                "UPDATE placements SET host_tree_key = ?2 WHERE placement_id = ?1",
+                params![p.placement_id, topic],
+            )?;
+        }
+    }
+    Ok(())
+}
