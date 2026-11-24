@@ -359,11 +359,11 @@ pub(crate) fn snapshot(conn: &Connection, root: &crate::Card) -> Result<Value> {
             None => missing.push(json!({"placement_id": p.placement_id, "last_address": identity.last_address})),
         }
     }
+    // Tuples are sealed in ID order, the same order the integrity check reads them back in.
     let connections: Vec<Value> = if TreeRole::of(root) == TreeRole::Connection {
-        crate::connection::edges_of_tree(conn, &host)?
-            .iter()
-            .map(connection_tuple)
-            .collect()
+        let mut edges = crate::connection::edges_of_tree(conn, &host)?;
+        edges.sort_by(|a, b| a.connection_id.cmp(&b.connection_id));
+        edges.iter().map(connection_tuple).collect()
     } else {
         Vec::new()
     };
@@ -477,9 +477,11 @@ pub(crate) fn review_source(conn: &Connection, access: Access, args: &Value) -> 
         bail!("stale review: the source changed since it was shown; read it again and review the current version");
     }
     let lock_id = state["lock_id"].as_i64().context("lock id")?;
-    if let Some(shown) = args.get("lock_id").and_then(Value::as_i64)
-        && shown != lock_id
-    {
+    let shown = args
+        .get("lock_id")
+        .and_then(Value::as_i64)
+        .context("a review names the lock_id it was shown under")?;
+    if shown != lock_id {
         bail!("stale review: the station is now under Lock {lock_id}, not the Lock {shown} that was shown; review it again");
     }
     conn.execute(
@@ -519,11 +521,10 @@ pub(crate) fn faults(conn: &Connection) -> Result<Vec<(i64, String, String, Stri
         let Ok(card) = crate::load_card(conn, &root) else { continue };
         let now = snapshot(conn, &card)?;
         let Some(sealed) = sealed else {
-            // A Topic Lock made before any mount exists, or before multi-tree coordinates, holds no
-            // coordinate evidence; its mounts are frozen by the host triggers all the same. A
-            // Connection-tree Lock always captures its root station.
-            if root.starts_with('~') {
-                out.push((lock_id, "coordinate-evidence-missing".into(), root.clone(), "the Lock of a Connection tree holds no coordinate evidence".into()));
+            // A Topic Lock made while it had no side mount holds no coordinate evidence, and its
+            // frozen Topic cannot gain one; a Connection-tree Lock always captures its root station.
+            if root.starts_with('~') || !now.is_null() {
+                out.push((lock_id, "coordinate-evidence-missing".into(), root.clone(), "the Lock holds no coordinate evidence for its stations".into()));
             }
             continue;
         };
@@ -554,15 +555,29 @@ pub(crate) fn faults(conn: &Connection) -> Result<Vec<(i64, String, String, Stri
         if now["structure_fp"].as_str() != Some(sealed.as_str()) {
             out.push((lock_id, "coordinate-structure-changed".into(), root.clone(), "the locked stations or connections differ from their Lock-time evidence".into()));
         }
-        for pin in now["pins"].as_array().into_iter().flatten() {
-            let present: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM lock_placement_pins WHERE lock_id = ?1 AND placement_id = ?2 AND card_id = ?3)",
-                params![lock_id, pin["placement_id"].as_str(), pin["card_id"].as_str()],
-                |r| r.get(0),
-            )?;
-            if !present {
-                out.push((lock_id, "coordinate-pin-missing".into(), pin["target_address"].as_str().unwrap_or_default().to_string(), "a mounted target of the locked tree has lost its pin".into()));
-            }
+        // The pins are exactly the live mounted targets, each at its row and address.
+        let expected: BTreeSet<(String, String, i64, String)> = now["pins"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|pin| {
+                (
+                    pin["placement_id"].as_str().unwrap_or_default().to_string(),
+                    pin["card_id"].as_str().unwrap_or_default().to_string(),
+                    pin["target_row"].as_i64().unwrap_or_default(),
+                    pin["target_address"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+        let stored: BTreeSet<(String, String, i64, String)> = conn
+            .prepare("SELECT placement_id, card_id, target_row, target_address FROM lock_placement_pins WHERE lock_id = ?1")?
+            .query_map([lock_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for missing in expected.difference(&stored) {
+            out.push((lock_id, "coordinate-pin-missing".into(), missing.3.clone(), "a mounted target of the locked tree has lost its pin".into()));
+        }
+        for extra in stored.difference(&expected) {
+            out.push((lock_id, "coordinate-pin-changed".into(), extra.3.clone(), "a stored pin names no live mounted target of the locked tree".into()));
         }
     }
     Ok(out)

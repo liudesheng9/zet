@@ -308,7 +308,8 @@
       }
       const missing = s.state === 'missing';
       return {
-        placement_id: s.station, coord: s.coord, card_id: s.address, edge: s.edge, parent_id: s.parent || null, ordinal,
+        // A Missing mount and a live Card at a reused address are different Cards.
+        placement_id: s.station, coord: s.coord, card_id: missing ? `missing:${s.station}` : s.address, edge: s.edge, parent_id: s.parent || null, ordinal,
         gloss: s.gloss || null, host: ct.handle, host_workspace: ix.data.tree.workspace,
         status: missing ? 'missing' : 'live', home_address: s.address, home_role: role(s.address),
         home_workspace: ix.data.tree.workspace, title: s.title, origin: s.origin || 'mount',
@@ -341,10 +342,17 @@
 
   /** The read tools of the station view, answered from the package; writes are not offline. */
   function connectionAnswer(ix, request) {
-    const tree = connectionTree(ix);
     const tool = request && request.tool;
     const args = (request && request.args) || {};
     const ok = (value) => ({ status: 200, body: value });
+    if (tool === 'list_side_mounts') {
+      // A Topic export carries the mounts beside its Cards, read-only.
+      const mounts = (ix.data.side_mounts || []).filter((m) => m.anchor === args.at).map((m) => ({ ...m, can_edit_placement: false, can_edit_card: false }));
+      return ok({ at: args.at, mounts });
+    }
+    if (tool === 'list_connection_trees' && !ix.data.connection_tree) return ok({ trees: [] });
+    if (tool === 'list_placements' && !ix.data.connection_tree) return ok({ placements: [], home: ix.byAddress.has(args.at) ? args.at : null });
+    const tree = connectionTree(ix);
     if (!tree) return { status: 400, body: { error: 'This export holds no Connection tree.' } };
     switch (tool) {
       case 'list_connection_trees':
@@ -353,7 +361,9 @@
         return ok(tree);
       case 'list_placements': {
         const at = String(args.at || '');
-        const station = at.startsWith('place:') ? tree.placements.find((p) => p.placement_id === at.slice(6)) : tree.placements.find((p) => p.home_address === at || p.card_id === args.card_id);
+        const station = at.startsWith('place:')
+          ? tree.placements.find((p) => p.placement_id === at.slice(6))
+          : tree.placements.find((p) => p.status === 'live' && (p.home_address === at || p.card_id === args.card_id));
         if (!station) return ok({ placements: [], home: ix.byAddress.has(at) ? at : null });
         return ok({ card_id: station.card_id, home: station.status === 'live' ? station.home_address : null, placements: [station] });
       }

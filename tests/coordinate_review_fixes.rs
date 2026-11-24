@@ -176,3 +176,85 @@ fn a_review_shown_under_one_lock_is_refused_under_another() {
     let refused = gui.conn_refused("review_source", json!({"placement_id": a["placement_id"], "reviewed_fp": drift["current_fp"], "lock_id": drift["lock_id"]}));
     assert!(refused.to_string().contains("stale review"), "{refused}");
 }
+
+/// Second review (P1.7): a locked tree whose connections were created in an order their IDs do not
+/// follow stays healthy; (P1.3) a confirmation of a place plan whose gloss another client cleared
+/// is stale; (P1.2) a Literature-scoped rename never rewrites a Connection-tree Card.
+#[test]
+fn second_review_lock_order_place_staleness_and_scoped_renames() {
+    let scratch = ScratchBox::up();
+    let mut mcp = scratch.mcp(&[]);
+    book(&mut mcp, "Ord2020");
+    mcp.ok("create_successor", json!({"at": "Ord2020/1", "title": "二", "body": "二。\n\n来源：[[Ord2020]] §2"}));
+    mcp.ok("create_successor", json!({"at": "Ord2020/2", "title": "三", "body": "三。\n\n来源：[[Ord2020]] §3"}));
+    let gui = Gui::connect(scratch.cmd());
+    mcp.ok("create_connection_tree", json!({"title": "Ordered"}));
+    mcp.ok("place_card", json!({"host": "~1", "parent_coord": "~1/0", "target_at": "Ord2020/1"}));
+    mcp.ok("place_card", json!({"host": "~1", "parent_coord": "~1/1", "target_at": "Ord2020/2", "gloss": "Second."}));
+    mcp.ok("place_card", json!({"host": "~1", "parent_coord": "~1/2", "target_at": "Ord2020/3"}));
+    for (i, (from, to)) in [("~1/1", "~1/2"), ("~1/2", "~1/3"), ("~1/1", "~1/3"), ("~1/3", "~1/1"), ("~1/2", "~1/1"), ("~1/3", "~1/2")].iter().enumerate() {
+        mcp.ok("connect_placements", json!({"tree": "~1", "from_placement_id": from, "to_placement_id": to, "direction": "directed", "relation_label": format!("l{i}")}));
+    }
+    // P1.3: plan a splice before the glossed ~1/2, then the gloss is cleared elsewhere.
+    let args = json!({"host": "~1", "parent_coord": "~1/1", "target_at": "Ord2020", "gloss_updates": {}});
+    let plan = mcp.ok("place_card", args.clone());
+    assert_eq!(plan["applied"], false, "{plan}");
+    mcp.ok("edit_placement", json!({"placement_id": "~1/2", "gloss": null}));
+    let mut stale = args;
+    stale["confirm"] = plan["confirm"].clone();
+    stale["plan_hash"] = plan["plan_hash"].clone();
+    stale["expected_revision"] = plan["expected_revision"].clone();
+    let refused = mcp.refused("place_card", stale);
+    assert!(refused.to_string().contains("stale"), "{refused}");
+    // A preview never writes, also when the write would apply at once.
+    let preview = mcp.ok("place_card", json!({"host": "~1", "parent_coord": "~1/3", "target_at": "Ord2020", "preview": true}));
+    assert_eq!(preview["applied"], false);
+    assert_eq!(mcp.ok("get_connection_tree", json!({"tree": "~1"}))["placements"].as_array().unwrap().len(), 4);
+    // P1.7: locking captures the connections in the order the check reads them.
+    gui.lock("~1");
+    let out = scratch.cmd().args(["status", "--check-locks"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    // P1.2: a native Card cites the book; a Literature-scoped rename of the book is refused.
+    mcp.ok("create_connection_tree", json!({"title": "Citer"}));
+    mcp.ok("create_connection_card", json!({"tree": "~2", "parent_coord": "~2/0", "title": "引用者", "body": "见 [[Ord2020]]。"}));
+    let mut literature = scratch.mcp(&["--scope", "literature"]);
+    let refused = literature.refused("edit_literature_metadata", json!({"at": "Ord2020", "bibtex": "@book{Ord2021, title={Renamed}}", "confirm": "rename"}));
+    assert!(refused.to_string().contains("connection_tree"), "{refused}");
+}
+
+/// Second review (P1.4, P2.12, P2.16): a promoted handle is an ordinary outbound Link in the GUI's
+/// reader and in a cross-Workspace listing; a shared proof part makes every Model that names it a
+/// user; an explicit zone "all" lists every Zone.
+#[test]
+fn second_review_handles_in_readers_shared_parts_and_all_zones() {
+    let scratch = ScratchBox::up();
+    let mut mcp = scratch.mcp(&[]);
+    let gui = Gui::connect(scratch.cmd());
+    mcp.ok("create_topic", json!({"title": "Agent topic", "body": "t"}));
+    mcp.ok("create_successor", json!({"at": "0/0", "title": "One", "body": "one"}));
+    mcp.ok("create_connection_tree", json!({"title": "Promote"}));
+    mcp.ok("create_connection_card", json!({"tree": "~1", "parent_coord": "~1/0", "title": "原生", "body": "内容。"}));
+    let plan = mcp.ok("promote_card", json!({"at": "~1#1", "to": "0/2"}));
+    mcp.ok("promote_card", json!({"at": "~1#1", "to": "0/2", "confirm": plan["confirm"], "plan_hash": plan["plan_hash"], "expected_revision": plan["expected_revision"]}));
+    let human = gui.post("/api/create", &json!({"kind": "topic", "workspace": "human", "text": "# Human\n\nCites [[~1#1]].\n"}));
+    let human_at = human["address"].as_str().unwrap().to_string();
+    let card = gui.get(&format!("/api/card?at={}", human_at.replace('/', "%2F")));
+    let outbound = card["outbound"].to_string();
+    assert!(outbound.contains("0/2") && !outbound.contains("\"broken\":true"), "{card}");
+    let cross = mcp.ok("list_links", json!({"cross_workspace_only": true}));
+    assert!(cross.to_string().contains("~1#1"), "{cross}");
+    let all = mcp.ok("list_trees", json!({"zone": "all"}));
+    assert!(all.to_string().contains("\"~1\""), "{all}");
+
+    // A shared proof part: filed under T, also named by U's head; D's users are T and U.
+    mcp.ok("create_literature", json!({"bibtex": "@book{Sh2020, title={Shared}}"}));
+    mcp.ok("create_successor", json!({"at": "Sh2020", "title": "章", "body": "章。\n\n来源：[[Sh2020]] §1"}));
+    let d = address(&mcp.ok("create_successor", json!({"at": "Sh2020/1", "kind": "side", "type": "model", "form": "definition", "level": "concept", "title": "定义 D", "body": "**定义**：\n- (C1) D。"})));
+    let t = address(&mcp.ok("create_successor", json!({"at": "Sh2020/1", "kind": "side", "type": "model", "form": "theorem", "level": "formal", "title": "定理 T", "body": "**陈述**：\n- (H1) T。"})));
+    let premise = address(&mcp.ok("create_successor", json!({"at": t, "kind": "side", "facet": "前提", "title": "前提：T", "body": "前提。"})));
+    let step = address(&mcp.ok("create_successor", json!({"at": premise, "facet": "证明：共用的一步", "title": "证明：共用的一步", "body": format!("依赖 [[{premise}]]。依据 [[{d}]]：D 成立。")})));
+    let u = address(&mcp.ok("create_successor", json!({"at": "Sh2020/1", "kind": "side", "type": "model", "form": "theorem", "level": "formal", "title": "定理 U", "body": format!("**陈述**：\n- (H1) U。\n\n共用 [[{step}]]。")})));
+    let users = mcp.ok("get_dependencies", json!({"at": d, "scope": "unit"}));
+    let names: Vec<&str> = users["dependents"].as_array().unwrap().iter().filter_map(|x| x["node"]["address"].as_str()).collect();
+    assert!(names.contains(&t.as_str()) && names.contains(&u.as_str()), "{users}");
+}

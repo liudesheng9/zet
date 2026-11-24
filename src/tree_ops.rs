@@ -182,7 +182,8 @@ fn delete_span_tx(conn: &Connection, access: Access, args: &Value, changes: &mut
     }
     access.ensure_link_rewrites_allowed(conn, &plan.compaction())?;
     crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Delete(&plan))?;
-    let lines = crate::delete_verification_lines(&plan);
+    let mut lines = crate::delete_verification_lines(&plan);
+    lines.extend(crate::coord::delete_impact_lines(conn, &plan.delete_set, plan.kept_root().map(|(root, _)| root))?);
     let breaks = if plan.into.is_some() {
         Vec::new()
     } else {
@@ -385,7 +386,8 @@ fn delete_tx(conn: &Connection, access: Access, args: &Value, changes: &mut Chan
     }
     access.ensure_link_rewrites_allowed(conn, &plan.compaction())?;
     crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Delete(&plan))?;
-    let lines = crate::delete_verification_lines(&plan);
+    let mut lines = crate::delete_verification_lines(&plan);
+    lines.extend(crate::coord::delete_impact_lines(conn, &plan.delete_set, plan.kept_root().map(|(root, _)| root))?);
     let breaks = if plan.into.is_some() {
         Vec::new()
     } else {

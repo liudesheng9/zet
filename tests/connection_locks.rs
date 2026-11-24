@@ -94,9 +94,9 @@ fn a_locked_connection_tree_freezes_its_map_and_pins_its_mounted_sources() {
     // Layer 4: Mark reviewed is the owner's, needs the shown fingerprint, appends, keeps the seal.
     let refused = mcp.refused("review_source", json!({"placement_id": a["placement_id"], "reviewed_fp": drift["current_fp"]}));
     assert!(refused.to_string().contains("owner"), "{refused}");
-    let stale = gui.conn_refused("review_source", json!({"placement_id": a["placement_id"], "reviewed_fp": drift["observed_fp"]}));
+    let stale = gui.conn_refused("review_source", json!({"placement_id": a["placement_id"], "reviewed_fp": drift["observed_fp"], "lock_id": drift["lock_id"]}));
     assert!(stale.to_string().contains("stale"), "{stale}");
-    gui.conn("review_source", json!({"placement_id": a["placement_id"], "reviewed_fp": drift["current_fp"], "note": "Checked the revision."}));
+    gui.conn("review_source", json!({"placement_id": a["placement_id"], "reviewed_fp": drift["current_fp"], "lock_id": drift["lock_id"], "note": "Checked the revision."}));
     let view = mcp.ok("get_connection_tree", json!({"tree": "~1"}));
     assert_eq!(station(&view, "Src2020/1")["drift"]["reviewed"], true);
     let panel = gui.get("/api/locks");

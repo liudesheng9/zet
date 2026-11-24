@@ -508,3 +508,19 @@ CREATE INDEX placement_edges_by_to   ON placement_edges(tree_id, to_placement_id
 | **树锁与源漂移** | 第 2 轮确立 `observed_authored_fp` + `标为已核阅`（保留专用 `reseal`）；第 3 轮将 `placement_edges` 纳入锁证据。 | **四层树锁**：冻结落点、按语、原生正文与 `lock_connections`；锚定挂载目标；记录 `observed_authored_fp`（经核验 `src/card.rs:96`）；追加式 `标为已核阅`。 |
 | **删除广泛挂载卡片** | 第 1 轮默认拒绝；第 2 轮改用 `card_identity` 退休转缺失挂载；第 3 轮确认关联一并保留。 | **缺失挂载**：对未锁人类宿主零写入，保留子卡与 `placement_edges`；换绑须逐条审查关联；已锁宿主仍 `pinned-delete` 硬拒绝。 |
 | **SQLite 模式精度** | 第 3 轮审查发现第 2 轮 DDL 两处隐患（`CHECK(ordinal >= 1)` 放行 `NULL`；`zt del --all` 重置 `next_topic_id`）。 | 显式写出 **`ordinal IS NOT NULL AND ordinal >= 1`**，并为 `~n` 设立独立单调递增的 **`next_connection_id`**。 |
+
+---
+
+## 12. 实现状态（2026-11-24，zt 0.65.0）
+
+已在分支 `multi-tree-coordinates` 上实现，并经 Astra（`gpt-6.2-astra`）两轮审查；模块文档见 `docs/wiki/coordinates.md`。
+
+| 阶段 | 状态 | 测试 |
+|---|---|---|
+| 1 — 身份、关联树、挂载、树内关联 | 完成：`card_identity`（由 SQL 触发器维护，删除时退役而不删除）、`card_handles`、`connection_trees`、`placements`、`placement_edges`、`retired_placements`；写入者栅栏；`~n`/`~n#k`/坐标语法；缺失挂载；MCP 读写；会话的站点指针；GUI 柜子、地图、聚焦关联、站点阅读器、返回站点；`zt dp` 的 `coordinates.json`；`zt export ~n`（便携版本 3，可离线阅读） | `tests/connection_trees.rs`、`tests/coordinate_storage.rs`、`tests/connection_session.rs`、`tests/connection_portability.rs`、`src/gui.rs` 单元测试 |
+| 2 — 原生 `idea`/`event`/`finding`、晋升、关联树锁 | 完成：`create_connection_card`、`promote_card`（树删除后句柄仍可解析）、展开论断、抽取分支、冻结站点与关联、挂载目标钉住（`pinned-delete`、`pinned-move`）、锁定时的来源指纹与只追加的所有者复核；坐标证据故障并入锁完整性检查 | `tests/connection_locks.rs`、`tests/coordinate_review_fixes.rs` |
+| 3 — 依赖透镜与播种 | 完成：`get_dependencies`（卡片与单元两种范围、精确载体句子与宏的字节范围、依赖者、环、越界引用、先修优先顺序、关联树叠加），可从中心卡、摊开、透镜或选择播种 | `tests/connection_dependencies.rs` |
+| 4 — 主题旁挂 | 完成：`<loc>+k` 挂载按身份跟随锚点，主题锁冻结它们，阅读器侧架与地图标记 | `tests/topic_attachments.rs` |
+| 5 — 结构化原生模型 | **暂缓**：关联树中原生 `model`（包括独立概念模型头）、数学单元、`theory`、`hub`、`term`、`cited` 在创建和每次改类型时都以 `native_structure_required` 拒绝；已有的此类卡片可以自由挂载与关联。设计审查认为，可靠的 `home_structure` 需要模型、数学、写入闸门、透镜与模型板共用一个归档接口；用合成地址做适配会混淆身份。 |  |
+
+设计审查中商定的有意偏离（相对 §6.2）：不加 `home_kind` 列（归属角色由存储地址决定，语法本身已按数字、字母、`~` 划分），因此无需重建 `cards`；写入者栅栏守护所有表，而不是版本列；`card_handles.card_id` 唯一（每张原生卡一个句柄）；`retired_placements` 保留已移除的站点 ID，书签可以报告"已移除"；删除原生卡时，它在本树的归属站点成为缺失挂载（在该处解除或重新绑定）；`list_trees` 只在 `zone: "connection"` 时列出关联树。

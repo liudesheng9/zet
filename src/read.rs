@@ -768,7 +768,7 @@ pub(crate) fn titles(
 ) -> Result<Value> {
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
-    let mut statement=tx.prepare("SELECT COALESCE(location,citation_key),text,workspace,card_type,model_facet,row_id FROM cards WHERE (?1 IS NULL OR workspace=?1) AND (?2 IS NULL OR CASE WHEN location GLOB '~*' THEN 'connection' WHEN is_lit=1 OR citation_key IS NOT NULL OR location GLOB '[A-Za-z]*' THEN 'literature' ELSE 'topic' END=?2)")?;
+    let mut statement=tx.prepare("SELECT COALESCE(location,citation_key),text,workspace,card_type,model_facet,row_id FROM cards WHERE (?1 IS NULL OR workspace=?1) AND (?2 IS NULL OR ?2='all' OR CASE WHEN location GLOB '~*' THEN 'connection' WHEN is_lit=1 OR citation_key IS NOT NULL OR location GLOB '[A-Za-z]*' THEN 'literature' ELSE 'topic' END=?2)")?;
     let rows = statement.query_map(
         rusqlite::params![workspace.map(crate::Workspace::id), zone],
         |r| {
@@ -838,7 +838,7 @@ pub(crate) fn trees(
     let tx = conn.transaction()?;
     // Topic and Literature trees by default; the Connection trees (`~n`) only when asked for by
     // zone, so a reader that knows two Zones keeps reading two.
-    let mut query=tx.prepare("SELECT COALESCE(location,citation_key) FROM cards WHERE (is_topic=1 OR is_lit=1 OR (?2='connection' AND location GLOB '~[0-9]*' AND instr(location,'#')=0)) AND (?1 IS NULL OR workspace=?1) AND (?2 IS NULL OR CASE WHEN location GLOB '~*' THEN 'connection' WHEN is_lit=1 THEN 'literature' ELSE 'topic' END=?2)")?;
+    let mut query=tx.prepare("SELECT COALESCE(location,citation_key) FROM cards WHERE (is_topic=1 OR is_lit=1 OR (?2 IN ('connection','all') AND location GLOB '~[0-9]*' AND instr(location,'#')=0)) AND (?1 IS NULL OR workspace=?1) AND (?2 IS NULL OR ?2='all' OR CASE WHEN location GLOB '~*' THEN 'connection' WHEN is_lit=1 THEN 'literature' ELSE 'topic' END=?2)")?;
     let mut roots = query
         .query_map(
             rusqlite::params![workspace.map(crate::Workspace::id), zone],
@@ -879,7 +879,7 @@ pub(crate) fn links(
     // The first occurrence of each distinct source-target pair decides its form, so a Term use is
     // reported with the authored label an editor completes from (S14, #161; design 15.1). SQLite's
     // bare-column rule on the min() aggregate keeps `kind` on that same first row.
-    let mut query=tx.prepare("SELECT l.source,s.workspace,l.target,t.workspace,l.kind,MIN(l.ord) FROM links l JOIN cards s ON s.location=l.source OR s.citation_key=l.source LEFT JOIN cards t ON t.location=l.target OR t.citation_key=l.target WHERE (?1 IS NULL OR s.workspace=?1 OR t.workspace=?1) AND (?2=0 OR s.workspace<>t.workspace) GROUP BY l.source,l.target ORDER BY l.source,MIN(l.ord)")?;
+    let mut query=tx.prepare("SELECT l.source,s.workspace,l.target,t.workspace,l.kind,MIN(l.ord) FROM links l JOIN cards s ON s.location=l.source OR s.citation_key=l.source LEFT JOIN cards t ON t.location=l.target OR t.citation_key=l.target WHERE (?1 IS NULL OR s.workspace=?1 OR t.workspace=?1) AND (?2=0 OR t.workspace IS NULL OR s.workspace<>t.workspace) GROUP BY l.source,l.target ORDER BY l.source,MIN(l.ord)")?;
     let rows=query.query_map(rusqlite::params![workspace.map(crate::Workspace::id),cross_only],|r|{
         let source:String=r.get(0)?;let source_workspace:String=r.get(1)?;
         let target:String=r.get(2)?;let target_workspace:Option<String>=r.get(3)?;
@@ -899,7 +899,14 @@ pub(crate) fn links(
             };
             Ok((source, source_workspace, target, target_workspace, kind))
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        // A cross-Workspace listing keeps a row only when its (resolved) target is in the other
+        // Workspace; a Broken target is in none.
+        .filter(|(_, source_workspace, _, target_workspace, _)| {
+            !cross_only || target_workspace.as_ref().is_some_and(|t| t != source_workspace)
+        })
+        .collect::<Vec<_>>();
     // A Term row names no label in the index; the authored body holds it. Only sources with at
     // least one Term use are parsed, and each source once.
     let mut labels: BTreeMap<(String, String), Option<String>> = BTreeMap::new();

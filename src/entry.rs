@@ -735,7 +735,7 @@ fn restatement_rows(
             reported.insert(card);
             continue;
         }
-        let Some(substantive) = snapshot.by_address.get(target) else {
+        let Some(substantive) = snapshot.by_address.get(snapshot.canonical(target)) else {
             faults.push(json!({
                 "fault": "restatement",
                 "kind": "missing",

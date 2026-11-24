@@ -1490,7 +1490,7 @@ impl<'a> Graph<'a> {
             .lines
             .iter()
             .map(|line| {
-                let card = self.snapshot.by_address.get(&line.target);
+                let card = self.snapshot.by_address.get(self.snapshot.canonical(&line.target));
                 json!({
                     "group": line.group,
                     "address": line.target,

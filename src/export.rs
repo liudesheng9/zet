@@ -198,6 +198,7 @@ fn collect(
         "artifacts": artifacts,
         "charts": charts,
         "outside": outside,
+        "side_mounts": side_mounts(root, snapshot, &ordered)?,
     });
     Ok(Export { document, cards: ordered.len(), outside: outside_count, missing })
 }
@@ -549,7 +550,7 @@ fn collect_connection(root: &Path, snapshot: &Snapshot, tree_name: &str, seconds
             })
         })
         .collect();
-    let portable = Portable::new(&handle);
+    let portable = Portable::with_members(&handle, included_set.clone());
     let mut cards = Vec::with_capacity(included.len());
     let mut outside: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut authored = Vec::new();
@@ -628,4 +629,34 @@ fn collect_connection(root: &Path, snapshot: &Snapshot, tree_name: &str, seconds
     });
     let _ = read.rollback();
     Ok(Export { document, cards: included.len(), outside: outside_count, missing })
+}
+
+/// The Topic-side mounts beside the Cards of a Topic tree export (proposal §9.1.5), so the offline
+/// reader shows the shelf: each mount's anchor, coordinate, Card, title, gloss and state.
+fn side_mounts(root: &Path, snapshot: &Snapshot, members: &[&Card]) -> Result<Vec<Value>> {
+    let conn = crate::open_db(root)?;
+    if !crate::coord::installed(&conn) {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for card in members {
+        if crate::coord::TreeRole::of(card) != crate::coord::TreeRole::Topic {
+            continue;
+        }
+        let card_id = crate::coord::card_id_of_row(&conn, card.row_id)?;
+        for p in crate::coord::attachments_of_anchor(&conn, &card_id)? {
+            let identity = crate::coord::identity(&conn, &p.card_id)?.context("unknown Card")?;
+            let home = crate::coord::address_of_card_id(&conn, &p.card_id)?;
+            out.push(json!({
+                "anchor": card.address,
+                "placement_id": p.placement_id,
+                "coord": crate::coord::coordinate_of(&conn, &p)?,
+                "home_address": home.clone().unwrap_or(identity.last_address.clone()),
+                "title": home.as_ref().map(|address| snapshot.title(address)).unwrap_or(identity.last_title.clone()),
+                "gloss": p.gloss,
+                "status": if home.is_some() { "live" } else { "missing" },
+            }));
+        }
+    }
+    Ok(out)
 }

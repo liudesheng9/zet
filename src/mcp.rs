@@ -1161,7 +1161,9 @@ fn optional_emphasis(args: &Value) -> Result<Option<Option<Emphasis>>> {
 
 fn optional_zone(args: &Value) -> Result<Option<&'static str>> {
     match args.get("zone").and_then(Value::as_str) {
-        None | Some("all") => Ok(None),
+        None => Ok(None),
+        // An explicit `all` asks for every Zone, the Connection trees included.
+        Some("all") => Ok(Some("all")),
         Some("topic") | Some("topics") => Ok(Some("topic")),
         Some("literature") => Ok(Some("literature")),
         Some("connection") | Some("connections") => Ok(Some("connection")),
@@ -1910,7 +1912,7 @@ fn connection_tool_definitions() -> Vec<Value> {
         tool("review_source", "Mark a mounted source reviewed",
             "Owner action on a locked host: record that the current version of a mounted Card that differs from its lock-time version was reviewed. The reviewed fingerprint you were shown must still be current. It never changes the Lock seal.",
             json!({"placement_id": s("The station."), "reviewed_fp": s("The current fingerprint you reviewed."), "lock_id": {"type": "integer", "description": "The Lock the review was shown under; a different active Lock refuses the review."}, "note": s("Optional note.")}),
-            &["placement_id", "reviewed_fp"], false, false),
+            &["placement_id", "reviewed_fp", "lock_id"], false, false),
     ]
 
 }

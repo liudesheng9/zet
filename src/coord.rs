@@ -1157,6 +1157,14 @@ pub(crate) fn attachments_of_anchor(conn: &Connection, anchor_card_id: &str) -> 
     Ok(rows)
 }
 
+/// Whether the mounts beside one anchor are numbered 1..N in order.
+pub(crate) fn attachments_dense(conn: &Connection, anchor_card_id: &str) -> Result<bool> {
+    Ok(attachments_of_anchor(conn, anchor_card_id)?
+        .iter()
+        .enumerate()
+        .all(|(i, p)| p.ordinal == Some(i as u64 + 1)))
+}
+
 /// The current coordinate of any placement.
 pub(crate) fn coordinate_of(conn: &Connection, placement: &Placement) -> Result<String> {
     match placement.edge {
@@ -1363,8 +1371,11 @@ pub(crate) fn delete_impact_lines(
         lines.push(format!("{beside} Topic-side mount(s) beside the deleted Topic Cards are removed with them"));
     }
     for address in delete_set {
+        // A native Card whose tree stays keeps its home station as a Missing mount; an emptied
+        // tree (keep-root) or a deleted tree removes that station with the rest.
         if let Some(handle) = Handle::parse(address).filter(|h| h.local.is_some())
             && !delete_set.contains(&Handle::root(handle.tree))
+            && keep_root != Some(Handle::root(handle.tree).as_str())
         {
             lines.push(format!("{address} leaves its home station in ~{} as a Missing mount (unplace or rebind it there)", handle.tree));
         }

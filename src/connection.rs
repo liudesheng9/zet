@@ -151,7 +151,7 @@ fn hash_value(value: &Value) -> String {
 fn request_core(tool: &str, args: &Value) -> Value {
     let mut core = args.clone();
     if let Some(map) = core.as_object_mut() {
-        for key in ["confirm", "plan_hash", "expected_revision", "op_key"] {
+        for key in ["confirm", "plan_hash", "expected_revision", "op_key", "preview"] {
             map.remove(key);
         }
     }
@@ -206,6 +206,15 @@ pub(crate) fn run(root: &Path, access: Access, tool: &str, args: &Value) -> Resu
     };
     let value = write(&mut ctx)?;
     let applied = value.get("applied").and_then(Value::as_bool).unwrap_or(true);
+    // `preview: true` asks what would happen and never writes, also for a write that would
+    // otherwise apply at once.
+    if args.get("preview").and_then(Value::as_bool) == Some(true) && applied {
+        drop(tx);
+        let mut value = value;
+        value["applied"] = json!(false);
+        value["preview"] = json!(true);
+        return Ok(value);
+    }
     if !applied {
         // A plan writes nothing; the transaction rolls back.
         drop(tx);
@@ -1154,6 +1163,11 @@ fn place(ctx: &mut Ctx) -> Result<Value> {
         _ => Vec::new(),
     };
     let (review, decided, missing) = gloss_review(&shape, &affected, ctx.args)?;
+    // A confirmation sent for a plan is checked even when this placement now needs none (another
+    // client cleared the gloss under review): a stale plan never applies.
+    if review.is_empty() && ctx.args.get("confirm").is_some() {
+        ctx.confirmed("place", &[], &json!({"gloss_review": review}))?;
+    }
     if !review.is_empty() {
         let lines: Vec<String> = review
             .iter()
@@ -1632,6 +1646,12 @@ fn move_attachment(ctx: &mut Ctx, moving: Placement, host: Host) -> Result<Value
     }
     let anchor_id = coord::card_id_of_row(conn, anchor.row_id)?;
     let old_anchor = moving.anchor_card_id.clone().unwrap_or_default();
+    if let Some(b) = opt_str(&destination, "before")? {
+        let sibling = coord::resolve_station(conn, b)?;
+        if sibling.anchor_card_id.as_deref() != Some(anchor_id.as_str()) || sibling.placement_id == moving.placement_id {
+            bail!("`before` names a mount beside the destination Card");
+        }
+    }
     let mut lines = vec![format!("move mount {} beside {}", coord::coordinate_of(conn, &moving)?, anchor.address)];
     let (review, decision, missing) = if old_anchor != anchor_id {
         single_gloss_review(&moving, ctx.args)?
@@ -1675,6 +1695,9 @@ fn move_attachment(ctx: &mut Ctx, moving: Placement, host: Host) -> Result<Value
     }
     if old_anchor != anchor_id {
         compact_attachments(conn, &old_anchor)?;
+    }
+    if !coord::attachments_dense(conn, &anchor_id)? {
+        bail!("the mounts beside {} would not be numbered 1..N", anchor.address);
     }
     ctx.changed = true;
     let moved = coord::placement(conn, &moving.placement_id)?.context("moved mount")?;

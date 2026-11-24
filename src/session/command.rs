@@ -1050,7 +1050,9 @@ fn execute_command(
             // R232 (S08-AC02): no confirmation is asked for a deletion the Lock forbids. R030: a
             // Locked tree is refused even when its delete set is empty.
             crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Delete(&plan))?;
-            interaction.confirm(&plan.confirmation, &crate::delete_verification_lines(&plan))?;
+            let mut lines = crate::delete_verification_lines(&plan);
+            lines.extend(crate::coord::delete_impact_lines(&conn, &plan.delete_set, plan.kept_root().map(|(root, _)| root))?);
+            interaction.confirm(&plan.confirmation, &lines)?;
             let result = crate::apply_delete_plan(&mut conn, plan)?;
             state.pointer = match result.root_kept {
                 Some(root_address) => Pointer::Card(root_address),

@@ -2370,6 +2370,9 @@ impl<'a> Target<'a> {
 /// the export carries each chart page and each figure once, however many Cards show it.
 pub(crate) struct Portable {
     tree: String,
+    /// The Cards a Connection-tree export includes (its stations' live Cards, from any tree); a
+    /// tree export holds the members of its one tree.
+    members: Option<BTreeSet<String>>,
     charts: RefCell<BTreeMap<String, String>>,
     figures: RefCell<BTreeSet<String>>,
 }
@@ -2378,8 +2381,26 @@ impl Portable {
     pub(crate) fn new(tree: &str) -> Self {
         Self {
             tree: tree.to_string(),
+            members: None,
             charts: RefCell::default(),
             figures: RefCell::default(),
+        }
+    }
+
+    /// A Connection-tree export: its included Cards decide what opens inside it.
+    pub(crate) fn with_members(tree: &str, members: BTreeSet<String>) -> Self {
+        Self {
+            members: Some(members),
+            ..Self::new(tree)
+        }
+    }
+
+    /// Whether a Link target opens inside this export.
+    fn inside(&self, target: &str, snapshot: &Snapshot) -> bool {
+        let target = snapshot.canonical(target);
+        match &self.members {
+            Some(members) => members.contains(target),
+            None => crate::tree_id(target) == self.tree,
         }
     }
 
@@ -2484,7 +2505,10 @@ fn render_card(body: &str, snapshot: &Snapshot, target: Target<'_>) -> String {
             match event {
                 Event::Text(text) => chart_source.push_str(&text),
                 Event::End(TagEnd::CodeBlock) => {
-                    let page = chart_page(chart_source, snapshot, target.tree());
+                    let page = chart_page(chart_source, snapshot, match target {
+                        Target::Portable(portable) => Some(portable),
+                        Target::Gui(_) => None,
+                    });
                     let id = target.keep_chart(page);
                     events.push(Event::Html(
                         format!(
@@ -2885,15 +2909,15 @@ fn longest_backtick_run(text: &str) -> usize {
 /// names with `[[address]]` or a Term `[[label@address]]`. The store keeps this
 /// small template; [`serve_chart_page`] fills in the theme and inlines the scripts. Given a `tree`,
 /// a Card outside it does not count as existing: a portable chart has no way to open it.
-fn chart_page(source: &str, snapshot: &Snapshot, tree: Option<&str>) -> String {
+fn chart_page(source: &str, snapshot: &Snapshot, portable: Option<&Portable>) -> String {
     let mut links = serde_json::Map::new();
     // The one lexical scan: a name inside a code span is no Link there either, and a Term use
     // names the head's address.
     for occurrence in crate::link::LinkBody::for_rendering(source).occurrences() {
         let target = occurrence.target;
         if !target.is_empty() && target.len() < 200 && !target.contains(['\n', '[', ']']) {
-            let exists = snapshot.by_address.contains_key(target)
-                && tree.is_none_or(|tree| crate::tree_id(target) == tree);
+            let exists = snapshot.by_address.contains_key(snapshot.canonical(target))
+                && portable.is_none_or(|portable| portable.inside(target, snapshot));
             links.insert(
                 target.to_string(),
                 json!({ "title": snapshot.title(target), "exists": exists }),
@@ -3008,8 +3032,8 @@ fn link_html(link: &ClassifiedLink, snapshot: &Snapshot, reader: Target<'_>) -> 
     } else {
         link.status == LinkStatus::Broken
     };
-    if let (Some(tree), false) = (reader.tree(), broken) {
-        return portable_link_html(link, snapshot, tree);
+    if let (Target::Portable(portable), false) = (reader, broken) {
+        return portable_link_html(link, snapshot, portable);
     }
     let target = escape_html(link.target);
     let route = percent_encode(link.target);
@@ -3057,9 +3081,9 @@ fn link_html(link: &ClassifiedLink, snapshot: &Snapshot, reader: Target<'_>) -> 
 /// A live Link in a portable export (#258). Inside the tree it is the route alone: Links are the
 /// largest part of an export, so it repeats nothing the reader does not use. Outside the tree it
 /// keeps what the sentence needs and goes nowhere, because that Card is not in the export.
-fn portable_link_html(link: &ClassifiedLink, snapshot: &Snapshot, tree: &str) -> String {
+fn portable_link_html(link: &ClassifiedLink, snapshot: &Snapshot, portable: &Portable) -> String {
     const OUTSIDE: &str = "not in this portable export";
-    let inside = crate::tree_id(link.target) == tree;
+    let inside = portable.inside(link.target, snapshot);
     let route = percent_encode(link.target);
     let address = escape_html(link.target);
     if link.form == LinkForm::Term {

@@ -1094,13 +1094,15 @@ impl Snapshot {
             .map(|body| {
                 body.occurrences()
                     .iter()
-                    .filter(|occurrence| seen.insert(occurrence.target.to_string()))
+                    // A promoted Card cited by its permanent handle is the Card at its address.
+                    .filter(|occurrence| seen.insert(self.canonical(occurrence.target).to_string()))
                     .map(|occurrence| {
-                        let exists = self.by_address.contains_key(occurrence.target);
+                        let target = self.canonical(occurrence.target);
+                        let exists = self.by_address.contains_key(target);
                         let mut value = json!({
-                            "address": occurrence.target,
-                            "title": self.title(occurrence.target),
-                            "workspace": self.workspace(occurrence.target).map(Workspace::id),
+                            "address": target,
+                            "title": self.title(target),
+                            "workspace": self.workspace(target).map(Workspace::id),
                             "broken": !exists,
                         });
                         // A Term use names the authored word beside its target, so an editor can

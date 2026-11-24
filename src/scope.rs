@@ -157,6 +157,7 @@ impl WriteScope {
                 }
             }
             self.check_literature(conn, tool, args)?;
+            self.check_rewrites(conn, tool, args)?;
         }
         if let Some(allowed) = &self.allow {
             self.check_allowed(tool, args, allowed, made_here)?;
@@ -236,6 +237,44 @@ impl WriteScope {
         }
         Ok(())
     }
+    /// A change that moves, renames or deletes Cards rewrites the Links of every Card that cites
+    /// them: under the Literature scope, none of those bodies may be a Connection-tree Card's.
+    fn check_rewrites(&self, conn: &Connection, tool: &str, args: &Value) -> Result<()> {
+        if !matches!(
+            tool,
+            "edit_literature_metadata" | "move_card" | "delete_card" | "insert_card" | "move_span" | "delete_span" | "indent" | "outdent" | "reorder"
+        ) || !crate::link_index::ready(conn)
+        {
+            return Ok(());
+        }
+        let mut moved = BTreeSet::new();
+        for field in ["at", "before", "from", "parent"] {
+            let Some(named) = args.get(field).and_then(Value::as_str) else { continue };
+            let Ok(card) = crate::load_card(conn, named) else { continue };
+            if crate::is_tree_root(&card) {
+                let tree = crate::tree_id(&card.address).to_string();
+                moved.extend(crate::addresses(conn)?.into_iter().filter(|a| crate::is_tree_member(a, &tree)));
+            } else {
+                moved.extend(crate::descendant_locations(conn, &card.address)?);
+            }
+        }
+        let mut spellings = BTreeSet::new();
+        for address in &moved {
+            spellings.extend(crate::coord::spellings(conn, address)?);
+        }
+        for source in crate::link_index::rewrite_sources(conn, spellings.iter())? {
+            if source.starts_with('~') {
+                return Err(self.refuse(
+                    tool,
+                    args.get("at").and_then(Value::as_str).unwrap_or_default(),
+                    "connection_tree",
+                    format!("this connection writes only Literature trees: the change would rewrite Links in the Connection-tree Card `{source}`"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Whether the Card a change names (not a new Card's parent) is a Hub Card.
     fn names_hub(&self, conn: &Connection, tool: &str, at: &str) -> Result<bool> {
         if !matches!(tool, "edit_card" | "move_card" | "delete_card") || at.is_empty() {

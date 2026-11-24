@@ -943,10 +943,20 @@ fn gather(
 
 /// The Literature tree the `来源`/`出处`/`Source` line of a body names first, if it exists.
 fn source_book(conn: &Connection, body: &str) -> Result<Option<String>> {
+    // The `来源` line decides, as the Finding rules read it; `出处` and `Source` only without one.
+    for labels in [&["来源"][..], &["出处", "Source", "source"][..]] {
+        if let Some(book) = source_book_by(conn, body, labels)? {
+            return Ok(Some(book));
+        }
+    }
+    Ok(None)
+}
+
+fn source_book_by(conn: &Connection, body: &str, labels: &[&str]) -> Result<Option<String>> {
     for line in body.lines() {
         // The label may be bold or a list item: `**来源**：`, `- 来源：`.
         let trimmed = line.trim_start().trim_start_matches(['-', '*', '+', ' ']);
-        let Some(rest) = ["来源", "出处", "Source", "source"].iter().find_map(|label| trimmed.strip_prefix(label)) else {
+        let Some(rest) = labels.iter().find_map(|label| trimmed.strip_prefix(label)) else {
             continue;
         };
         let rest = rest.trim_start().trim_start_matches('*').trim_start();

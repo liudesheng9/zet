@@ -1309,6 +1309,17 @@ pub fn title_similarity(a: &str, b: &str) -> f64 {
 mod tests {
     use super::*;
 
+    /// Multi-tree coordinates: a Connection handle or coordinate (`~7`, `~7#4`, `~7/2`) is no book.
+    #[test]
+    fn connection_handles_and_coordinates_are_no_books() {
+        for address in ["~7", "~7#4", "~7/2", "~7/2|a"] {
+            assert_eq!(literature_tree(address), None, "{address}");
+        }
+        assert_eq!(literature_tree("Hart1995"), Some("Hart1995".to_string()));
+        assert_eq!(literature_tree("Hart1995/4"), Some("Hart1995".to_string()));
+        assert_eq!(literature_tree("3/0"), None);
+    }
+
     /// R0250/R0251 (S10, #151): one shared Lexical scan reports the whole macro, the address, and
     /// the optional Term label as UTF-8 byte ranges into the original text.
     #[test]

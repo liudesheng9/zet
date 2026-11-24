@@ -1048,9 +1048,10 @@
           updates[item.placement_id] = checked.gloss;
         }
         extra = { gloss_updates: { ...(args.gloss_updates || {}), ...updates } };
-        // The decisions are part of the request: plan again with them, then confirm that plan.
-        answer = await connApi(tool, { ...args, ...extra });
-        if (answer.applied !== false) return answer;
+        // The decisions are part of the request: plan again with them (a preview never writes),
+        // then confirm that plan; a write that needs no confirmation any more is sent as it is.
+        answer = await connApi(tool, { ...args, ...extra, preview: true });
+        if (!answer.confirm) return connApi(tool, { ...args, ...extra });
       }
       const ok = await confirmPlan(title, answer.lines || [], answer.confirm);
       if (!ok) return null;
@@ -1078,7 +1079,8 @@
   }
 
   /** Load the tree and station a `#/conn/…` or `#/place/…` route names, then the Card standing there. */
-  const stationLoads = ZtLayout.latestOnly();
+  // Card and station loads share one generation: whichever the reader asked for last wins.
+  const stationLoads = { begin: () => pointerLoads.begin(), isLatest: (seq) => pointerLoads.isLatest(seq) };
   async function loadStation(parsed) {
     const seq = stationLoads.begin();
     let treeName = null;
@@ -1540,6 +1542,8 @@
     if (pointer && /^~\d+$/.test(pointer)) { openConnTree(pointer); return; }
     if (pointer && /^~\d+#\d+$/.test(pointer)) {
       connApi('list_placements', { at: pointer }).then((listed) => {
+        // A promoted Card opens at its Topic home; a native Card at its home station.
+        if (listed.home && !listed.home.startsWith('~')) { go(listed.home); return; }
         const home = (listed.placements || []).find((p) => p.host === pointer.split('#')[0]);
         if (home) openStation(home.placement_id);
         else go(listed.home || null);

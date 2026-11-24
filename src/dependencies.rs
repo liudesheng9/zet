@@ -85,8 +85,9 @@ fn unit_carriers(conn: &Connection, head: &str) -> Result<Vec<String>> {
 
 /// Whether a Model part carries a proof or derivation step (`证明：…`, `推导…`), not a statement.
 fn is_proof_part(facet: &crate::model::Facet) -> bool {
-    let id = facet.id().trim().to_lowercase();
-    crate::model::is_derivation(facet) || id.starts_with("证明") || id.starts_with("proof")
+    use crate::math::Role;
+    crate::model::is_derivation(facet)
+        || matches!(crate::math::role(facet), Some(Role::Step | Role::Plan | Role::AltProof | Role::Derivation))
 }
 
 #[derive(Clone)]
@@ -318,6 +319,8 @@ pub(crate) fn get(conn: &Connection, args: &Value) -> Result<Value> {
             for occ in occurrences_from(conn, &carrier)? {
                 let Some(class) = counts(&occ.kind) else { continue };
                 occurrences_seen += 1;
+                // A Term use is vocabulary, never a reasoning edge or a cycle.
+                let vocabulary_only = class == "vocabulary";
                 if occurrences_seen > MAX_OCCURRENCES {
                     truncated = true;
                     break;
@@ -326,8 +329,8 @@ pub(crate) fn get(conn: &Connection, args: &Value) -> Result<Value> {
                 let (target, reached) = node_of(conn, &target_address, unit_scope)?;
                 if target.address == node.address {
                     // A Link between two carriers of one unit is internal; a Card that cites itself
-                    // is a genuine self-loop and reaches the cycle report.
-                    if target_address == occ.carrier {
+                    // with a reasoning Link is a genuine self-loop and reaches the cycle report.
+                    if target_address == occ.carrier && !vocabulary_only {
                         let mut ev = evidence(conn, &mut bodies, &occ)?;
                         ev["via_model"] = json!(node.unit);
                         edges.entry((node.address.clone(), node.address.clone())).or_default().push(ev);
@@ -375,6 +378,33 @@ pub(crate) fn get(conn: &Connection, args: &Value) -> Result<Value> {
                 continue;
             }
             let (source, _) = node_of(conn, &occ.carrier, unit_scope)?;
+            // A shared part belongs to every Model that names it: each of them is a user too.
+            let mut users = vec![source];
+            if unit_scope && let Ok(part) = crate::load_card(conn, &occ.carrier) && part.facet.is_some() {
+                for (head_address,) in conn
+                    .prepare_cached("SELECT DISTINCT l.source FROM links l JOIN cards c ON c.location = l.source WHERE l.target = ?1 AND c.card_type = 'model' AND c.model_facet IS NULL")?
+                    .query_map([&occ.carrier], |r| Ok((r.get::<_, String>(0)?,)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                {
+                    if !users.iter().any(|u| u.address == head_address) {
+                        users.push(node_of(conn, &head_address, unit_scope)?.0);
+                    }
+                }
+            }
+            let source = users.remove(0);
+            for extra in users {
+                if extra.address == focus.address {
+                    continue;
+                }
+                let mut ev = evidence(conn, &mut bodies, &occ)?;
+                ev["via_model"] = json!(extra.address);
+                ev["class"] = json!(class);
+                if class == "vocabulary" || (!nodes.contains_key(&extra.address) && nodes.len() >= max_nodes) {
+                    continue;
+                }
+                dependents.entry(extra.address.clone()).or_default().push(ev);
+                nodes.entry(extra.address.clone()).or_insert(extra);
+            }
             if source.address == focus.address {
                 continue;
             }
@@ -485,8 +515,7 @@ fn overlay_value(
         // Only a directed connection stating dependence matches an authored rests-on edge: its kind
         // is rests-on, or it carries neither a kind nor a label (a label such as "objects to" is a
         // different claim).
-        let compatible = e.directed
-            && (e.kind.as_deref() == Some("rests-on") || (e.kind.is_none() && e.label.is_none()));
+        let compatible = e.directed && e.kind.as_deref() == Some("rests-on");
         let value = crate::connection::edge_value(conn, &shape, &e)?;
         if compatible
             && let (Some(f), Some(t)) = (&from_node, &to_node)
