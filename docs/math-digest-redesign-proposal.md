@@ -30,6 +30,8 @@ An end-to-end audit of `zt-math-digest` and its first live mathematics tree, `th
 
 > **The chapter owns the reading route; the typed mathematical unit owns the mathematics; the Term head owns lookup; and one accepted source plan lets scripts verify that each has done its job.**
 
+**Check consistency (owner principle, 2026-11-23, §3.7):** the criteria a DeepSeek job is given are the final criteria. The job's self-check, the stage's apply and ledger finish, and the final audit apply one rule set, written as one function with two callers. A job is never refused for a rule it could not see.
+
 This proposal lays out:
 - **Part 1:** Live empirical comparison (`thompson1914calculus` vs. economics and history trees in ZET) and concrete comprehension failures.
 - **Part 2:** Complete forensic root-cause catalog of the 9 verified pipeline/code bugs (Bugs A–I).
@@ -231,6 +233,47 @@ Two targeted Rust/GUI upgrades unlock the full value of ZET's existing Theory Bo
    - Allow a compact card to occupy a **single Learn station** (preventing a two-sentence proof from forcing four clicks), ensure two panels for the same card never spoiler-leak each other's hidden sections (especially `## 答案` before recall), and validate nonempty section content (including TeX, bold quotes, and `chart` fences).
    - Update `unit_report` so `no_example`, `no_nonexample`, and `no_intuition` accept either a dedicated part OR a validated inline section (never double-counting both for M13 core budget; allowing explicitly justified plan omissions rather than fabricated contrasts).
 
+### 3.7 Check Consistency: A Job's Criteria Are the Final Criteria (Owner Principle, 2026-11-23)
+
+**Principle.** The criteria a DeepSeek job is given are identical to the criteria that finally judge its work. Three checks judge every job's output:
+
+1. the job's own **self-check**, run before it answers;
+2. the script's **apply and the ledger finish**, which write the result or refuse it and then settle the unit;
+3. the **final audit** and the release gate.
+
+All three apply one rule set. A job is never refused, failed or left as a residual fault for a rule it could not see.
+
+**Mechanism.** The rule set is one function in the compiler, never a paraphrase in a prompt.
+
+- The apply calls that function.
+- The job's SELF-CHECK command (`zt-digest … -Step <x>-check -Job <id>`) calls the same function and prints each fault the apply or the finish would raise.
+- Each job file ends with that command, and the job runs it until it prints `faults: 0`.
+- The ledger finish checks only what the self-check also reports (completeness of verdicts, kept Links, the recorded before and after of a fix), so a passing self-check means a settling unit.
+- A prompt may explain a rule, but the prompt never defines one.
+
+**Why (evidence).** The full Rudin pilot (chapters 1–3, 2026-11-23) needed six resumes before `complete:true`. Almost every failure had one shape: a job was judged by a stricter or different check than the one it was given.
+
+| Pilot failure | Final check that refused it | What the job was told |
+|---|---|---|
+| Statement fixes refused for "dropping" every 结构 Link (1\|aa, 1\|u) | apply: the fix body replaces the whole head | the prompt's ambiguous phrase "整段正文" |
+| Step fixes refused for dropped Links (15\|ab, 15\|r) | apply: every Link of the old text kept | a prompt sentence, no check |
+| Two boundary candidates never reviewed | ledger finish: every supplied candidate reviewed | no check of completeness |
+| A Term draft that was one bare object (t025) | readiness: a `{"terms":[…]}` document | a self-check the job did not finish |
+| 13 hard style faults (R4, R13) in model parts | final audit: R4 and R13 block | `zt-check` faults the writer may leave (`"style": N`) |
+
+**Acceptance invariant.** For each job type, every refusal class of its apply, its ledger finish and the final audit appears in its self-check output. A refusal class with no self-check counterpart is a design fault of the stage, and the stage fixes it by extending the shared function, never by a prompt sentence. The invariant holds per job type.
+
+| Job type | Self-check (same function as the final check) | Status |
+|---|---|---|
+| Statement finder | `math -Step index-check` (packet check of the join) | done (zt-digest 0.57.0) |
+| Boundary review | `math -Step boundary-review-check` (a verdict for every supplied candidate, a `wrong` has its reason) | done (0.64.0) |
+| Proof review and repair | `math -Step proof-check` (`math::judge_fix`, plus the ledger's verdict completeness) | done (0.64.5) |
+| Model and part writers | `zt-check` with the audit's blocking policy, and the compiler's report gating `style` before finish | open: the writer may still answer with faults the audit blocks |
+| Boundary writers | items the apply drops (unit outside the batch, missing title) | open |
+| Theory writers | the `theory-apply` checks | open |
+
+**Relation to the first principles.** This principle changes no comprehension rule and no quality bar. It only makes every rule the stage already holds visible to the job at the moment the job can still meet it. It also keeps cost down: an omission caught by a self-check costs one more message in the same conversation, never a refused unit, a resume and a hand repair.
+
 ---
 
 ## Part 4: Visual Pedagogy, Concept Linking, and Acceptance Blueprint
@@ -314,6 +357,8 @@ flowchart TD
 | **8. Math-Check, Bounded Repair & Release Gate** | Script + bounded DeepSeek repair | Runs `math-check` (M1–M18 + placeholder/obligation checks) **before** `finalize` so bounded repair can actually fix math faults (fixing Bug H), then re-runs after the last write so final audit, link checks, Term state, and reader projections bind to the **same archive revision**. Release gate compares accepted IDs, built IDs, reviewed obligations, and published IDs, separating `checks_executed`, `blocking_faults`, and `ready_for_study`. An empty review queue passes **only** when the Stage-3 expected set is independently empty. |
 
 In P1a the Stage 1 inventory and the Stage 3 ownership columns are supplied by the interim projection of §3.3 ([`docs/math-digest-p1a-design.md`](math-digest-p1a-design.md) §2). Stages 1, 2 and 4 keep their roles: the script freezes leaves and chapters, DeepSeek proposes, the script accepts and allocates. No role decides an object twice.
+
+Every acceptance invariant in this table is one function with two callers: the stage's apply or finish, and the SELF-CHECK of the DeepSeek job that produces the stage's input (§3.7). A stage contract that a job's self-check cannot report is incomplete.
 
 ### 5.2 Job-Map Delta for `docs/agents/digest-job-map.md`
 
