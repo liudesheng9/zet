@@ -545,14 +545,43 @@ pub(crate) fn model(root: &Path, at: &str) -> Result<Value> {
     Ok(model)
 }
 
+/// The Card address a read names, and the station when it names one: a coordinate (`~7/2`,
+/// `3/2+1`) or `place:<uuid>` reads the Card standing there; a promoted Card's handle reads it at
+/// its current address. A station whose Card was deleted is refused with its last address.
+pub(crate) fn read_address(
+    conn: &Connection,
+    at: &str,
+) -> Result<(String, Option<crate::coord::Placement>)> {
+    if crate::coord::is_coordinate(at) || crate::coord::place_bookmark(at).is_some() {
+        let station = crate::coord::resolve_station(conn, at)?;
+        let identity = crate::coord::identity(conn, &station.card_id)?.context("unknown Card")?;
+        let Some(address) = crate::coord::address_of_card_id(conn, &station.card_id)? else {
+            bail!(
+                "missing mount: the Card at `{at}` was deleted at its home (last `{}`: {})",
+                identity.last_address,
+                identity.last_title
+            );
+        };
+        return Ok((address, Some(station)));
+    }
+    Ok((crate::coord::canonical(conn, at)?.unwrap_or_else(|| at.to_string()), None))
+}
+
 pub(crate) fn card(root: &Path, at: &str, term_links: TermLinks) -> Result<Value> {
     let started = std::time::Instant::now();
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
+    // A coordinate or station bookmark reads the Card standing there, with its station context; a
+    // promoted Card's handle reads the Card at its current address.
+    let (address, station) = read_address(&tx, at)?;
+    let at = address.as_str();
     let snapshot = context(&tx, &[at.to_string()], true)?;
     let mut result = card_value(&snapshot, at, term_links)?;
     if let Some(card) = snapshot.by_address.get(at) {
         attach_term_facts(&tx, &mut result, card)?;
+    }
+    if let Some(station) = station {
+        result["station"] = crate::connection::station_context(&tx, crate::Access::Agent, &station)?;
     }
     log_large_context(
         root,
@@ -625,14 +654,17 @@ pub(crate) fn cards(
     let tx = conn.transaction()?;
     let mut missing = Vec::new();
     let mut cards = Vec::new();
+    let mut resolved = Vec::new();
     for at in addresses {
-        if existing(&tx, at)? {
-            cards.push(crate::load_card(&tx, at)?);
+        let address = crate::coord::canonical(&tx, at)?.unwrap_or_else(|| at.clone());
+        if existing(&tx, &address)? {
+            cards.push(crate::load_card(&tx, &address)?);
+            resolved.push(address);
         } else {
             missing.push(at.clone());
         }
     }
-    let snapshot = (!text).then(|| context(&tx, addresses, true)).transpose()?;
+    let snapshot = (!text).then(|| context(&tx, &resolved, true)).transpose()?;
     // One Lock view for the whole lean read: every requested row's facts from one pair of queries,
     // so a lean `get_cards` and a full one answer the same annotations at one revision.
     let lean = match &snapshot {
@@ -907,11 +939,8 @@ pub(crate) fn broken(root: &Path, workspace: Option<crate::Workspace>) -> Result
             .filter(|o| o.target == target)
             .context("Link index drift in broken-link source; run `zt status --check-links`")?;
         let term_row = kind.as_deref() == Some("term");
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM cards WHERE location=?1 OR citation_key=?1)",
-            [&target],
-            |r| r.get(0),
-        )?;
+        // A promoted Card's handle reaches the Card at its current address.
+        let exists = crate::coord::canonical(&tx, &target)?.is_some();
         let reason = if !exists {
             crate::link::BrokenReason::Missing
         } else if term_row {
@@ -933,8 +962,11 @@ pub(crate) fn broken(root: &Path, workspace: Option<crate::Workspace>) -> Result
         };
         broken.push(json!({"source":source,"title":parsed.title,"workspace":card.workspace.id(),"target":target,"label":occurrence.label,"reason":reason.id(),"line":crate::link::line_around(&parsed.body,occurrence.macro_range.start)}));
     }
+    // Missing mounts are their own typed category: a station whose Card was deleted at its home,
+    // never a Broken textual Link.
+    let missing_mounts = crate::coord::missing_mounts(&tx, workspace)?;
     tx.commit()?;
-    Ok(json!({"broken":broken}))
+    Ok(json!({"broken":broken,"missing_mounts":missing_mounts}))
 }
 
 /// The persisted random archive identity and its resolved path: the evidence every bulk read and

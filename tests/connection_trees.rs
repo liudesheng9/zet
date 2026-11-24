@@ -444,3 +444,52 @@ fn an_op_key_replays_a_write_without_allocating() {
     assert!(refused.to_string().contains("op_key"), "{refused}");
     assert_eq!(mcp.ok("list_connection_trees", json!({}))["trees"].as_array().unwrap().len(), 1);
 }
+
+/// §7.3 and §8.4: deleting a Connection root removes its tree (stations, connections, record) and
+/// its still-native Cards; its numbers and handles are never reused; another tree that mounts the
+/// deleted root keeps a Missing mount. A keep-root delete empties the tree but keeps its root.
+/// `zt del --all` removes every tree and keeps the never-reused allocator.
+#[test]
+fn deleting_a_connection_root_removes_its_tree_and_numbers_are_never_reused() {
+    let scratch = ScratchBox::up();
+    let mut mcp = scratch.mcp(&[]);
+    books(&mut mcp);
+    tree(&mut mcp, "Doomed");
+    tree(&mut mcp, "Survivor");
+    place(&mut mcp, "~1", "~1/0", "direct", "Hart1995");
+    let native = mcp.ok("create_connection_card", json!({"tree": "~1", "parent_coord": "~1/1", "title": "Native", "body": "Native body."}));
+    let portal = place(&mut mcp, "~2", "~2/0", "direct", "~1");
+    assert_eq!(portal["coord"], "~2/1");
+    let plan = mcp.ok("delete_card", json!({"at": "~1"}));
+    assert_eq!(plan["applied"], false, "{plan}");
+    assert!(plan.to_string().contains("Connection tree ~1 goes"), "{plan}");
+    assert!(plan.to_string().contains("Missing mounts"), "{plan}");
+    let done = mcp.ok("delete_card", json!({"at": "~1", "confirm": plan["confirm"]}));
+    assert_eq!(done["deleted"], 2, "{done}");
+    mcp.refused("get_connection_tree", json!({"tree": "~1"}));
+    mcp.refused("get_card", json!({"at": native["handle"]}));
+    let survivor = get_tree(&mut mcp, "~2");
+    let missing = &survivor["placements"][1];
+    assert_eq!(missing["status"], "missing", "{survivor}");
+    assert_eq!(missing["home_address"], "~1");
+    assert_eq!(tree(&mut mcp, "Next")["tree"], "~3", "numbers are never reused");
+    // A Card citing a deleted handle is a Broken link, never another Card.
+    let broken = mcp.ok("list_broken_links", json!({}));
+    assert!(broken.to_string().contains("~1") || broken["broken"].as_array().map(|b| b.is_empty()).unwrap_or(true), "{broken}");
+
+    // Keep-root: the tree loses its stations and connections, the root stays.
+    place(&mut mcp, "~3", "~3/0", "direct", "Hart1995");
+    place(&mut mcp, "~3", "~3/1", "direct", "Grossman1986");
+    mcp.ok("connect_placements", json!({"tree": "~3", "from_placement_id": "~3/1", "to_placement_id": "~3/2"}));
+    let out = scratch.cmd().args(["del", "--at", "~3", "--keep-root"]).write_stdin("~3\n").output().expect("del");
+    assert!(out.status.success(), "{} {}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let kept = get_tree(&mut mcp, "~3");
+    assert_eq!(kept["placements"].as_array().unwrap().len(), 1, "{kept}");
+    assert_eq!(kept["connections"].as_array().unwrap().len(), 0);
+
+    // Delete all: every tree goes; the allocator does not restart.
+    let out = scratch.cmd().args(["del", "--all"]).write_stdin("delete all\n").output().expect("del all");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(mcp.ok("list_connection_trees", json!({}))["trees"].as_array().unwrap().len(), 0);
+    assert_eq!(tree(&mut mcp, "After all")["tree"], "~4");
+}

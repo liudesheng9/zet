@@ -430,6 +430,9 @@ fn station_value(
         value["origin"] = json!(if native { "native" } else { "mount" });
         value["can_edit_card"] = json!(can_edit_card(conn, access, &card));
         value["citation"] = json!(format!("[[{}]]", citation_address(conn, &placement.card_id, &card.address)?));
+        if let Some(drift) = crate::coord_lock::drift(conn, &placement.placement_id)? {
+            value["drift"] = drift;
+        }
         if card.is_lit || card.is_topic || (role == TreeRole::Connection && Handle::parse(&card.address).is_some_and(|h| h.local.is_none())) {
             // A mounted tree root is one portal node: it never expands its home tree.
             value["portal"] = json!({

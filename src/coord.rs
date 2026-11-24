@@ -1208,3 +1208,186 @@ pub(crate) fn resolve_station(conn: &Connection, text: &str) -> Result<Placement
     }
     resolve_coordinate(conn, text)
 }
+
+// ---------------------------------------------------------------------------------------------
+// Deletes: the host data a home delete owns
+// ---------------------------------------------------------------------------------------------
+
+/// Remove placements by ID (connections first), recording each ID as retired.
+fn remove_placements(conn: &Connection, ids: &[String], revision: i64) -> Result<()> {
+    for id in ids {
+        conn.execute(
+            "DELETE FROM placement_edges WHERE from_placement_id = ?1 OR to_placement_id = ?1",
+            [id],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO retired_placements(placement_id, host_tree_key, card_id, retired_at_rev)
+             SELECT placement_id, host_tree_key, card_id, ?2 FROM placements WHERE placement_id = ?1",
+            params![id, revision],
+        )?;
+    }
+    for id in ids {
+        conn.execute("DELETE FROM placements WHERE placement_id = ?1", [id])?;
+    }
+    Ok(())
+}
+
+/// Before a home delete removes the Cards at `delete_set`: remove the host data those Cards own.
+/// A deleted Connection root takes its whole tree (stations, connections, the tree record; its
+/// issued handles stay); a kept Connection root (`keep_root`) keeps only its root station; a deleted
+/// Topic Card takes the Topic-side mounts beside it. A station in another tree that mounts a deleted
+/// Card is never touched: it becomes a Missing mount.
+pub(crate) fn delete_hosts(
+    conn: &Connection,
+    delete_set: &BTreeSet<String>,
+    keep_root: Option<&str>,
+) -> Result<()> {
+    if !installed(conn) {
+        return Ok(());
+    }
+    let revision = next_revision(conn)?;
+    for address in delete_set {
+        if let Some(handle) = Handle::parse(address).filter(|h| h.local.is_none())
+            && let Some(tree) = tree_by_num(conn, handle.tree)?
+        {
+            let ids: Vec<String> = placements_of_host(conn, &tree.tree_id)?
+                .into_iter()
+                .map(|p| p.placement_id)
+                .collect();
+            remove_placements(conn, &ids, revision)?;
+            conn.execute("DELETE FROM connection_trees WHERE tree_id = ?1", [&tree.tree_id])?;
+            continue;
+        }
+        if TreeRole::of_address(address) == TreeRole::Topic {
+            let Ok(card) = crate::load_card(conn, address) else { continue };
+            let card_id = card_id_of_row(conn, card.row_id)?;
+            let ids: Vec<String> = attachments_of_anchor(conn, &card_id)?
+                .into_iter()
+                .map(|p| p.placement_id)
+                .collect();
+            remove_placements(conn, &ids, revision)?;
+        }
+    }
+    if let Some(root) = keep_root
+        && let Some(handle) = Handle::parse(root).filter(|h| h.local.is_none())
+        && let Some(tree) = tree_by_num(conn, handle.tree)?
+    {
+        let ids: Vec<String> = placements_of_host(conn, &tree.tree_id)?
+            .into_iter()
+            .filter(|p| p.edge != EdgeKind::Root)
+            .map(|p| p.placement_id)
+            .collect();
+        remove_placements(conn, &ids, revision)?;
+    }
+    Ok(())
+}
+
+/// Whether a keep-root delete of `root` has host data to remove even when no Card goes.
+pub(crate) fn keep_root_has_host_work(conn: &Connection, root: &str) -> Result<bool> {
+    let Some(handle) = Handle::parse(root).filter(|h| h.local.is_none()) else {
+        return Ok(false);
+    };
+    let Some(tree) = tree_by_num(conn, handle.tree)? else {
+        return Ok(false);
+    };
+    Ok(placements_of_host(conn, &tree.tree_id)?.len() > 1)
+}
+
+/// The whole-archive delete: every station, connection and tree record goes (their IDs retired);
+/// identities, issued handles, retired history and the Connection-tree allocator stay.
+pub(crate) fn delete_all_hosts(conn: &Connection) -> Result<()> {
+    if !installed(conn) {
+        return Ok(());
+    }
+    let revision = next_revision(conn)?;
+    conn.execute("DELETE FROM placement_edges", [])?;
+    conn.execute(
+        "INSERT OR IGNORE INTO retired_placements(placement_id, host_tree_key, card_id, retired_at_rev)
+         SELECT placement_id, host_tree_key, card_id, ?1 FROM placements",
+        [revision],
+    )?;
+    conn.execute("DELETE FROM placements", [])?;
+    conn.execute("DELETE FROM connection_trees", [])?;
+    Ok(())
+}
+
+/// The plan lines a home delete adds for the coordinate data it affects: trees it removes, and
+/// stations in other trees that will show as Missing mounts (with their connections, kept).
+pub(crate) fn delete_impact_lines(conn: &Connection, delete_set: &BTreeSet<String>) -> Result<Vec<String>> {
+    if !installed(conn) {
+        return Ok(Vec::new());
+    }
+    let mut lines = Vec::new();
+    let mut removed_hosts = BTreeSet::new();
+    for address in delete_set {
+        if let Some(handle) = Handle::parse(address).filter(|h| h.local.is_none())
+            && let Some(tree) = tree_by_num(conn, handle.tree)?
+        {
+            let n = placements_of_host(conn, &tree.tree_id)?.len();
+            lines.push(format!("Connection tree {} goes with its {n} station(s) and their connections; its handles stay issued", tree.handle()));
+            removed_hosts.insert(tree.tree_id);
+        }
+    }
+    let mut missing = 0;
+    let mut hosts = BTreeSet::new();
+    for address in delete_set {
+        let Ok(card) = crate::load_card(conn, address) else { continue };
+        let card_id = card_id_of_row(conn, card.row_id)?;
+        for p in placements_of_card(conn, &card_id)? {
+            if removed_hosts.contains(&p.host_tree_key) {
+                continue;
+            }
+            missing += 1;
+            hosts.insert(p.host_tree_key.clone());
+        }
+    }
+    if missing > 0 {
+        lines.push(format!(
+            "{missing} station(s) in {} other tree(s) will show as Missing mounts, keeping their glosses, children and connections",
+            hosts.len()
+        ));
+    }
+    Ok(lines)
+}
+
+/// Every Missing mount: a station whose Card was deleted at its home. `workspace` filters by the
+/// host tree's Workspace.
+pub(crate) fn missing_mounts(conn: &Connection, workspace: Option<Workspace>) -> Result<Vec<Value>> {
+    if !installed(conn) {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {PLACEMENT_COLUMNS} FROM placements p WHERE EXISTS (
+             SELECT 1 FROM card_identity i WHERE i.card_id = p.card_id AND i.status = 'retired')
+         ORDER BY host_kind, host_tree_key, placement_id"
+    ))?;
+    let rows = stmt
+        .query_map([], placement_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for p in rows {
+        let identity = identity(conn, &p.card_id)?.context("unknown Card")?;
+        let (host, host_workspace) = if p.host_kind == "topic" {
+            let root = format!("{}/0", p.host_tree_key);
+            let ws = crate::load_card(conn, &root).map(|c| c.workspace).unwrap_or(Workspace::Human);
+            (root, ws)
+        } else {
+            let Some(tree) = tree_by_id(conn, &p.host_tree_key)? else { continue };
+            (tree.handle(), tree.workspace)
+        };
+        if workspace.is_some_and(|w| w != host_workspace) {
+            continue;
+        }
+        out.push(json!({
+            "placement_id": p.placement_id,
+            "host": host,
+            "host_workspace": host_workspace.id(),
+            "coord": coordinate_of(conn, &p).ok(),
+            "card_id": p.card_id,
+            "last_address": identity.last_address,
+            "last_title": identity.last_title,
+            "gloss": p.gloss,
+        }));
+    }
+    Ok(out)
+}

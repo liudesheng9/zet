@@ -1631,6 +1631,7 @@ fn initialize_database(root: &Path) -> Result<()> {
         // rebuild and after the Lock tables exist, so the fence covers them too.
         let _lock = acquire_edit_lock(root, "coordinate storage")?;
         coord::ensure_schema(&conn, root)?;
+        coord_lock::ensure_schema(&conn)?;
     }
     drop(conn);
     Ok(())
@@ -2754,6 +2755,12 @@ fn is_literature_tree_id(value: &str) -> bool {
 
 /// The tree an address belongs to. A Citation key is its own Literature tree id.
 fn tree_id(address: &str) -> &str {
+    // A native Connection-tree Card `~7#4` belongs to tree `~7`; a coordinate `~7/2` names tree `~7`.
+    if address.starts_with('~')
+        && let Some((tree, _)) = address.split_once(['#', '/'])
+    {
+        return tree;
+    }
     address
         .split_once('/')
         .map(|(tree, _)| tree)
@@ -2769,11 +2776,17 @@ fn tree_root_address(tree: &str) -> String {
 }
 
 fn is_tree_member(address: &str, tree: &str) -> bool {
+    if tree.starts_with('~') {
+        // A Connection tree's home members: its root `~7` and its native Cards `~7#k`.
+        return address == tree || address.starts_with(&format!("{tree}#"));
+    }
     address == tree_root_address(tree) || address.starts_with(&format!("{tree}/"))
 }
 
 fn is_tree_root(card: &Card) -> bool {
-    card.is_topic || card.is_lit
+    card.is_topic
+        || card.is_lit
+        || coord::Handle::parse(&card.address).is_some_and(|h| h.local.is_none())
 }
 
 fn ensure_side_parent(card: &Card) -> Result<()> {
@@ -4172,7 +4185,11 @@ fn shell_delete(command: DeleteCommand) -> Result<()> {
     // R244: the Lock check happens before the prompt, so no confirmation word is typed for a
     // deletion the archive already forbids.
     tree_lock::ensure_unlocked(&conn, plan.gate())?;
+    coord_lock::ensure_delete_allowed(&conn, &plan.delete_set)?;
     print_delete_verification(&plan);
+    for line in coord::delete_impact_lines(&conn, &plan.delete_set)? {
+        println!("{line}");
+    }
     read_confirmation(&mut input, &plan.confirmation)?;
     let result = apply_delete_plan(&mut conn, plan)?;
     println!("{}", delete_success_line(&result));
@@ -4536,7 +4553,11 @@ fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteRe
     let root_kept = plan.kept_root().map(|(root, _)| root.to_string());
     let compaction = plan.compaction();
     let repoint = plan.repoint_mapping();
-    if plan.delete_set.is_empty() && repoint.is_empty() && compaction.is_empty() {
+    let host_work = match plan.kept_root() {
+        Some((root, _)) => coord::keep_root_has_host_work(conn, root)?,
+        None => false,
+    };
+    if plan.delete_set.is_empty() && repoint.is_empty() && compaction.is_empty() && !host_work {
         // An already empty unlocked Tree: the owner still confirmed the plan, and nothing is
         // written, so no revision moves and no derived data is rebuilt (R262).
         tree_lock::ensure_unlocked(&*conn, plan.gate())?;
@@ -4569,6 +4590,8 @@ fn apply_delete_plan_into(
     plan: &DeletePlan,
     changes: &mut link_index::Changes,
 ) -> Result<()> {
+    // A Lock that pins a mounted target refuses its delete on every path (`pinned-delete`).
+    coord_lock::ensure_delete_allowed(tx, &plan.delete_set)?;
     let compaction = plan.compaction();
     let repoint = plan.repoint_mapping();
     // Re-point first, so a side compaction that renames `into` carries the new Links along.
@@ -4596,6 +4619,8 @@ fn apply_delete_plan_into(
         }
     }
     changes.drop_sources(tx, &plan.delete_set)?;
+    // The host data the deleted Cards own; stations elsewhere become Missing mounts.
+    coord::delete_hosts(tx, &plan.delete_set, plan.kept_root().map(|(root, _)| root))?;
     for address in &plan.delete_set {
         tx.execute(
             "DELETE FROM cards WHERE location = ?1 OR citation_key = ?1",
@@ -4627,6 +4652,7 @@ fn apply_delete_all_plan(
     }
     let tx = conn.transaction()?;
     tree_lock::ensure_unlocked(&tx, tree_lock::Change::DeleteAll)?;
+    coord::delete_all_hosts(&tx)?;
     let deleted_count = tx.execute("DELETE FROM cards", [])?;
     if link_index::ready(&tx) {
         link_index::rebuild(&tx)?;
@@ -4717,6 +4743,10 @@ fn apply_location_mapping_tx(
 ) -> Result<()> {
     if mapping.is_empty() {
         return Ok(());
+    }
+    // A Card a locked Connection tree or Topic mounts keeps its address (`pinned-move`).
+    if !mapping.keys().all(|address| address.starts_with("__")) {
+        coord_lock::ensure_moves_allowed(conn, mapping.keys().filter(|a| !a.starts_with("__")))?;
     }
     tree_lock::ensure_unlocked(conn, tree_lock::Change::Mapping(mapping))?;
     let indexed = link_index::ready(conn);

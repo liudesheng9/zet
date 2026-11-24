@@ -351,6 +351,10 @@ pub(crate) fn final_tree_root(address: &str) -> Option<String> {
     if address.starts_with("__moving__") || address.starts_with("__deleted__") {
         return None;
     }
+    // A Connection-tree root `~7` and its native Cards `~7#k` belong to the tree of `~7`.
+    if let Some(handle) = crate::coord::Handle::parse(address) {
+        return Some(crate::coord::Handle::root(handle.tree));
+    }
     let tree = crate::tree_id(address);
     let is_literal_address =
         address == tree || address.starts_with(&format!("{tree}/"));
@@ -1476,6 +1480,10 @@ pub(crate) struct LockPlan {
     pub(crate) warnings: Vec<Warning>,
     pub(crate) seal: String,
     pub(crate) plan_hash: String,
+    /// The coordinate evidence the Lock also captures: the stations and tree connections of a
+    /// Connection tree, or the Topic-side mounts of a Topic, with the pins on mounted targets
+    /// (docs/multi-tree-coordinates-proposal.md §8.1). Null when the tree has none.
+    pub(crate) coordinates: Value,
 }
 
 impl LockPlan {
@@ -1488,7 +1496,7 @@ impl LockPlan {
     }
 
     pub(crate) fn plan_hash_value(&self) -> Value {
-        json!({
+        let mut value = json!({
             "action": "lock",
             "archive": self.archive,
             "revision": self.revision,
@@ -1513,7 +1521,11 @@ impl LockPlan {
                 .iter()
                 .map(|warning| json!([warning.source, warning.target]))
                 .collect::<Vec<_>>(),
-        })
+        });
+        if !self.coordinates.is_null() {
+            value["coordinates"] = self.coordinates.clone();
+        }
+        value
     }
 
     pub(crate) fn value(&self) -> Value {
@@ -1559,6 +1571,7 @@ impl LockPlan {
                 .iter()
                 .map(|warning| json!({"source": warning.source, "target": warning.target}))
                 .collect::<Vec<_>>(),
+            "coordinates": self.coordinates,
         })
     }
 
@@ -1671,7 +1684,7 @@ pub(crate) fn plan(
     let target = crate::load_card(conn, root)?;
     if !crate::is_tree_root(&target) {
         bail!(
-            "`{root}` is a Regular Card; only a Topic or Literature Tree root can be locked"
+            "`{root}` is a Regular Card; only a Topic, Literature or Connection Tree root can be locked"
         );
     }
     let tree = crate::tree_id(&target.address).to_string();
@@ -1686,7 +1699,13 @@ pub(crate) fn plan(
             existing.seal_display()
         );
     }
-    let zone = if target.is_lit { "literature" } else { "topic" };
+    let zone = if target.is_lit {
+        "literature"
+    } else if target.address.starts_with('~') {
+        "connection"
+    } else {
+        "topic"
+    };
     let cards = crate::load_cards(conn)?;
     let by_address = cards
         .iter()
@@ -1768,6 +1787,7 @@ pub(crate) fn plan(
         warnings: warnings.into_iter().collect(),
         seal,
         plan_hash: String::new(),
+        coordinates: crate::coord_lock::snapshot(conn, &target)?,
     };
     plan.plan_hash = hash_json(&plan.plan_hash_value());
     Ok(plan)
@@ -1917,6 +1937,7 @@ pub(crate) fn lock_tx(conn: &Connection, plan: &LockPlan) -> Result<Lock> {
             .collect::<Vec<_>>(),
     });
     append_event(conn, lock_id, "lock", &detail)?;
+    crate::coord_lock::capture(conn, lock_id, &plan.coordinates)?;
     crate::link_index::bump_revision(conn)?;
     load_lock(conn, lock_id)?.context("committed Lock could not be read back")
 }
@@ -2633,7 +2654,9 @@ impl StoredCard {
     }
 
     fn is_tree_root(&self) -> bool {
-        self.is_topic == 1 || self.is_lit == 1
+        self.is_topic == 1
+            || self.is_lit == 1
+            || crate::coord::Handle::parse(&self.address).is_some_and(|h| h.local.is_none())
     }
 }
 
@@ -2906,12 +2929,23 @@ fn latched_faults(conn: &Connection) -> Result<Vec<Latched>> {
 /// every other member is a Regular Card. Regular Cards carry neither flag in either tree kind:
 /// `is_lit` marks only the Literature root (the Citation-key row), as the cards table requires.
 fn member_kind_ok(lock: &StoredLock, card: &StoredCard) -> bool {
+    if lock.tree.starts_with('~') {
+        // A Connection tree: its root `~7` and native Cards `~7#k` carry neither flag.
+        return card.is_topic == 0 && card.is_lit == 0;
+    }
     let literature = crate::is_literature_tree_id(&lock.tree);
     let root = card.address == lock.root;
     card.is_topic == i64::from(root && !literature) && card.is_lit == i64::from(root && literature)
 }
 
 fn member_kind_expected(lock: &StoredLock, address: &str) -> &'static str {
+    if lock.tree.starts_with('~') {
+        return if address == lock.root {
+            "the Connection root"
+        } else {
+            "a Connection tree native Card"
+        };
+    }
     if crate::is_literature_tree_id(&lock.tree) {
         if address == lock.root {
             "the Literature root"
