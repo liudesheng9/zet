@@ -9,7 +9,7 @@ paths:
   - "tests/connection_*.rs"
   - "tests/coordinate_*.rs"
   - "tests/topic_attachments.rs"
-synced: 0dfb6327
+synced: 8b1f4345
 updated: 2026-11-24
 ---
 
