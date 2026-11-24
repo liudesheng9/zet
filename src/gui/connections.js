@@ -322,24 +322,11 @@
     };
   }
 
-  /** The colour key of a mapped tree: each home tree once, in the order the tree first shows it. */
-  function treeKey(map) {
-    const seen = new Map();
-    for (const c of map.cards) {
-      const s = c.station;
-      if (s.status === 'missing') continue;
-      if (!seen.has(s.tree)) seen.set(s.tree, { tree: s.tree, role: s.role, hue: s.hue, count: 0 });
-      seen.get(s.tree).count += 1;
-    }
-    const missing = map.cards.filter((c) => c.station.status === 'missing').length;
-    return { trees: [...seen.values()], missing };
-  }
-
   return {
     GLOSS_LIMIT, LABEL_LIMIT, NOTE_LIMIT, KINDS, DIRECTIONAL,
     outline, counts, focusEdges, panel, provenance, sentence, labelSuggestions,
     checkConnection, checkGloss, citation, bookmark, stationHash, treeHash, parseHash,
     portalLabel, glossReview, markByBytes,
-    PALETTE, OWN_HUE, treeOf, roleOf, treeHue, mapTree, focusCard, treeKey,
+    PALETTE, OWN_HUE, treeOf, roleOf, treeHue, mapTree, focusCard,
   };
 });

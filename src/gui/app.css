@@ -3185,20 +3185,9 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .beside-tab.marked { translate: 6px 0; color: var(--ink); box-shadow: 0 0 0 2px color-mix(in oklab, var(--tree-ink) 50%, transparent); }
 .beside-tab:hover, .beside-tab:focus-visible { translate: 6px 0; color: var(--ink); }
 .beside-tab.missing { background: transparent; border-style: dashed; text-decoration: line-through; }
-.beside-tab.more { font: 500 10px/16px var(--mono); color: var(--ink-faint); background: var(--stock); cursor: default; }
-.beside-tab.more:hover { translate: none; }
+.beside-tab.more { font: 500 10px/16px var(--mono); color: var(--ink-faint); background: var(--stock); cursor: pointer; }
+.beside-tab.more:hover, .beside-tab.more:focus-visible { color: var(--ink); }
 
-/* The colour key of a Connection tree: each home tree's card stock, named, before the line key. */
-.legend.conn { flex-wrap: wrap; row-gap: 6px; max-width: calc(100% - 220px); }
-.legend .tree-key { order: -1; flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-soft); }
-.legend .tk { white-space: nowrap; }
-.legend .tk i {
-  width: 16px; height: 11px; margin-right: 6px; vertical-align: -1px; border-radius: 1px;
-  border: 1px solid color-mix(in oklab, var(--tree-ink) 40%, var(--stock-edge)); border-top: 2px solid var(--tree-ink);
-  background: color-mix(in oklab, var(--tree-ink) calc(var(--tree-stock) * 2), var(--stock));
-}
-.legend .tk.missing i { background: transparent; border: 1px dashed var(--broken); }
-.legend.conn .lg-link-row, .legend:not(.conn) .lg-conn-row { display: none; }
 /* The Connection tree's own tools, at the desk's lower right. */
 .conn-bar { position: absolute; right: 16px; bottom: 14px; z-index: 6; display: flex; gap: 6px; }
 
@@ -3251,12 +3240,7 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
   content: ""; position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%;
   background: var(--tree-ink); box-shadow: 0 0 0 2px var(--paper);
 }
-.places-btn {
-  font: 500 11px var(--sans); color: var(--ink-faint); background: none; cursor: pointer;
-  border: 1px solid transparent; border-radius: 5px; padding: 3px 7px; transition: color .15s, border-color .15s;
-}
-.places-btn:hover, .places-btn:focus-visible { color: var(--ink); border-color: var(--line); }
-.places-menu {
+.more-menu {
   position: fixed; z-index: 60; min-width: 240px; max-width: 420px; display: flex; flex-direction: column; padding: 6px;
   background: var(--paper); border: 1px solid var(--hairline); border-radius: 10px; box-shadow: var(--shadow-lift);
   animation: appear .18s var(--ease);
@@ -3266,6 +3250,8 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
   border: 0; border-radius: 6px; background: none; text-align: left; font-size: 12.5px; color: var(--ink);
 }
 .pm-item:hover, .pm-item:focus-visible { background: var(--line-soft); outline: none; }
+.pm-item[disabled] { color: var(--ink-faint); cursor: not-allowed; background: none; }
+.pm-label { font-family: var(--sans); }
 .pm-coord { font-family: var(--mono); color: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 40)); }
 .pm-item:not([style]) .pm-coord { color: var(--ink); font-family: var(--sans); }
 .pm-tree { color: var(--ink-faint); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
@@ -3303,6 +3289,21 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .stamp.mini:not(.current) { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stamp.mini .addr-text { padding: 0; overflow: hidden; text-overflow: ellipsis; }
 .stamp.mini:focus-visible { outline: 2px solid var(--tree-ink); outline-offset: 2px; }
-.places-menu { max-height: min(60vh, 420px); overflow-y: auto; }
-.pm-item.danger .pm-coord { color: var(--broken); font-family: var(--sans); }
+.more-menu { max-height: min(60vh, 420px); overflow-y: auto; }
+.pm-item.danger:not([disabled]) .pm-label { color: var(--broken); }
 .more-btn { color: var(--ink-soft); }
+
+/* ↗ beside a stamp: show the Card at that coordinate. Quiet until the hand comes near; the stamp
+   itself only copies. */
+.stamps .place { display: inline-flex; align-items: center; gap: 2px; }
+.open-tab {
+  --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 40));
+  font: 600 12px/1 var(--sans); color: color-mix(in oklab, var(--tree-ink) 70%, var(--ink-faint)); cursor: pointer;
+  background: none; border: 1px solid transparent; border-radius: 4px; padding: 3px 4px; transition: color .15s, border-color .15s, background .15s;
+}
+.open-tab:hover, .open-tab:focus-visible { color: var(--tree-ink); border-color: color-mix(in oklab, var(--tree-ink) 45%, transparent); background: color-mix(in oklab, var(--tree-ink) 8%, transparent); outline: none; }
+.open-tab.mini { flex: none; font-size: 11px; padding: 0 3px; }
+/* The note: a pencil line that is also where it is written. Empty, it waits quietly. */
+button.station-note { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 0; }
+.station-note.empty { color: var(--ink-faint); font-size: 13px; }
+.station-note.empty::before { color: var(--ink-faint); }

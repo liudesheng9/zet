@@ -3672,7 +3672,6 @@ mod tests {
                  stable: C.treeHue('Hart1995') === C.treeHue('Hart1995') && C.PALETTE.includes(C.treeHue('Hart1995')),
                  gloss: by['~3/1'].station.gloss, missing: by['~3/3'].station.status,
                  focus: [f.address, f.outbound.map((l) => l.address), f.inbound_near],
-                 key: C.treeKey(m),
                  trees: [C.treeOf('~3#1'), C.treeOf('Hart1995/2|a'), C.roleOf('12'), C.roleOf('~9')],
                };
              })()",
@@ -3694,8 +3693,6 @@ mod tests {
         assert_eq!(value["gloss"], "why");
         assert_eq!(value["missing"], "missing");
         assert_eq!(value["focus"], json!(["~3/1", ["~3/2|a"], ["~3/2", "~3/2|a"]]));
-        assert_eq!(value["key"]["missing"], 1);
-        assert_eq!(value["key"]["trees"].as_array().unwrap().len(), 3, "the tree, Hart1995 and Will1985");
         assert_eq!(value["trees"], json!(["~3", "Hart1995", "topic", "connection"]));
     }
 
@@ -4481,8 +4478,9 @@ mod tests {
             "actionButton('Direct', 'n', () => newCard('direct'), writeOpts('direct',",
             "actionButton('Side', 'b', () => newCard('side'), regular ? writeOpts('side',",
             "actionButton('Insert', 'i', insertCard, regular ? writeOpts('insert',",
-            "actionButton('Move', 'm', () => moveCard(), regular ? writeOpts('move',",
-            "actionButton('Delete', 'del', deleteCard, writeOpts('delete', { danger: true })),",
+            // Move and Delete sit in More (zt 0.69.0); a gated entry stays there, greyed, with the reason.
+            "['Move this Card', () => moveCard(), false, regular ? (writeOpts('move').title || null) : 'Tree roots cannot move'],",
+            "['Delete Card', deleteCard, true, writeOpts('delete').title || null],",
         ] {
             assert!(reader.contains(button), "the button stays visible and asks the gate: {button}");
         }

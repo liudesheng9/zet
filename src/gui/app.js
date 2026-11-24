@@ -888,6 +888,8 @@
     const needCard = () => {
       if (!state.card) throw new Error(`${name} needs a Card; use go <target> first`);
     };
+    // At a station, n, b and del act on the station, under its rules, as its buttons and keys do.
+    if (atStation() && (name === 'n' || name === 'b' || name === 'del')) return stationCommand(name, rest);
     // S05 (#128): a write word on a Card whose Lock state refuses it says why before its own usage
     // check; the write's function checks the same gate again.
     if (state.card && ZtLock.COMMAND_WRITES[name]) gateWrite(state.card, ZtLock.COMMAND_WRITES[name]);
@@ -912,6 +914,7 @@
       case 'go':
         if (rest.length > 1) throw new Error('usage: go [<target>]');
         if (!rest.length) return go(null);
+        if (/^(place:|~)/.test(rest[0]) || /\+\d+$/.test(rest[0])) return go(rest[0]);
         if (!state.nodes.some((node) => node.address === rest[0])) {
           await refresh();
           if (!state.nodes.some((node) => node.address === rest[0])) {
@@ -1094,9 +1097,10 @@
       const here = (listed.placements || []).find((p) => p.placement_id === parsed.value);
       if (!here) throw new Error('placement removed: this station no longer exists');
       if (!/^~/.test(here.host)) {
-        // A Topic-side mount opens its Card; the shelf beside the anchor shows the station.
-        toast(`${here.coord} is a Topic-side mount beside a Card of ${here.host}`);
-        if (listed.home) go(listed.home);
+        // A Topic-side mount opens the Topic Card it stands beside, its tab marked, as everywhere.
+        state.markMount = here.placement_id;
+        state.markAnchor = here.coord.split('+')[0];
+        go(state.markAnchor);
         return;
       }
       treeName = here.host;
@@ -1133,23 +1137,6 @@
     const bar = $('#conn-bar');
     bar.replaceChildren(...[
       h('button', { class: 'mini-btn', text: 'Lock…', title: 'Lock this Connection tree: its stations, glosses and connections freeze and its mounted Cards are pinned', onclick: () => lockTree(conn.tree.tree).catch(fail) }),
-    ].filter(Boolean));
-  }
-
-  /** The colour key under a Connection tree: each home tree's card stock, named. */
-  function renderTreeKey(map) {
-    const key = CONN.treeKey(map);
-    const titles = new Map((state.overview.trees || []).map((tree) => [tree.tree, tree.title]));
-    const roles = { literature: 'Literature', topic: 'Topic', connection: 'Connection' };
-    // The key names each tree briefly (its Citation key or Topic title); the full title is one hover away.
-    const short = (text) => (text.length > 22 ? text.slice(0, 20) + '…' : text);
-    const name = (entry) => entry.tree === map.handle ? 'this tree' : entry.role === 'literature' ? entry.tree : short(titles.get(entry.tree) || entry.tree);
-    const full = (entry) => `${entry.tree === map.handle ? map.title : titles.get(entry.tree) || entry.tree} · ${roles[entry.role]}`;
-    // replaceChildren writes a null as the text "null": absent entries are filtered out first.
-    $('#tree-key').replaceChildren(...[
-      ...key.trees.map((entry) => h('span', { class: 'tk ' + entry.role, style: `--tree-h:${entry.hue}`, title: `${full(entry)} · ${entry.count} station${entry.count === 1 ? '' : 's'}` },
-        h('i'), name(entry))),
-      key.missing ? h('span', { class: 'tk missing' }, h('i'), `missing · ${key.missing}`) : null,
     ].filter(Boolean));
   }
 
@@ -1214,10 +1201,22 @@
     return stamp;
   }
 
-  /** The stamps on a card's head: one per coordinate, and Places to open the Card at another one. */
+  /**
+   * The stamps on a card's head: one per coordinate. The stamp copies its coordinate; the small ↗
+   * beside every stamp but the current one shows the Card in that tree. One gesture per object.
+   */
   function coordinateHead(card) {
     const list = cardCoordinates(card);
-    return h('span', { class: 'stamps', id: 'coord-stamps' }, ...list.map(coordinateStamp), placesButton(list));
+    return h('span', { class: 'stamps', id: 'coord-stamps' }, ...list.map((c) => h('span', { class: 'place' }, coordinateStamp(c), c.current ? null : openTab(c))));
+  }
+
+  /** ↗: show the Card at this coordinate, in its tree. */
+  function openTab(c) {
+    return h('button', {
+      class: 'open-tab', type: 'button', style: `--tree-h:${CONN.treeHue(c.tree, CONN.roleOf(c.tree))}`,
+      title: `Show ${c.coord} in ${treeName(c.tree)}`, 'aria-label': `Show ${c.coord} in ${treeName(c.tree)}`,
+      onclick: (event) => { event.stopPropagation(); Promise.resolve().then(() => openPlace(c)).catch(fail); },
+    }, '↗');
   }
 
   /** Refill the head's stamps once the Card's places have been read. */
@@ -1225,47 +1224,11 @@
     slot.replaceWith(coordinateHead(card));
   }
 
-  /** Places: open the Card at another of its coordinates, or copy this station's bookmark. */
-  function placesButton(list) {
-    const others = list.filter((c) => !c.current);
-    const station = state.conn && state.conn.station;
-    if (!others.length && !station) return null;
-    const button = h('button', { class: 'places-btn', type: 'button', 'aria-haspopup': 'menu', title: 'Open this Card at another of its places', text: 'Places ▾' });
-    button.addEventListener('click', (event) => { event.stopPropagation(); placesMenu(button, others, station); });
-    return button;
-  }
-
-  let closePlaces = null;
-  function placesMenu(anchor, others, station) {
-    if (closePlaces) closePlaces();
-    const close = () => { menu.remove(); document.removeEventListener('pointerdown', outside, true); window.removeEventListener('hashchange', close); closePlaces = null; };
-    const item = (label, sub, hue, run) => h('button', { class: 'pm-item', type: 'button', role: 'menuitem', style: hue == null ? null : `--tree-h:${hue}`, onclick: () => { close(); Promise.resolve().then(run).catch(fail); } },
-      h('span', { class: 'pm-coord', text: label }), sub ? h('span', { class: 'pm-tree', text: sub }) : null);
-    const menu = h('div', { class: 'places-menu', role: 'menu', 'aria-label': 'Places' },
-      ...others.map((c) => item(`Open at ${c.coord}`, c.home ? `home · ${treeName(c.tree)}` : treeName(c.tree), CONN.treeHue(c.tree, CONN.roleOf(c.tree)), () => openPlace(c))),
-      station ? item('Copy station bookmark', `place:${station.placement_id}`, null, async () => { if (await copyText(`place:${station.placement_id}`)) toast('station bookmark copied'); }) : null);
-    const outside = (event) => { if (!menu.contains(event.target) && event.target !== anchor) close(); };
-    menu.addEventListener('keydown', (event) => {
-      event.stopPropagation();
-      const items = [...menu.querySelectorAll('.pm-item')];
-      const at = items.indexOf(document.activeElement);
-      if (event.key === 'Escape') { event.preventDefault(); close(); anchor.focus(); }
-      else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); const next = items[(at + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]; if (next) next.focus(); }
-    });
-    const box = anchor.getBoundingClientRect();
-    menu.style.top = `${Math.round(box.bottom + 6)}px`;
-    menu.style.right = `${Math.round(Math.max(8, window.innerWidth - box.right))}px`;
-    document.body.append(menu);
-    document.addEventListener('pointerdown', outside, true);
-    window.addEventListener('hashchange', close);
-    closePlaces = close;
-    const first = menu.querySelector('button');
-    if (first) first.focus();
-  }
-
   /** Open the Card at one of its coordinates: its home (from a station, with a way back), a station,
    *  or a mount beside a Topic Card (that Card opens, its tab for this mount marked). */
   function openPlace(c) {
+    // An explicit switch of tree shows the tree.
+    if (state.mode !== 'map') setMode('map');
     if (c.home) return state.conn && state.conn.station ? excursion(state.conn.station) : go(c.coord);
     if (CONN.roleOf(c.tree) === 'connection') return openStation(c.placement_id);
     state.markMount = c.placement_id;
@@ -1276,13 +1239,14 @@
   /** The station's note: the curator's pencil line under the title, as the Map shows it. */
   function stationNote() {
     const s = state.conn && state.conn.station;
-    if (!s || !s.gloss) return null;
+    if (!s) return null;
     const editable = s.can_edit_placement && s.edge !== 'root';
-    return h('p', {
-      class: 'station-note' + (editable ? ' editable' : ''),
-      title: editable ? 'Why this Card stands here · click to change the note' : 'Why this Card stands here',
+    if (!s.gloss && !editable) return null;
+    return h(editable ? 'button' : 'p', {
+      class: 'station-note' + (editable ? ' editable' : '') + (s.gloss ? '' : ' empty'), type: editable ? 'button' : null,
+      title: editable ? 'Why this Card stands here · press to write or change the note' : 'Why this Card stands here',
       onclick: editable ? () => editGloss(s).catch(fail) : null,
-    }, s.gloss);
+    }, s.gloss || 'Add a note: why this Card stands here');
   }
 
   /** The station's tree connections, read like the Card's Links: one chip each, the far end's
@@ -1330,40 +1294,54 @@
     const readOnly = 'This tree is read-only here';
     const off = (title) => ({ disabled: true, title });
     const more = [
-      editHost && !root ? ['Move this station', () => moveStation(s)] : null,
-      s.status === 'missing' && editHost ? ['Rebind to another Card', () => rebindStation(s)] : null,
+      ['Move this station', () => moveStation(s), false, editHost && !root ? null : root ? 'The root stays' : readOnly],
+      s.status === 'missing' ? ['Rebind to another Card', () => rebindStation(s), false, editHost ? null : readOnly] : null,
       s.origin === 'native' && !root && live ? ['Promote to a Topic home', () => promoteNative(s)] : null,
-      editHost && !root && s.origin !== 'native' ? ['Unplace from this tree', () => unplaceStation(s), true] : null,
+      ['Copy station bookmark', async () => { if (await copyText(`place:${s.placement_id}`)) toast('station bookmark copied'); }],
+      ['Unplace from this tree', () => unplaceStation(s), true, editHost && !root && s.origin !== 'native' ? null : root ? 'The root stays' : s.origin === 'native' ? 'A Card written here is deleted at home, not unplaced' : readOnly],
     ].filter(Boolean);
     return [
-      actionButton('Note', null, () => editGloss(s), editHost && !root ? { title: 'Why this Card stands here: one line, pencilled on the card' } : off(root ? 'The root has no note' : readOnly)),
       actionButton('Connect', null, () => connectDialog(), editHost ? { title: 'Record a connection from this station to another station of the tree' } : off(readOnly)),
       actionButton('Mount', 'n', () => mountHere(), editHost ? { title: 'Mount a Card after this station' } : off(readOnly)),
       actionButton('Side', 'b', () => mountHere(undefined, true), editHost && !root ? { title: 'Mount a Card as a Side branch of this station' } : off(root ? 'The root takes no Side branch' : readOnly)),
-      more.length ? moreButton(more) : null,
+      moreButton(more),
     ];
   }
 
-  /** More ▾: the occasional actions of a station, in a small menu beside the frequent ones. */
+  /** More ▾: the occasional actions, in a small menu beside the frequent ones; the same menu at home
+   *  and at a station. An entry is [label, run, danger, why-not]: with a reason it stays, greyed. */
+  let closeMore = null;
   function moreButton(entries) {
-    const button = h('button', { class: 'btn more-btn', type: 'button', 'aria-haspopup': 'menu', title: 'Move, unplace and the other occasional actions of this station', text: 'More ▾' });
+    const button = h('button', { class: 'btn more-btn', type: 'button', 'aria-haspopup': 'menu', title: 'The occasional actions: ' + entries.map((e) => e[0]).join(', '), text: 'More ▾' });
     button.addEventListener('click', (event) => {
       event.stopPropagation();
-      if (closePlaces) closePlaces();
-      const close = () => { menu.remove(); document.removeEventListener('pointerdown', outside, true); window.removeEventListener('hashchange', close); closePlaces = null; };
-      const menu = h('div', { class: 'places-menu', role: 'menu', 'aria-label': 'More actions' },
-        ...entries.map(([label, run, danger]) => h('button', { class: 'pm-item' + (danger ? ' danger' : ''), type: 'button', role: 'menuitem', onclick: () => { close(); Promise.resolve().then(run).catch(fail); } }, h('span', { class: 'pm-coord', text: label }))));
+      if (closeMore) closeMore();
+      const close = () => { menu.remove(); document.removeEventListener('pointerdown', outside, true); window.removeEventListener('hashchange', close); closeMore = null; };
+      const menu = h('div', { class: 'more-menu', role: 'menu', 'aria-label': 'More actions' },
+        ...entries.map(([label, run, danger, why]) => h('button', {
+          class: 'pm-item' + (danger ? ' danger' : ''), type: 'button', role: 'menuitem', disabled: why ? true : null, title: why || null,
+          onclick: () => { close(); Promise.resolve().then(run).catch(fail); },
+        }, h('span', { class: 'pm-label', text: label }))));
       const outside = (e) => { if (!menu.contains(e.target) && e.target !== button) close(); };
-      menu.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') { close(); button.focus(); } });
+      menu.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        const items = [...menu.querySelectorAll('.pm-item:not([disabled])')];
+        const at = items.indexOf(document.activeElement);
+        if (e.key === 'Escape') { e.preventDefault(); close(); button.focus(); }
+        else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); const next = items[(at + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]; if (next) next.focus(); }
+      });
       const box = button.getBoundingClientRect();
-      menu.style.top = `${Math.round(box.bottom + 6)}px`;
+      menu.tabIndex = -1;
       menu.style.left = `${Math.round(Math.min(box.left, window.innerWidth - 260))}px`;
+      menu.style.top = `${Math.round(box.bottom + 6)}px`;
       document.body.append(menu);
+      // Above the button when it would run past the bottom of the window.
+      if (box.bottom + 6 + menu.offsetHeight > window.innerHeight - 8) menu.style.top = `${Math.round(Math.max(8, box.top - 6 - menu.offsetHeight))}px`;
       document.addEventListener('pointerdown', outside, true);
       window.addEventListener('hashchange', close);
-      closePlaces = close;
-      const first = menu.querySelector('button');
-      if (first) first.focus();
+      closeMore = close;
+      const first = menu.querySelector('.pm-item:not([disabled])');
+      (first || menu).focus();
     });
     return button;
   }
@@ -1672,7 +1650,32 @@
     };
     return h('span', { class: 'beside-tabs', 'aria-label': `${mounts.length} Topic-side mount(s) beside ${anchor}` },
       ...shown.map(tab),
-      mounts.length > shown.length ? h('span', { class: 'beside-tab more', text: `+${mounts.length - shown.length} more` }) : null);
+      mounts.length > shown.length ? h('span', {
+        class: 'beside-tab more', role: 'button', tabindex: '0', title: 'Every Card beside this one is listed under the Card in the reader',
+        onclick: (event) => { event.stopPropagation(); const row = document.querySelector('#home-extras'); if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' }); },
+        onkeydown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); event.currentTarget.click(); } },
+        text: `+${mounts.length - shown.length} more`,
+      }) : null);
+  }
+
+  /** Whether the reader stands at a station of a Connection tree. */
+  const atStation = () => !!(state.conn && state.conn.station);
+
+  /** n, b and del typed at a station: mount after it, mount beside it, unplace it. */
+  function stationCommand(name, rest) {
+    const s = state.conn.station;
+    const root = s.edge === 'root';
+    if (rest.length) {
+      throw new Error(name === 'del'
+        ? 'At a station, del unplaces this station; to delete a Card, open it at home first'
+        : `usage at a station: ${name}`);
+    }
+    if (!s.can_edit_placement) throw new Error('This tree is read-only here');
+    if (name === 'n') return mountHere();
+    if (root) throw new Error(name === 'b' ? 'The root takes no Side branch' : 'The root stays');
+    if (name === 'b') return mountHere(undefined, true);
+    if (s.origin === 'native') throw new Error('A Card written here is deleted at home, not unplaced');
+    return unplaceStation(s);
   }
 
   // --------------------------------------------------------------- routing
@@ -2502,7 +2505,7 @@
     const drawer = (tree) => {
       const lock = tree.locked ? ZtLock.activeLock(state.locks, tree.root) : null;
       const el = h('button', {
-        class: 'drawer ' + tree.kind + (tree.locked ? ' locked' : '') + (state.card && state.card.tree === tree.tree ? ' on' : ''),
+        class: 'drawer ' + tree.kind + (tree.locked ? ' locked' : '') + (!state.conn && state.card && state.card.tree === tree.tree ? ' on' : ''),
         title: (tree.locked
           ? `${tree.title || tree.root} — locked tree${lock ? ` (seal ${ZtLock.sealShort(lock.seal)})` : ''}: readable and linkable; its Cards wait for an unlock`
           : tree.title) + ' · right-click for the tree menu',
@@ -2554,7 +2557,19 @@
       }),
       h('a', { href: '#/', text: 'ROOT' }),
     ];
-    if (state.pointer) {
+    if (state.conn && state.conn.station) {
+      // At a station the trail is its path in the Connection tree, read from the tree's stations.
+      const byId = new Map((state.conn.tree.placements || []).map((p) => [p.placement_id, p]));
+      const chain = [];
+      for (let at = byId.get(state.conn.station.placement_id); at; at = at.parent_id ? byId.get(at.parent_id) : null) chain.unshift(at);
+      const shown = chain.length > 5 ? [chain[0], '…', ...chain.slice(-3)] : chain;
+      for (const at of shown) {
+        trail.push(h('span', { class: 'sep', text: '›' }));
+        if (at === '…') trail.push(h('span', { class: 'sep', text: '…' }));
+        else if (at.placement_id === state.conn.station.placement_id) trail.push(h('span', { class: 'cur', text: at.coord }));
+        else trail.push(h('a', { href: CONN.stationHash(at.placement_id), text: at.coord }));
+      }
+    } else if (state.pointer) {
       const chain = [];
       for (let at = state.pointer; at; at = parentOf(at)) chain.unshift(at);
       const shown = chain.length > 5 ? [chain[0], '…', ...chain.slice(-3)] : chain;
@@ -2635,8 +2650,6 @@
     if (!state.overview) return;
     const connView = !!(state.conn && state.mode === 'map');
     $('#conn-bar').hidden = !connView;
-    $('#tree-key').hidden = !connView;
-    $('#legend').classList.toggle('conn', connView);
     if (connView) {
       // The stations are index cards in the same focus lens as a Topic or Literature tree, each on
       // the card stock of the tree it comes from; the tree connections are the focus's Links.
@@ -2652,7 +2665,8 @@
       for (const id of ['#desk', '#table-plane', '#term-toggle', '#sky', '#table-tools', '#table-empty', '#table-hand', '#ask-bar']) $(id).hidden = true;
       $('#stage-title').hidden = false;
       $('#plane').hidden = false;
-      $('#legend').hidden = false;
+      // A Connection tree needs no legend: each card wears its tree's colour and stamps.
+      $('#legend').hidden = true;
       $('.zoom').hidden = false;
       $('#viewport').classList.remove('table-mode');
       $('#app').classList.remove('at-table');
@@ -2661,7 +2675,6 @@
       lens.classList.toggle('on', state.expandAll);
       lens.querySelector('span').textContent = state.expandAll ? 'Whole tree' : 'Focus';
       renderConnBar();
-      renderTreeKey(conn.map);
       map.render();
       const total = conn.map.cards.length;
       const shown = map.shownCount();
@@ -2957,14 +2970,21 @@
         return el;
       };
       const ordered = [...coords].sort((a, b) => (a.home ? 0 : 1) - (b.home ? 0 : 1));
-      return h('span', { class: 'stamps mini' }, ...ordered.map(stamp));
+      const tab = (c) => h('span', {
+        class: 'open-tab mini', role: 'button', tabindex: '0', style: `--tree-h:${CONN.treeHue(c.tree, CONN.roleOf(c.tree))}`,
+        title: `Show ${c.coord} in ${treeName(c.tree)}`, 'aria-label': `Show ${c.coord} in ${treeName(c.tree)}`,
+        onclick: (event) => { event.stopPropagation(); Promise.resolve().then(() => openPlace(c)).catch(fail); },
+        onkeydown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); openPlace(c); } },
+      }, '↗');
+      return h('span', { class: 'stamps mini' }, ...ordered.flatMap((c) => (c.current ? [stamp(c)] : [stamp(c), tab(c)])));
     }
 
     /** @N: the Card stands in N more places; pressing it opens the Card, whose head lists them all. */
     function morePlaces(address, count) {
       if (!count) return null;
       return h('span', {
-        class: 'more-places', role: 'button', tabindex: '-1',
+        class: 'more-places', role: 'button', tabindex: '0',
+        onkeydown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); go(address); } },
         title: `Also at ${count} other place${count === 1 ? '' : 's'}: open the Card to see and copy every coordinate`,
         'aria-label': `Show ${count} more coordinate${count === 1 ? '' : 's'}`,
         onclick: (event) => { event.stopPropagation(); go(address); },
@@ -5298,8 +5318,10 @@
         actionButton('Direct', 'n', () => newCard('direct'), writeOpts('direct', { title: 'New direct successor' })),
         actionButton('Side', 'b', () => newCard('side'), regular ? writeOpts('side', { title: 'New side successor' }) : { disabled: true, title: 'Tree roots have no side successors' }),
         actionButton('Insert', 'i', insertCard, regular ? writeOpts('insert', { title: 'Insert a new card in this place; this card and its successors move down' }) : { disabled: true, title: 'Nothing goes before a tree root' }),
-        actionButton('Move', 'm', () => moveCard(), regular ? writeOpts('move', { title: 'Move with successors, alone, or into another card’s place' }) : { disabled: true, title: 'Tree roots cannot move' }),
-        actionButton('Delete', 'del', deleteCard, writeOpts('delete', { danger: true })),
+        moreButton([
+          ['Move this Card', () => moveCard(), false, regular ? (writeOpts('move').title || null) : 'Tree roots cannot move'],
+          ['Delete Card', deleteCard, true, writeOpts('delete').title || null],
+        ]),
         ]),
       ),
       card.context === 'tree-root' ? lockLine(card) : null,
@@ -9534,7 +9556,7 @@
         case 'l': return run(() => newLiterature());
         case 'm': return card ? run(() => moveCard()) : undefined;
         // Tab indents the open card (or its marked span) under the card before it; Shift+Tab outdents.
-        case 'Tab': return card && card.context === 'regular' ? run(() => outline(event.shiftKey ? 'outdent' : 'indent')) : undefined;
+        case 'Tab': return card && card.context === 'regular' && !(event.target && event.target.closest && event.target.closest('button, a, [role="button"], [tabindex]')) ? run(() => outline(event.shiftKey ? 'outdent' : 'indent')) : undefined;
         case 'i': return card && card.context === 'regular' ? run(insertCard) : undefined;
         case 'Delete': return card ? run(deleteCard) : undefined;
         case 'u': case 'ArrowUp': case 'ArrowLeft':

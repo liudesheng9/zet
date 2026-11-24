@@ -288,8 +288,12 @@ async function checkUnsupported(page) {
     const stray = await page.value(`document.querySelectorAll('[role="dialog"]:not(.finder-tray):not([hidden])').length`);
     check(`${name} says it is not available`, shown && stray === 0, { stray });
   };
-  for (const label of ['Edit', 'Reply', 'Direct', 'Side', 'Insert', 'Move', 'Delete', 'Bridge report']) {
+  for (const label of ['Edit', 'Reply', 'Direct', 'Side', 'Insert', 'Bridge report']) {
     await reach(`the ${label} button`, `${button(label)}.click()`);
+  }
+  // Move and Delete sit in the More menu (zt 0.69.0): open it, then press the entry.
+  for (const label of ['Move', 'Delete']) {
+    await reach(`the ${label} entry under More`, `(() => { document.querySelector('#reader .more-btn').click(); [...document.querySelectorAll('.more-menu .pm-item')].find((b) => b.textContent.trim().startsWith(${JSON.stringify(label)})).click(); })()`);
   }
   // The notice comes first, before any question a function would ask or any rule it would raise.
   await page.value(hashTo(scene.root));
