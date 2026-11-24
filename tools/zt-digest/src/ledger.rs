@@ -1556,6 +1556,11 @@ fn math_register(p: &Prepared, zt: &mut Zt, layer: Option<&str>) -> Result<Value
             units.push(json!({"unit":unit,"layer":layer,"key":key,"input_hash":hash}));
         }
     }
+    // A boundary or proof plan enumerates every obligation of its layer at once, so its registration closes the
+    // enumeration (Rudin pilot 2026-11-23: with no seal the run never settled, every unit done).
+    for &l in &layers {
+        seal(&tx, l)?;
+    }
     let run = meta(&tx, "run_id")?;
     tx.commit()?;
     Ok(json!({

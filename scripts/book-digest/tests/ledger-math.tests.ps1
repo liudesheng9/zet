@@ -135,6 +135,9 @@ try {
     Assert ($registered.reused -eq $false -and @($registered.units | Where-Object layer -eq 'boundary').Count -eq 2) 'the boundary plan registers one ledger obligation per planned unit'
     $status = Run-Digest @('ledger','status','-Out',$out,'-Layer','boundary')
     $role = "boundary/$th@1"
+    # Rudin pilot 2026-11-23: the plan enumerates every boundary obligation, so its registration seals the layer;
+    # an unsealed layer kept the whole run from settling with every unit done.
+    Assert ($status.sealed -eq $true) "the boundary registration seals its layer ($($status.sealed))"
     Assert (@($status.dependencies | Where-Object { $_.unit -eq $role -and $_.needs -eq 'notation/book@1' }).Count -eq 1) 'notation is a prerequisite of the boundary work that depends on it'
     Assert (@($status.dependencies | Where-Object { $_.unit -eq $role -and $_.needs -eq 'math-skeleton/book@1' }).Count -eq 1) 'the skeleton is a prerequisite of its unit obligations'
     $again = Run-Digest @('ledger','math','-Out',$out,'-Layer','boundary')
@@ -256,6 +259,7 @@ const db=new DatabaseSync(p);db.prepare("insert into units(id,layer,logical_key,
     Assert ($pplan.units -eq 1) 'the proof plan names the formal result with proof steps'
     $proofRegistered = Run-Digest @('ledger','math','-Out',$out,'-Layer','proof')
     Assert (@($proofRegistered.units | Where-Object layer -eq 'proof').Count -eq 1) 'the proof plan registers its own ledger obligation'
+    Assert ((Run-Digest @('ledger','status','-Out',$out,'-Layer','proof')).sealed -eq $true) 'the proof registration seals its layer'
     function Review([hashtable]$fixes) {
         $list = @()
         foreach ($s in $script:reviewSteps) {
