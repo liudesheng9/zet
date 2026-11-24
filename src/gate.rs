@@ -953,13 +953,22 @@ fn source_book(conn: &Connection, body: &str) -> Result<Option<String>> {
 
 /// The text after each labelled source line (`**来源**：`, `- 来源：`), read by the checker's own
 /// label parser, so the gate and the Finding rules see the same lines.
-fn source_lines<'a>(body: &'a str, labels: &[&str]) -> Vec<&'a str> {
-    zt_check::core::labelled_lines(body, labels)
+fn source_lines(body: &str, labels: &[&str]) -> Vec<String> {
+    // A `+` list mark reads as `-`, as the gate always read it; the checker's rules are unchanged.
+    let body: String = body
+        .lines()
+        .map(|line| match line.trim_start().strip_prefix('+') {
+            Some(rest) => format!("-{rest}"),
+            None => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    zt_check::core::labelled_lines(&body, labels).into_iter().map(str::to_string).collect()
 }
 
 fn source_book_by(conn: &Connection, body: &str, labels: &[&str]) -> Result<Option<String>> {
     for rest in source_lines(body, labels) {
-        for occurrence in crate::link::LinkBody::for_rendering(rest).occurrences() {
+        for occurrence in crate::link::LinkBody::for_rendering(&rest).occurrences() {
             let tree = crate::tree_id(occurrence.target);
             if crate::is_literature_tree_id(tree) && crate::citation_key_exists(conn, tree)? {
                 return Ok(Some(tree.to_string()));
@@ -1186,6 +1195,15 @@ fn edge(candidate: &Candidate) -> &'static str {
 mod tests {
     use super::*;
     use zt_check::policy::Setting;
+
+    /// The source lines of a native Card: the checker's label parser, a tab after the list mark,
+    /// and a `+` list mark as the gate always read it.
+    #[test]
+    fn source_lines_read_every_list_mark() {
+        let body = "- **来源**：访谈\n-\t**来源**：档案\n+ Source: [[Book2020]] 表 1\n来源 不是标签";
+        assert_eq!(source_lines(body, &["来源"]), vec!["访谈", "档案"]);
+        assert_eq!(source_lines(body, &["Source"]), vec![" [[Book2020]] 表 1"]);
+    }
 
     /// A fresh isolated archive, as every test suite's own scratch box.
     fn archive() -> (tempfile::TempDir, Connection) {

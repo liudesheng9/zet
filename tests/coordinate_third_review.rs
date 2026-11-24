@@ -171,3 +171,4 @@ fn status_reports_a_shelf_with_a_gap() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("coordinates: 1 fault(s)") && text.contains("side_mounts_not_dense"), "{text}");
 }
+

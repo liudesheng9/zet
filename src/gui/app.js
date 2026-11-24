@@ -509,7 +509,9 @@
     } else if (data.zt === 'key' && onSheet && typeof data.key === 'string') {
       chartSheet.key(data.key);
     } else if (data.zt === 'go' && typeof data.target === 'string') {
-      if (state.nodes.some((node) => node.address === data.target)) go(data.target);
+      // A permanent handle (`~7`, `~7#4`, also from a `data-zt` attribute) is resolved by the route:
+      // a promoted Card opens at its Topic home, a native Card at its home station.
+      if (state.nodes.some((node) => node.address === data.target) || /^~\d+(#\d+)?$/.test(data.target)) go(data.target);
       else toast(`card \`${data.target}\` does not exist`, 'err');
     }
   });
