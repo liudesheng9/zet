@@ -2346,14 +2346,6 @@ enum Target<'a> {
 }
 
 impl<'a> Target<'a> {
-    /// The one tree a portable export holds; the GUI reads the whole box.
-    fn tree(self) -> Option<&'a str> {
-        match self {
-            Target::Gui(_) => None,
-            Target::Portable(portable) => Some(&portable.tree),
-        }
-    }
-
     fn keep_chart(self, page: String) -> String {
         match self {
             Target::Gui(charts) => charts.add(page),
@@ -3083,12 +3075,14 @@ fn link_html(link: &ClassifiedLink, snapshot: &Snapshot, reader: Target<'_>) -> 
 /// keeps what the sentence needs and goes nowhere, because that Card is not in the export.
 fn portable_link_html(link: &ClassifiedLink, snapshot: &Snapshot, portable: &Portable) -> String {
     const OUTSIDE: &str = "not in this portable export";
+    // A handle Link routes to the Card's address today; the citation keeps the authored spelling.
+    let target = snapshot.canonical(link.target);
     let inside = portable.inside(link.target, snapshot);
-    let route = percent_encode(link.target);
+    let route = percent_encode(target);
     let address = escape_html(link.target);
     if link.form == LinkForm::Term {
         let label = escape_html(term_label(link));
-        let meaning = snapshot.term_meaning(link.target).unwrap_or_default();
+        let meaning = snapshot.term_meaning(target).unwrap_or_default();
         let hint = if meaning.is_empty() {
             link.target.to_string()
         } else {
@@ -3101,8 +3095,8 @@ fn portable_link_html(link: &ClassifiedLink, snapshot: &Snapshot, portable: &Por
             format!("<span class=\"zt-link zt-term outside\" title=\"{hint} · {OUTSIDE}\">{label}</span>")
         };
     }
-    let title = escape_html(&snapshot.title(link.target));
-    let facet = snapshot.by_address.get(link.target).and_then(|card| card.facet.as_ref());
+    let title = escape_html(&snapshot.title(target));
+    let facet = snapshot.by_address.get(target).and_then(|card| card.facet.as_ref());
     let head = match facet {
         Some(facet) => format!(
             "<span class=\"zt-link-addr zt-link-facet\">{}</span>",

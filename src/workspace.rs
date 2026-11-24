@@ -90,6 +90,8 @@ impl Access {
         conn: &Connection,
         mapping: &BTreeMap<String, String>,
     ) -> Result<()> {
+        // A Literature-scoped connection rewrites no Connection-tree Card (its Write scope).
+        crate::scope::ensure_no_connection_rewrite(conn, mapping)?;
         if mapping.is_empty() || self == Access::Owner {
             return Ok(());
         }

@@ -943,16 +943,17 @@ fn gather(
 
 /// The Literature tree the `来源`/`出处`/`Source` line of a body names first, if it exists.
 fn source_book(conn: &Connection, body: &str) -> Result<Option<String>> {
-    // The `来源` line decides, as the Finding rules read it; `出处` and `Source` only without one.
-    for labels in [&["来源"][..], &["出处", "Source", "source"][..]] {
-        if let Some(book) = source_book_by(conn, body, labels)? {
-            return Ok(Some(book));
-        }
+    // The `来源` line decides, as the Finding rules read it, also when it names no book; `出处`
+    // and `Source` count only on a Card without a `来源` line.
+    if !source_lines(body, &["来源"]).is_empty() {
+        return source_book_by(conn, body, &["来源"]);
     }
-    Ok(None)
+    source_book_by(conn, body, &["出处", "Source", "source"])
 }
 
-fn source_book_by(conn: &Connection, body: &str, labels: &[&str]) -> Result<Option<String>> {
+/// The text after each labelled source line (`**来源**：`, `- 来源：`).
+fn source_lines<'a>(body: &'a str, labels: &[&str]) -> Vec<&'a str> {
+    let mut out = Vec::new();
     for line in body.lines() {
         // The label may be bold or a list item: `**来源**：`, `- 来源：`.
         let trimmed = line.trim_start().trim_start_matches(['-', '*', '+', ' ']);
@@ -960,9 +961,15 @@ fn source_book_by(conn: &Connection, body: &str, labels: &[&str]) -> Result<Opti
             continue;
         };
         let rest = rest.trim_start().trim_start_matches('*').trim_start();
-        if !(rest.starts_with('：') || rest.starts_with(':')) {
-            continue;
+        if let Some(rest) = rest.strip_prefix('：').or_else(|| rest.strip_prefix(':')) {
+            out.push(rest);
         }
+    }
+    out
+}
+
+fn source_book_by(conn: &Connection, body: &str, labels: &[&str]) -> Result<Option<String>> {
+    for rest in source_lines(body, labels) {
         for occurrence in crate::link::LinkBody::for_rendering(rest).occurrences() {
             let tree = crate::tree_id(occurrence.target);
             if crate::is_literature_tree_id(tree) && crate::citation_key_exists(conn, tree)? {

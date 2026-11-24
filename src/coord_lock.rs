@@ -582,27 +582,3 @@ pub(crate) fn faults(conn: &Connection) -> Result<Vec<(i64, String, String, Stri
     }
     Ok(out)
 }
-
-/// The coordinate evidence of every active Lock compared with the stored structure: a fault when a
-/// frozen station or connection differs (only possible by tampering, since triggers refuse it).
-pub(crate) fn integrity(conn: &Connection) -> Result<Value> {
-    if !installed(conn) {
-        return Ok(json!({"ok": true, "faults": []}));
-    }
-    let mut stmt = conn.prepare(
-        "SELECT s.lock_id, s.host_tree_key, s.structure_fp, l.root_address FROM lock_coordinate_seals s
-         JOIN locks l ON l.lock_id = s.lock_id WHERE l.unlocked_at IS NULL",
-    )?;
-    let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut faults = Vec::new();
-    for (lock_id, _host, stored, root) in rows {
-        let card = crate::load_card(conn, &root)?;
-        let now = snapshot(conn, &card)?;
-        if now["structure_fp"].as_str() != Some(stored.as_str()) {
-            faults.push(json!({"lock_id": lock_id, "root": root, "kind": "coordinate_structure_changed"}));
-        }
-    }
-    Ok(json!({"ok": faults.is_empty(), "faults": faults}))
-}

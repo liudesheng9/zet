@@ -22,8 +22,6 @@ enum Availability {
     OnRegular,
     /// At a station (an occurrence of a Card in a Connection tree or beside a Topic Card).
     OnStation,
-    /// At a home Card or at a station.
-    OnCardOrStation,
 }
 
 const COMMANDS: &[(&str, &str, Availability)] = &[
@@ -196,7 +194,6 @@ fn command_available(availability: Availability, context: PointerContext) -> boo
         Availability::OnTreeRoot => context == PointerContext::TreeRoot,
         Availability::OnRegular => context == PointerContext::Regular,
         Availability::OnStation => context == PointerContext::Station,
-        Availability::OnCardOrStation => context != PointerContext::Root,
     }
 }
 

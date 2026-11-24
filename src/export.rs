@@ -634,7 +634,13 @@ fn collect_connection(root: &Path, snapshot: &Snapshot, tree_name: &str, seconds
 /// The Topic-side mounts beside the Cards of a Topic tree export (proposal §9.1.5), so the offline
 /// reader shows the shelf: each mount's anchor, coordinate, Card, title, gloss and state.
 fn side_mounts(root: &Path, snapshot: &Snapshot, members: &[&Card]) -> Result<Vec<Value>> {
-    let conn = crate::open_db(root)?;
+    let db = crate::open_db(root)?;
+    // One read at the snapshot's revision: a mount attached after the Cards were read would
+    // otherwise appear in an export stamped with the earlier revision.
+    let conn = db.unchecked_transaction()?;
+    if crate::link_index::revision(&conn)? != snapshot.revision() {
+        bail!("the archive changed while the export was read; export again");
+    }
     if !crate::coord::installed(&conn) {
         return Ok(Vec::new());
     }

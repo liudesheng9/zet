@@ -371,6 +371,8 @@ pub(crate) fn get(conn: &Connection, args: &Value) -> Result<Value> {
     let mut dependents: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     let focus_carriers = carriers_of(conn, &focus)?;
     let focus_set: BTreeSet<&String> = focus_carriers.iter().collect();
+    // The parts each Model head counts as its own (imports excluded), read once per head.
+    let mut head_parts: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for carrier in &focus_carriers {
         for occ in occurrences_into(conn, carrier)? {
             let Some(class) = counts(&occ.kind) else { continue };
@@ -386,7 +388,18 @@ pub(crate) fn get(conn: &Connection, args: &Value) -> Result<Value> {
                     .query_map([&occ.carrier], |r| Ok((r.get::<_, String>(0)?,)))?
                     .collect::<rusqlite::Result<Vec<_>>>()?
                 {
-                    if !users.iter().any(|u| u.address == head_address) {
+                    if users.iter().any(|u| u.address == head_address) {
+                        continue;
+                    }
+                    // A head that only imports the part, or cites it, does not include it.
+                    if !head_parts.contains_key(&head_address) {
+                        let parts = match crate::load_card(conn, &head_address) {
+                            Ok(head) => crate::model::parts_in_db(conn, &head)?,
+                            Err(_) => Vec::new(),
+                        };
+                        head_parts.insert(head_address.clone(), parts);
+                    }
+                    if head_parts[&head_address].contains(&occ.carrier) {
                         users.push(node_of(conn, &head_address, unit_scope)?.0);
                     }
                 }
@@ -512,14 +525,18 @@ fn overlay_value(
         if from_node.is_none() && to_node.is_none() {
             continue;
         }
-        // Only a directed connection stating dependence matches an authored rests-on edge: its kind
-        // is rests-on, or it carries neither a kind nor a label (a label such as "objects to" is a
-        // different claim).
+        // Only a directed rests-on connection matches an authored rests-on edge; a label or another
+        // kind is a different claim, and so is an authored edge of another kind.
         let compatible = e.directed && e.kind.as_deref() == Some("rests-on");
+        let authored_rests_on = |f: &String, t: &String| {
+            edges
+                .get(&(f.clone(), t.clone()))
+                .is_some_and(|evidence| evidence.iter().any(|ev| ev["kind"].as_str() == Some("rests-on")))
+        };
         let value = crate::connection::edge_value(conn, &shape, &e)?;
         if compatible
             && let (Some(f), Some(t)) = (&from_node, &to_node)
-            && edges.contains_key(&(f.clone(), t.clone()))
+            && authored_rests_on(f, t)
         {
             matched.insert((f.clone(), t.clone()));
             local.push(json!({"class": "both", "from": f, "to": t, "connection": value}));

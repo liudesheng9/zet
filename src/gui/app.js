@@ -1051,7 +1051,9 @@
         // The decisions are part of the request: plan again with them (a preview never writes),
         // then confirm that plan; a write that needs no confirmation any more is sent as it is.
         answer = await connApi(tool, { ...args, ...extra, preview: true });
-        if (!answer.confirm) return connApi(tool, { ...args, ...extra });
+        // Once a review started, nothing applies without confirmation: a plan that no longer asks
+        // for it changed under the review.
+        if (!answer.confirm) throw new Error('The plan changed during the gloss review; nothing was written. Run the action again.');
       }
       const ok = await confirmPlan(title, answer.lines || [], answer.confirm);
       if (!ok) return null;
@@ -1524,8 +1526,12 @@
     const parsed = CONN.parseHash(location.hash);
     if (parsed.kind === 'place' || parsed.kind === 'conn') {
       if (/\+\d+$/.test(parsed.value)) {
-        // A Topic-side mount coordinate: open the Card standing there.
-        connApi('list_placements', { at: parsed.value }).then((listed) => go(listed.home)).catch(fail);
+        // A Topic-side mount coordinate: open the Card standing there, unless the reader has
+        // moved on before the answer came.
+        const seq = pointerLoads.begin();
+        connApi('list_placements', { at: parsed.value }).then((listed) => {
+          if (pointerLoads.isLatest(seq)) go(listed.home);
+        }).catch(fail);
         return;
       }
       state.pointer = null;
@@ -1541,7 +1547,10 @@
     // A Link to a Connection root opens its tree; a Link to a native Card opens its home station.
     if (pointer && /^~\d+$/.test(pointer)) { openConnTree(pointer); return; }
     if (pointer && /^~\d+#\d+$/.test(pointer)) {
+      const seq = pointerLoads.begin();
       connApi('list_placements', { at: pointer }).then((listed) => {
+        // A late answer after another move is dropped: the reader never jumps back.
+        if (!pointerLoads.isLatest(seq)) return;
         // A promoted Card opens at its Topic home; a native Card at its home station.
         if (listed.home && !listed.home.startsWith('~')) { go(listed.home); return; }
         const home = (listed.placements || []).find((p) => p.host === pointer.split('#')[0]);

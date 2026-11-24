@@ -50,8 +50,6 @@ pub(crate) const RELATION_KINDS: [&str; 8] = [
     "specializes",
     "refers",
 ];
-/// The kinds that hold between two Cards in no particular direction.
-const SYMMETRIC_KINDS: [&str; 3] = ["contrasts", "corresponds", "refers"];
 
 // ---------------------------------------------------------------------------------------------
 // Tree roles and the address grammar
@@ -178,12 +176,6 @@ impl Coordinate {
         })
     }
 
-    pub(crate) fn text(&self) -> String {
-        match self {
-            Coordinate::Connection { tree, path } => format!("~{tree}/{path}"),
-            Coordinate::TopicMount { anchor, ordinal } => format!("{anchor}+{ordinal}"),
-        }
-    }
 }
 
 pub(crate) fn is_coordinate(text: &str) -> bool {
@@ -660,6 +652,18 @@ pub(crate) fn check(conn: &Connection) -> Result<Value> {
             faults.push(json!({"kind": "native_without_home_station", "tree": format!("~{}", tree.display_num), "count": native_missing}));
         }
     }
+    // The mounts beside one Topic Card are numbered 1..N: `+k` is the k-th mount, so a gap would
+    // make a shown coordinate differ from the stored one.
+    let anchors: Vec<String> = conn
+        .prepare("SELECT DISTINCT anchor_card_id FROM placements WHERE host_kind = 'topic' AND anchor_card_id IS NOT NULL")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for anchor in anchors {
+        if !attachments_dense(conn, &anchor)? {
+            let at = address_of_card_id(conn, &anchor)?.unwrap_or_else(|| anchor.clone());
+            faults.push(json!({"kind": "side_mounts_not_dense", "anchor": at}));
+        }
+    }
     Ok(json!({"ok": faults.is_empty(), "installed": true, "faults": faults}))
 }
 
@@ -686,7 +690,6 @@ pub(crate) fn card_id_of(conn: &Connection, address: &str) -> Result<String> {
 /// One identity's registry facts.
 #[derive(Clone, Debug)]
 pub(crate) struct Identity {
-    pub(crate) card_id: String,
     pub(crate) card_row: Option<i64>,
     pub(crate) live: bool,
     pub(crate) last_address: String,
@@ -700,7 +703,6 @@ pub(crate) fn identity(conn: &Connection, card_id: &str) -> Result<Option<Identi
             [card_id],
             |r| {
                 Ok(Identity {
-                    card_id: r.get(0)?,
                     card_row: r.get(1)?,
                     live: r.get::<_, String>(2)? == "live",
                     last_address: r.get(3)?,
@@ -1008,11 +1010,6 @@ pub(crate) struct TreeShape {
 }
 
 impl TreeShape {
-    /// The structural predecessor of a non-root placement: its parent placement.
-    pub(crate) fn parent(&self, placement_id: &str) -> Option<&str> {
-        self.by_id.get(placement_id)?.parent_id.as_deref()
-    }
-
     /// Every placement under `placement_id` (itself included), in outline order.
     pub(crate) fn subtree(&self, placement_id: &str) -> Vec<String> {
         let mut out = Vec::new();
@@ -1349,6 +1346,7 @@ pub(crate) fn delete_impact_lines(
         return Ok(Vec::new());
     }
     let mut lines = Vec::new();
+    let mut removed_hosts = BTreeSet::new();
     // Host data this delete owns and removes: the stations and connections of an emptied
     // Connection tree, and the mounts beside deleted Topic Cards.
     if let Some(root) = keep_root
@@ -1358,6 +1356,7 @@ pub(crate) fn delete_impact_lines(
         let stations = placements_of_host(conn, &tree.tree_id)?.len().saturating_sub(1);
         let edges: i64 = conn.query_row("SELECT COUNT(*) FROM placement_edges WHERE tree_id = ?1", [&tree.tree_id], |r| r.get(0))?;
         lines.push(format!("{root} keeps its root station; its other {stations} station(s) and {edges} tree connection(s) are removed"));
+        removed_hosts.insert(tree.tree_id);
     }
     let mut beside = 0usize;
     for address in delete_set {
@@ -1380,7 +1379,6 @@ pub(crate) fn delete_impact_lines(
             lines.push(format!("{address} leaves its home station in ~{} as a Missing mount (unplace or rebind it there)", handle.tree));
         }
     }
-    let mut removed_hosts = BTreeSet::new();
     for address in delete_set {
         if let Some(handle) = Handle::parse(address).filter(|h| h.local.is_none())
             && let Some(tree) = tree_by_num(conn, handle.tree)?

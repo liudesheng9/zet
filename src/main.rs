@@ -2315,6 +2315,7 @@ fn cmd_status() -> Result<()> {
         card_counts(&root).map(|c| c.total).unwrap_or(0)
     );
     println!("{}", lock_status_line(&root));
+    println!("{}", coordinate_status_line(&root));
     println!("sessions: {}", session::session_count(&root));
     if let Some(line) = autostart::status_line() {
         println!("{line}");
@@ -2331,6 +2332,28 @@ fn lock_status_line(root: &Path) -> String {
         return "locks: unavailable (no archive database yet)".to_string();
     }
     read_lock_status(root).unwrap_or_else(|error| format!("locks: unavailable ({error:#})"))
+}
+
+/// The `coordinates:` line of ordinary status: the coordinate storage's own integrity (identity
+/// rows, tree shapes, home stations, dense Topic-side mounts), each fault on its own line.
+fn coordinate_status_line(root: &Path) -> String {
+    if !db_path(root).exists() {
+        return "coordinates: unavailable (no archive database yet)".to_string();
+    }
+    let report = open_db(root).and_then(|conn| coord::check(&conn));
+    match report {
+        Ok(report) if report["ok"] == true => "coordinates: ok".to_string(),
+        Ok(report) => {
+            let faults = report["faults"].as_array().cloned().unwrap_or_default();
+            let mut line = format!("coordinates: {} fault(s)", faults.len());
+            for fault in faults {
+                line.push_str(&format!("
+coordinate fault: {fault}"));
+            }
+            line
+        }
+        Err(error) => format!("coordinates: unavailable ({error:#})"),
+    }
 }
 
 fn read_lock_status(root: &Path) -> Result<String> {

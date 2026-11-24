@@ -12,8 +12,65 @@
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use zt_check::scope::{literature_violation, similarity, title_key};
+
+thread_local! {
+    /// The tool a Literature-scoped connection is running on this thread, while it runs.
+    static LITERATURE_TOOL: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// While alive, the Link rewrites of the running tool are checked against the Literature scope.
+pub(crate) struct RewriteGuard(Option<String>);
+
+impl Drop for RewriteGuard {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        LITERATURE_TOOL.with(|tool| *tool.borrow_mut() = previous);
+    }
+}
+
+/// A move, rename, insert or delete under the Literature scope rewrites no Connection-tree Card's
+/// body. Every writer that re-keys Cards checks its real mapping here, inside its own plan, so a
+/// sibling renumbered by a compaction counts and an unchanged key does not. Links by permanent
+/// handle are never rewritten and never refused.
+pub(crate) fn ensure_no_connection_rewrite(conn: &Connection, mapping: &BTreeMap<String, String>) -> Result<()> {
+    let Some(tool) = LITERATURE_TOOL.with(|tool| tool.borrow().clone()) else {
+        return Ok(());
+    };
+    if mapping.iter().all(|(old, new)| old == new) {
+        return Ok(());
+    }
+    let sources: Vec<String> = if crate::link_index::ready(conn) {
+        crate::link_index::rewrite_sources(conn, mapping.keys())?.into_iter().filter(|s| s.starts_with('~')).collect()
+    } else {
+        let mut found = Vec::new();
+        let mut stmt = conn.prepare("SELECT location, text FROM cards WHERE location GLOB '~*'")?;
+        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (location, text) = row?;
+            let parsed = crate::parse_card_text(&text)?;
+            if crate::link::LinkBody::parse(&parsed.body)?.rewrite_targets(mapping).count > 0
+                || crate::link::rewrite_chart_targets(&parsed.body, mapping).count > 0
+            {
+                found.push(location);
+            }
+        }
+        found
+    };
+    if let Some(source) = sources.into_iter().find(|s| !mapping.contains_key(s)) {
+        let at = mapping.keys().next().cloned().unwrap_or_default();
+        return Err(anyhow::Error::new(Refusal {
+            tool,
+            at,
+            scope: Kind::Literature.id(),
+            reason: "connection_tree",
+            message: format!("this connection writes only Literature trees: the change would rewrite Links in the Connection-tree Card `{source}`"),
+            item: None,
+        }));
+    }
+    Ok(())
+}
 
 /// The metadata row that holds the Topic title rule's similarity threshold.
 pub(crate) const SIMILARITY_KEY: &str = "scope.topic_similarity";
@@ -157,12 +214,17 @@ impl WriteScope {
                 }
             }
             self.check_literature(conn, tool, args)?;
-            self.check_rewrites(conn, tool, args)?;
         }
         if let Some(allowed) = &self.allow {
             self.check_allowed(tool, args, allowed, made_here)?;
         }
         Ok(())
+    }
+
+    /// Check the Link rewrites of `tool` against this scope until the guard drops.
+    pub(crate) fn rewrite_guard(&self, tool: &str) -> RewriteGuard {
+        let now = (self.kind == Kind::Literature).then(|| tool.to_string());
+        RewriteGuard(LITERATURE_TOOL.with(|current| current.replace(now)))
     }
 
     /// Records the Cards a committed request made, so later requests of this connection may grow them.
@@ -237,44 +299,6 @@ impl WriteScope {
         }
         Ok(())
     }
-    /// A change that moves, renames or deletes Cards rewrites the Links of every Card that cites
-    /// them: under the Literature scope, none of those bodies may be a Connection-tree Card's.
-    fn check_rewrites(&self, conn: &Connection, tool: &str, args: &Value) -> Result<()> {
-        if !matches!(
-            tool,
-            "edit_literature_metadata" | "move_card" | "delete_card" | "insert_card" | "move_span" | "delete_span" | "indent" | "outdent" | "reorder"
-        ) || !crate::link_index::ready(conn)
-        {
-            return Ok(());
-        }
-        let mut moved = BTreeSet::new();
-        for field in ["at", "before", "from", "parent"] {
-            let Some(named) = args.get(field).and_then(Value::as_str) else { continue };
-            let Ok(card) = crate::load_card(conn, named) else { continue };
-            if crate::is_tree_root(&card) {
-                let tree = crate::tree_id(&card.address).to_string();
-                moved.extend(crate::addresses(conn)?.into_iter().filter(|a| crate::is_tree_member(a, &tree)));
-            } else {
-                moved.extend(crate::descendant_locations(conn, &card.address)?);
-            }
-        }
-        let mut spellings = BTreeSet::new();
-        for address in &moved {
-            spellings.extend(crate::coord::spellings(conn, address)?);
-        }
-        for source in crate::link_index::rewrite_sources(conn, spellings.iter())? {
-            if source.starts_with('~') {
-                return Err(self.refuse(
-                    tool,
-                    args.get("at").and_then(Value::as_str).unwrap_or_default(),
-                    "connection_tree",
-                    format!("this connection writes only Literature trees: the change would rewrite Links in the Connection-tree Card `{source}`"),
-                ));
-            }
-        }
-        Ok(())
-    }
-
     /// Whether the Card a change names (not a new Card's parent) is a Hub Card.
     fn names_hub(&self, conn: &Connection, tool: &str, at: &str) -> Result<bool> {
         if !matches!(tool, "edit_card" | "move_card" | "delete_card") || at.is_empty() {

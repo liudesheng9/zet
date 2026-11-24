@@ -392,6 +392,8 @@ fn call_tool(name: &str, args: &Value, scope: &mut crate::scope::WriteScope) -> 
         return call_scholar_tool(name, args);
     }
     let root = archive_root()?;
+    // Every writer below checks its real Link rewrites against a Literature scope.
+    let _rewrites = scope.rewrite_guard(name);
     if crate::connection::is_tool(name) {
         if crate::connection::is_write_tool(name) {
             scope.check(&crate::open_db(&root)?, name, args, &Default::default())?;

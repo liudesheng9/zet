@@ -907,20 +907,13 @@ impl Snapshot {
             .then(|| self.literature_types.get(&card.row_id).copied().unwrap_or_default().id())
     }
 
-    /// Shared domain calculations over a complete request context. The GUI keeps
-    /// loading the full archive; indexed MCP readers supply only relevant Cards and the
-    /// [`crate::tree_lock::LockView`] of those same rows, so neither can silently show a real
+    /// Shared domain calculations over a complete request context, with the archive's live handle
+    /// aliases. The GUI keeps loading the full archive; indexed MCP readers supply only relevant Cards
+    /// and the [`crate::tree_lock::LockView`] of those same rows, so neither can silently show a real
     /// archive's Lock state as empty (R207, S03-AC04).
-    pub(crate) fn from_cards(
-        cards: Vec<Card>,
-        lock: crate::tree_lock::LockView,
-        revision: u64,
-    ) -> Result<Self> {
-        Self::from_cards_aliased(cards, lock, revision, BTreeMap::new())
-    }
-
-    /// The same, with the archive's live handle aliases (a promoted native Card is cited as
-    /// `[[~7#4]]` and lives at `3/6`): a Link spelled with the handle reaches the Card.
+    ///
+    /// A promoted native Card cited as `[[~7#4]]` lives at `3/6`: a Link spelled with the handle
+    /// reaches the Card.
     pub(crate) fn from_cards_aliased(
         cards: Vec<Card>,
         lock: crate::tree_lock::LockView,
@@ -1174,7 +1167,9 @@ impl Snapshot {
         let mut kinds = serde_json::Map::new();
         let mut term_use_targets = Vec::new();
         let mut seen_term = BTreeSet::new();
-        for read in crate::model::read_links(&self.parsed[&card.address].body, str::to_string) {
+        for mut read in crate::model::read_links(&self.parsed[&card.address].body, str::to_string) {
+            // A Link may name its target by a handle; the summary speaks in today's addresses.
+            read.target = self.canonical(&read.target).to_string();
             if !links.contains(&read.target) {
                 continue;
             }

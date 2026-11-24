@@ -13,7 +13,7 @@
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -2639,16 +2639,6 @@ pub(crate) fn station_context(conn: &Connection, access: Access, station: &Place
         value["connections"] = json!({"incoming": incoming, "outgoing": outgoing, "neutral": neutral});
     }
     Ok(value)
-}
-
-/// Add `Map` helper so callers can merge objects.
-pub(crate) fn merge(target: &mut Value, extra: Value) {
-    if let (Some(t), Value::Object(e)) = (target.as_object_mut(), extra) {
-        let e: Map<String, Value> = e;
-        for (k, v) in e {
-            t.insert(k, v);
-        }
-    }
 }
 
 /// The Topic-side mounts beside one Topic home Card, in order (`3/2+1`, `3/2+2`, …).

@@ -513,7 +513,7 @@ In your own unlocked Connection tree `~7`, mount two **Locked** Literature roots
 
 ## 12. Implementation Status (2026-11-24, zt 0.65.0)
 
-Implemented on branch `multi-tree-coordinates` and reviewed twice by Astra (`gpt-6.2-astra`); see `docs/wiki/coordinates.md` for the block doc.
+Implemented on branch `multi-tree-coordinates` and reviewed three times by Astra (`gpt-6.2-astra`); see `docs/wiki/coordinates.md` for the block doc.
 
 | Phase | Status | Tests |
 |---|---|---|
@@ -524,3 +524,7 @@ Implemented on branch `multi-tree-coordinates` and reviewed twice by Astra (`gpt
 | 5 — Structured native Models | **Gated**: native `model` (also the standalone concept head), Math units, `theory`, `hub`, `term` and `cited` are refused in Connection homes with `native_structure_required` on create and on every retype; existing ones can be mounted and connected freely. The design review found that a faithful `home_structure` needs one filing interface shared by Model, Math, the gate, the lens and the board; a synthetic-address adapter would mix identities. |  |
 
 Deliberate deviations from §6.2, agreed in the design review: no `home_kind` column (the Home role follows from the stored address, which the grammar partitions: digit, letter, `~`), so no `cards` rebuild was needed; the writer fence guards every table instead of a version column; `card_handles.card_id` is unique (one issued handle per native Card); `retired_placements` keeps removed station IDs so a bookmark can say "removed"; a deleted native Card leaves its own home station as a Missing mount (unplace or rebind it there); `list_trees` lists Connection trees only with `zone: "connection"`.
+
+Review rounds. Each Astra finding was fixed with a regression test (`tests/coordinate_review_fixes.rs`, `tests/coordinate_third_review.rs`). The third round closed: Literature-scoped rewrites checked on the real mapping inside each writer's plan; a Session or GUI gloss review that never applies without its confirmation word; handle Links that keep their relation kind in summaries and route to today's address in portable exports; keep-root delete previews without a false Missing mount; shared-part users filtered through the Model membership rule (an import is no membership); overlay `both` only for a local rests-on over an authored rests-on; the `来源` line deciding a native Finding's book; late navigation answers dropped in the GUI; Topic exports reading their side mounts at the snapshot's revision; dense Topic shelves reported by `zt status`.
+
+Accepted limits: the coordinate seal was never released in its first ordering, so no stored seal needs the older order; the Tree Lock generation stays "2" (the writer fence and the identity triggers already block older writers); Session Card history keeps addresses; `zt stats` counts a Connection root as a regular Card; a station reader shows the first 5,000 stations of a tree.
