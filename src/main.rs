@@ -2340,8 +2340,13 @@ fn coordinate_status_line(root: &Path) -> String {
     if !db_path(root).exists() {
         return "coordinates: unavailable (no archive database yet)".to_string();
     }
-    let report = open_db(root).and_then(|conn| coord::check(&conn));
+    // One read transaction: a tree deleted between two of the check's queries is no fault.
+    let report = open_db(root).and_then(|conn| {
+        let read = conn.unchecked_transaction()?;
+        coord::check(&read)
+    });
     match report {
+        Ok(report) if report["installed"] == false => "coordinates: not installed".to_string(),
         Ok(report) if report["ok"] == true => "coordinates: ok".to_string(),
         Ok(report) => {
             let faults = report["faults"].as_array().cloned().unwrap_or_default();
@@ -4623,6 +4628,7 @@ fn apply_delete_plan_into(
     coord_lock::ensure_delete_allowed(tx, &plan.delete_set)?;
     let compaction = plan.compaction();
     let repoint = plan.repoint_mapping();
+    scope::ensure_no_connection_rewrite(tx, &repoint)?;
     // Re-point first, so a side compaction that renames `into` carries the new Links along.
     if !repoint.is_empty() {
         let cards = if link_index::ready(tx) {
@@ -4780,6 +4786,9 @@ fn apply_location_mapping_tx(
             "`{native}` lives in a Connection tree: move its station with move_placement, or move its home into a Topic with promote_card"
         );
     }
+    // Every re-keying write passes here: a Literature-scoped connection rewrites no Connection-tree
+    // Card, whichever tool planned the mapping.
+    scope::ensure_no_connection_rewrite(conn, mapping)?;
     // A Card a locked Connection tree or Topic mounts keeps its address (`pinned-move`).
     if !mapping.keys().all(|address| address.starts_with("__")) {
         coord_lock::ensure_moves_allowed(conn, mapping.keys().filter(|a| !a.starts_with("__")))?;

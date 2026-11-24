@@ -951,21 +951,10 @@ fn source_book(conn: &Connection, body: &str) -> Result<Option<String>> {
     source_book_by(conn, body, &["出处", "Source", "source"])
 }
 
-/// The text after each labelled source line (`**来源**：`, `- 来源：`).
+/// The text after each labelled source line (`**来源**：`, `- 来源：`), read by the checker's own
+/// label parser, so the gate and the Finding rules see the same lines.
 fn source_lines<'a>(body: &'a str, labels: &[&str]) -> Vec<&'a str> {
-    let mut out = Vec::new();
-    for line in body.lines() {
-        // The label may be bold or a list item: `**来源**：`, `- 来源：`.
-        let trimmed = line.trim_start().trim_start_matches(['-', '*', '+', ' ']);
-        let Some(rest) = labels.iter().find_map(|label| trimmed.strip_prefix(label)) else {
-            continue;
-        };
-        let rest = rest.trim_start().trim_start_matches('*').trim_start();
-        if let Some(rest) = rest.strip_prefix('：').or_else(|| rest.strip_prefix(':')) {
-            out.push(rest);
-        }
-    }
-    out
+    zt_check::core::labelled_lines(body, labels)
 }
 
 fn source_book_by(conn: &Connection, body: &str, labels: &[&str]) -> Result<Option<String>> {

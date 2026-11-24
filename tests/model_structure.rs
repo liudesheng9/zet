@@ -416,14 +416,31 @@ impl Gui {
         .expect("send request");
         let mut response = Vec::new();
         stream.read_to_end(&mut response).expect("read response");
-        let response = String::from_utf8_lossy(&response).to_string();
-        let (head, body) = response.split_once("\r\n\r\n").expect("header end");
+        let end = response.windows(4).position(|w| w == b"\r\n\r\n").expect("header end");
+        let head = String::from_utf8_lossy(&response[..end]).to_string();
+        let mut body = response[end + 4..].to_vec();
+        // A large page comes in chunks: read the body the client would see, so a chunk boundary
+        // never falls inside an asserted string.
+        if head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+            let mut decoded = Vec::new();
+            let mut rest = &body[..];
+            while let Some(line_end) = rest.windows(2).position(|w| w == b"\r\n") {
+                let size = usize::from_str_radix(String::from_utf8_lossy(&rest[..line_end]).trim(), 16).expect("chunk size");
+                if size == 0 {
+                    break;
+                }
+                let start = line_end + 2;
+                decoded.extend_from_slice(&rest[start..start + size]);
+                rest = &rest[start + size + 2..];
+            }
+            body = decoded;
+        }
         let status = head
             .split_whitespace()
             .nth(1)
             .and_then(|code| code.parse().ok())
             .expect("status");
-        (status, head.to_ascii_lowercase(), body.to_string())
+        (status, head.to_ascii_lowercase(), String::from_utf8_lossy(&body).to_string())
     }
 
     fn api(&self, method: &str, path: &str, body: Value) -> Value {

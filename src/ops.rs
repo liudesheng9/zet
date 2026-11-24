@@ -230,6 +230,8 @@ pub(crate) fn create_side_before_tx_with_term(
         );
     }
     let plan = crate::place::insert_side_plan(conn, &sibling.address)?;
+    // The shifted siblings rewrite the Links that cite them, as every other re-keying write does.
+    access.ensure_link_rewrites_allowed(conn, &plan.mapping)?;
     let accepted =
         crate::place::apply_insert_plan_tx(conn, &plan, card_type, part, term_name, text)?;
     Ok((plan, accepted))

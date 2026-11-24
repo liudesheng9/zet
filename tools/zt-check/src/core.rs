@@ -119,12 +119,25 @@ static EVENT_LABELS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
 static FINDING_LABELS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
     ["测量", "数据", "方法", "结果", "局限", "来源"]
         .into_iter()
-        .map(|label| {
-            let pattern = format!(r"^\s*[-*]?\s*(\*\*)?{label}(\*\*)?\s*[：:]");
-            (label, Regex::new(&pattern).expect("a label pattern"))
-        })
+        .map(|label| (label, label_pattern(label)))
         .collect()
 });
+
+/// The line pattern of one labelled field (`- **来源**：…`): an optional list mark, an optional
+/// bold, the label, a colon. The Finding rules and the zt gate read labels through it alone.
+fn label_pattern(label: &str) -> Regex {
+    let label = regex::escape(label);
+    Regex::new(&format!(r"^\s*[-*]?\s*(\*\*)?{label}(\*\*)?\s*[：:]")).expect("a label pattern")
+}
+
+/// The text after each line of `body` labelled with one of `labels`, read exactly as the Finding
+/// rules read their labels.
+pub fn labelled_lines<'a>(body: &'a str, labels: &[&str]) -> Vec<&'a str> {
+    let patterns: Vec<Regex> = labels.iter().map(|label| label_pattern(label)).collect();
+    body.lines()
+        .filter_map(|line| patterns.iter().find_map(|pattern| pattern.find(line).map(|m| &line[m.end()..])))
+        .collect()
+}
 
 const SECTIONS: [&str; 5] = ["思路", "起点", "步骤", "结果", "解读"];
 

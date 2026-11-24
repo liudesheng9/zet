@@ -43,6 +43,9 @@ fn literature_scope_checks_the_real_rewrite_mapping() {
     let refused = literature.refused("delete_card", json!({"at": a}));
     let text = refused.to_string();
     assert!(text.contains("connection_tree") && text.contains("~1#1"), "{refused}");
+    // A Side insert before the cited sibling shifts it: refused too (fourth review).
+    let refused = literature.refused("create_successor", json!({"at": "Cmp2020/1", "kind": "side", "before": b, "title": "插入", "body": "插入。\n\n来源：[[Cmp2020]] §1"}));
+    assert!(refused.to_string().contains("connection_tree"), "{refused}");
     // The same key: no Link is rewritten, so nothing is refused.
     literature.ok("edit_literature_metadata", json!({"at": "Cmp2020", "bibtex": "@book{Cmp2020, title={A new title}}"}));
     // The last Side Card compacts nothing: its delete rewrites no Connection-tree Card (the Link
@@ -62,6 +65,11 @@ fn keep_root_predicts_no_missing_mount_for_its_own_natives() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("keeps its root station"), "{text}");
     assert!(!text.contains("Missing mount"), "{text}");
+    // Deleting the native Card alone names its home station once, never as a station elsewhere.
+    let plan = mcp.ok("delete_card", json!({"at": "~1#1"}));
+    let plan = plan.to_string();
+    assert!(plan.contains("leaves its home station"), "{plan}");
+    assert!(!plan.contains("other tree"), "{plan}");
 }
 
 /// P1.4 and P1.8: a Topic export holding a promoted Card cited by its handle keeps the relation kind
@@ -76,7 +84,7 @@ fn handle_links_keep_kinds_and_route_to_addresses_in_a_topic_export() {
     mcp.ok("create_connection_card", json!({"tree": "~1", "parent_coord": "~1/0", "title": "原生", "body": "内容。"}));
     let plan = mcp.ok("promote_card", json!({"at": "~1#1", "to": "0/2"}));
     mcp.ok("promote_card", json!({"at": "~1#1", "to": "0/2", "confirm": plan["confirm"], "plan_hash": plan["plan_hash"], "expected_revision": plan["expected_revision"]}));
-    mcp.ok("edit_card", json!({"at": "0/1", "body": "依据 [[~1#1]]：它成立。"}));
+    mcp.ok("edit_card", json!({"at": "0/1", "body": "依据 [[~1#1]]：它成立。\n\n```chart\n<div>[[~1#1]]</div>\n```"}));
     let out_dir = scratch.archive_root.join("exported-topic");
     let out = scratch.cmd().args(["export", "0", "--out"]).arg(&out_dir).output().expect("export");
     assert!(out.status.success(), "{} {}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
@@ -90,6 +98,8 @@ fn handle_links_keep_kinds_and_route_to_addresses_in_a_topic_export() {
     assert!(text.contains(r#""kinds":{"0/2":"rests-on"}"#), "the handle Link keeps its relation kind: {at}");
     assert!(at.contains("#/card/0/2"), "the handle Link routes to the address: {at}");
     assert!(at.contains("~1#1") && !text.contains("#/card/~1"), "the citation shows the handle, no route spells it: {at}");
+    // A chart's handle Link carries the address it opens (fourth review).
+    assert!(text.contains(r#"\"home\":\"0/2\""#) || text.contains(r#""home":"0/2""#), "the chart link names its home");
 }
 
 /// P2.12 and P2.13: a Model that only imports another Model's proof part is no user of what that
@@ -135,6 +145,10 @@ fn the_source_line_decides_a_native_findings_book() {
     mcp.ok("create_connection_tree", json!({"title": "Findings"}));
     let body = finding_body("**来源**：田野访谈 2019\nSource: [[Src2020]] 表 1");
     let card = mcp.ok("create_connection_card", json!({"tree": "~1", "parent_coord": "~1/0", "type": "finding", "title": "访谈中的产值", "body": body}));
+    assert!(!card.to_string().contains("source_wrong_book"), "{card}");
+    // A tab after the list mark is the same label for the gate and the Finding rules.
+    let body = finding_body("-\t**来源**：田野访谈 2020\nSource: [[Src2020]] 表 2");
+    let card = mcp.ok("create_connection_card", json!({"tree": "~1", "parent_coord": "~1/1", "type": "finding", "title": "第二次访谈中的产值", "body": body}));
     assert!(!card.to_string().contains("source_wrong_book"), "{card}");
 }
 

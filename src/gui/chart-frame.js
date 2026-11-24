@@ -56,7 +56,8 @@ text.zt-hl { fill: var(--zt-accent) !important; }
   document.head.append(style);
 
   const links = window.ZT_LINKS || {};
-  const go = (target) => parent.postMessage({ zt: 'go', target }, '*');
+  // A Link spelled with a permanent handle opens the Card at its address today (`home`).
+  const go = (target) => parent.postMessage({ zt: 'go', target: (links[target] && links[target].home) || target }, '*');
 
   /** `[[address]]` in the chart's text becomes a link to that Card. */
   function linkText(root) {

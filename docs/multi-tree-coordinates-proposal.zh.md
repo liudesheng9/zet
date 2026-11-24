@@ -525,6 +525,6 @@ CREATE INDEX placement_edges_by_to   ON placement_edges(tree_id, to_placement_id
 
 设计审查中商定的有意偏离（相对 §6.2）：不加 `home_kind` 列（归属角色由存储地址决定，语法本身已按数字、字母、`~` 划分），因此无需重建 `cards`；写入者栅栏守护所有表，而不是版本列；`card_handles.card_id` 唯一（每张原生卡一个句柄）；`retired_placements` 保留已移除的站点 ID，书签可以报告"已移除"；删除原生卡时，它在本树的归属站点成为缺失挂载（在该处解除或重新绑定）；`list_trees` 只在 `zone: "connection"` 时列出关联树。
 
-审查轮次。Astra 的每一项发现都已修复，并有回归测试（`tests/coordinate_review_fixes.rs`、`tests/coordinate_third_review.rs`）。第三轮关闭的问题：文献范围的连接在每个写入者的计划内按真实映射检查链接改写；Session 与 GUI 的注释复核没有确认词就绝不写入；以句柄书写的链接在摘要中保留关系类型，在便携导出中路由到当前地址；保留根删除的预览不再误报缺失挂载；共用部件的使用者按模型成员规则过滤（引入不算成员）；叠加视图只有在本地 rests-on 与作者 rests-on 相符时才标为 `both`；原生 Finding 的书由 `来源` 行决定；GUI 丢弃迟到的导航应答；主题导出在快照的修订号上读取旁挂；`zt status` 报告不连续的主题旁挂序号。
+审查轮次。Astra 的每一项发现都已修复，并有回归测试（`tests/coordinate_review_fixes.rs`、`tests/coordinate_third_review.rs`）。第三轮关闭的问题：文献范围的连接在每个写入者的计划内按真实映射检查链接改写；Session 与 GUI 的注释复核没有确认词就绝不写入；以句柄书写的链接在摘要中保留关系类型，在便携导出中路由到当前地址；保留根删除的预览不再误报缺失挂载；共用部件的使用者按模型成员规则过滤（引入不算成员）；叠加视图只有在本地 rests-on 与作者 rests-on 相符时才标为 `both`；原生 Finding 的书由 `来源` 行决定；GUI 丢弃迟到的导航应答；主题导出在快照的修订号上读取旁挂；`zt status` 报告不连续的主题旁挂序号。第四轮关闭了余下的边界情形：范围检查位于唯一的改键入口（`apply_location_mapping_tx` 与删除的重指向），因此在被引用的旁支前插入也会被拒绝；计划与重新计划之间档案变化时，注释复核重新开始；图表中以句柄书写的链接打开卡片的当前地址；删除原生卡片时只说明一次其主站点；闸门通过 zt-check 自己的标签解析器（`zt_check::core::labelled_lines`）读取 `来源`；站点书签丢弃迟到的应答；GUI 导出与 `zt status` 读取一致的状态。
 
 接受的限制：坐标封印的第一种排序从未发布，因此没有需要旧排序的封印；树锁代数保持 "2"（写入围栏与身份触发器已阻止旧写入者）；Session 的卡片历史保存地址；`zt stats` 把关联树根计为普通卡片；站点阅读器显示一棵树的前 5000 个站点。

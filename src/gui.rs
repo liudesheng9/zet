@@ -2276,11 +2276,12 @@ impl App {
         )?)
     }
 
-    /// Write one tree as a portable export into the default folder (#263). It reads the cached
-    /// Snapshot and changes no Card, so the archive revision stays where it is.
+    /// Write one tree as a portable export into the default folder (#263). It reads the Snapshot of
+    /// the box as it is now (the export checks its coordinate reads against that revision) and
+    /// changes no Card, so the archive revision stays where it is.
     fn export(&self, body: &Value) -> ApiResult {
         let tree = str_field(body, "tree")?;
-        let snapshot = self.snapshot()?;
+        let snapshot = self.snapshots.fresh()?;
         let written = crate::export::write(&self.root, &snapshot, &tree, None)?;
         Ok(json!({
             "tree": written.tree,
@@ -2910,10 +2911,12 @@ fn chart_page(source: &str, snapshot: &Snapshot, portable: Option<&Portable>) ->
         if !target.is_empty() && target.len() < 200 && !target.contains(['\n', '[', ']']) {
             let exists = snapshot.by_address.contains_key(snapshot.canonical(target))
                 && portable.is_none_or(|portable| portable.inside(target, snapshot));
-            links.insert(
-                target.to_string(),
-                json!({ "title": snapshot.title(target), "exists": exists }),
-            );
+            let home = snapshot.canonical(target);
+            let mut info = json!({ "title": snapshot.title(home), "exists": exists });
+            if home != target {
+                info["home"] = json!(home);
+            }
+            links.insert(target.to_string(), info);
         }
     }
     // `</` would end the script element the data sits in.

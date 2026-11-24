@@ -35,10 +35,13 @@ fn write(root: &Path, interaction: &mut dyn Interaction, tool: &str, args: Value
         // Plan again with the decisions; a preview never writes. Once the owner has started a
         // review, nothing applies without the confirmation word: a plan that no longer asks for
         // one changed under the review, and the owner runs the command again.
+        // The decisions answer the glosses the owner saw: a plan made at another revision (a gloss
+        // edited meanwhile) is no longer the one reviewed.
+        let reviewed = first["expected_revision"].clone();
         let mut preview = args.clone();
         preview["preview"] = json!(true);
         first = crate::connection::run(root, crate::Access::Owner, tool, &preview)?;
-        if first.get("confirm").and_then(Value::as_str).is_none() {
+        if first.get("confirm").and_then(Value::as_str).is_none() || first["expected_revision"] != reviewed {
             bail!("the plan changed during the gloss review; nothing was written, run the command again");
         }
     }

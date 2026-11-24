@@ -1393,8 +1393,13 @@ pub(crate) fn delete_impact_lines(
     for address in delete_set {
         let Ok(card) = crate::load_card(conn, address) else { continue };
         let card_id = card_id_of_row(conn, card.row_id)?;
+        // A native Card's home station is named on its own line above (or goes with its tree).
+        let home_tree = match Handle::parse(address).filter(|h| h.local.is_some()) {
+            Some(handle) => tree_by_num(conn, handle.tree)?.map(|tree| tree.tree_id),
+            None => None,
+        };
         for p in placements_of_card(conn, &card_id)? {
-            if removed_hosts.contains(&p.host_tree_key) {
+            if removed_hosts.contains(&p.host_tree_key) || home_tree.as_ref() == Some(&p.host_tree_key) {
                 continue;
             }
             missing += 1;

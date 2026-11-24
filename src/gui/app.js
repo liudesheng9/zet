@@ -1050,7 +1050,10 @@
         extra = { gloss_updates: { ...(args.gloss_updates || {}), ...updates } };
         // The decisions are part of the request: plan again with them (a preview never writes),
         // then confirm that plan; a write that needs no confirmation any more is sent as it is.
+        const reviewed = answer.expected_revision;
         answer = await connApi(tool, { ...args, ...extra, preview: true });
+        // The decisions answer the glosses shown: a plan made at another revision was not reviewed.
+        if (answer.expected_revision !== reviewed) throw new Error('The archive changed during the gloss review; nothing was written. Run the action again.');
         // Once a review started, nothing applies without confirmation: a plan that no longer asks
         // for it changed under the review.
         if (!answer.confirm) throw new Error('The plan changed during the gloss review; nothing was written. Run the action again.');
@@ -1089,6 +1092,8 @@
     let stationId = null;
     if (parsed.kind === 'place') {
       const listed = await connApi('list_placements', { at: 'place:' + parsed.value });
+      // A late answer after another move is dropped before it can navigate.
+      if (!stationLoads.isLatest(seq)) return;
       const here = (listed.placements || []).find((p) => p.placement_id === parsed.value);
       if (!here) throw new Error('placement removed: this station no longer exists');
       if (!/^~/.test(here.host)) {
