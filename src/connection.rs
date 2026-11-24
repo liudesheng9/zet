@@ -41,7 +41,8 @@ pub(crate) const WRITE_TOOLS: [&str; 15] = [
 ];
 
 /// The read tools of this module.
-pub(crate) const READ_TOOLS: [&str; 5] = [
+pub(crate) const READ_TOOLS: [&str; 6] = [
+    "list_side_mounts",
     "list_connection_trees",
     "get_connection_tree",
     "list_placements",
@@ -433,7 +434,11 @@ fn station_value(
         if let Some(drift) = crate::coord_lock::drift(conn, &placement.placement_id)? {
             value["drift"] = drift;
         }
-        if card.is_lit || card.is_topic || (role == TreeRole::Connection && Handle::parse(&card.address).is_some_and(|h| h.local.is_none())) {
+        let is_root = card.is_lit
+            || card.is_topic
+            || (role == TreeRole::Connection && Handle::parse(&card.address).is_some_and(|h| h.local.is_none()));
+        // A mounted tree root is a portal; the host tree's own root is not.
+        if is_root && placement.edge != EdgeKind::Root {
             // A mounted tree root is one portal node: it never expands its home tree.
             value["portal"] = json!({
                 "tree": crate::tree_id(&card.address),
@@ -2316,6 +2321,7 @@ fn read(conn: &Connection, access: Access, tool: &str, args: &Value) -> Result<V
         "list_placements" => list_placements(conn, access, args),
         "list_connections" => list_connections(conn, args),
         "get_dependencies" => crate::dependencies::get(conn, args),
+        "list_side_mounts" => list_side_mounts(conn, access, args),
         other => bail!("unknown Connection tree read `{other}`"),
     }
 }
@@ -2553,4 +2559,19 @@ pub(crate) fn merge(target: &mut Value, extra: Value) {
             t.insert(k, v);
         }
     }
+}
+
+/// The Topic-side mounts beside one Topic home Card, in order (`3/2+1`, `3/2+2`, …).
+pub(crate) fn list_side_mounts(conn: &Connection, access: Access, args: &Value) -> Result<Value> {
+    let at = arg_str(args, "at")?;
+    let card = crate::load_card(conn, at)?;
+    let card_id = coord::card_id_of_row(conn, card.row_id)?;
+    let mut mounts = Vec::new();
+    for p in coord::attachments_of_anchor(conn, &card_id)? {
+        let host = host_of(conn, &p)?;
+        let editable = can_edit_host(conn, access, &host)?;
+        let coord_text = coord::coordinate_of(conn, &p)?;
+        mounts.push(station_value(conn, access, &host, editable, &p, &coord_text)?);
+    }
+    Ok(json!({"at": card.address, "mounts": mounts, "archive_revision": crate::link_index::revision(conn)?}))
 }

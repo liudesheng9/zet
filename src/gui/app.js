@@ -1020,14 +1020,505 @@
     }
   }
 
+  // ------------------------------------------------- Connection trees (关联树)
+  // docs/multi-tree-coordinates-proposal.md §9.1. A station is one occurrence of a Card in a
+  // Connection tree (or beside a Topic Card); its route is its placement ID (`#/place/<id>`), so a
+  // reorganized tree never sends the reader to another Card. The page writes as the owner through
+  // `/api/connection` with the MCP tool names; a plan answer asks for its confirmation word.
+  const CONN = window.ZtConnections;
+
+  async function connApi(tool, args) {
+    return api('connection', { tool, args: args || {} });
+  }
+
+  /** Run a write: a plan is shown first and confirmed with its word, then the write commits. */
+  async function connWrite(title, tool, args) {
+    let answer = await connApi(tool, args);
+    if (answer.applied === false) {
+      const review = CONN.glossReview(answer);
+      let extra = {};
+      if (review.length) {
+        const updates = {};
+        for (const item of review) {
+          const kept = await promptValue(`Review the gloss of ${item.coord}`,
+            'Its predecessor changes. Keep the text (as reviewed), change it, or clear the field to drop it:', item.gloss);
+          if (kept === null) return null;
+          const checked = CONN.checkGloss(kept);
+          if (!checked.ok) throw new Error(checked.error);
+          updates[item.placement_id] = checked.gloss;
+        }
+        extra = { gloss_updates: { ...(args.gloss_updates || {}), ...updates } };
+      }
+      const ok = await confirmPlan(title, answer.lines || [], answer.confirm);
+      if (!ok) return null;
+      answer = await connApi(tool, { ...args, ...extra, confirm: answer.confirm, plan_hash: answer.plan_hash, expected_revision: answer.expected_revision });
+    }
+    return answer;
+  }
+
+  /** Leave a station to read its Card at home: one action brings the reader back to this station. */
+  function excursion(s) {
+    state.excursion = { id: s.placement_id, label: `${s.coord} in ${state.conn.tree.tree}` };
+    go(s.home_address);
+  }
+
+  function openConnTree(handle) {
+    location.hash = CONN.treeHash(handle);
+  }
+
+  function openStation(id) {
+    const hash = CONN.stationHash(id);
+    if (location.hash === hash) route();
+    else location.hash = hash;
+  }
+
+  /** Load the tree and station a `#/conn/…` or `#/place/…` route names, then the Card standing there. */
+  async function loadStation(parsed) {
+    let treeName = null;
+    let stationId = null;
+    if (parsed.kind === 'place') {
+      const listed = await connApi('list_placements', { at: 'place:' + parsed.value });
+      const here = (listed.placements || []).find((p) => p.placement_id === parsed.value);
+      if (!here) throw new Error('placement removed: this station no longer exists');
+      if (!/^~/.test(here.host)) {
+        // A Topic-side mount opens its Card; the shelf beside the anchor shows the station.
+        toast(`${here.coord} is a Topic-side mount beside a Card of ${here.host}`);
+        if (listed.home) go(listed.home);
+        return;
+      }
+      treeName = here.host;
+      stationId = here.placement_id;
+    } else {
+      treeName = parsed.value.split('/')[0];
+    }
+    const tree = await connApi('get_connection_tree', { tree: treeName });
+    if (parsed.kind === 'conn') {
+      const coord = parsed.value.includes('/') ? parsed.value : `${tree.tree}/0`;
+      const found = tree.placements.find((p) => p.coord === coord);
+      if (!found) throw new Error(`no station at ${coord}`);
+      stationId = found.placement_id;
+      history.replaceState(history.state, '', CONN.stationHash(stationId));
+    }
+    const station = tree.placements.find((p) => p.placement_id === stationId);
+    let card = null;
+    if (station && station.status === 'live') card = await api('card?at=' + enc(station.home_address));
+    const placesOf = station && station.status === 'live' ? await connApi('list_placements', { card_id: station.card_id }).catch(() => null) : null;
+    state.excursion = null;
+    state.conn = { tree, stationId, station, places: placesOf, overlay: state.conn ? state.conn.overlay : false, companion: null, lens: null };
+    state.card = card;
+    if (card && card.workspace && card.workspace !== state.workspace) setWorkspace(card.workspace);
+    renderAll();
+  }
+
+  function connStationRow(row, conn, counts) {
+    const portal = CONN.portalLabel(row);
+    const on = row.placement_id === conn.stationId;
+    const n = counts.get(row.placement_id) || 0;
+    return h('button', {
+      class: 'conn-row' + (on ? ' on' : '') + (row.status === 'missing' ? ' missing' : '') + ' ' + (row.origin || 'mount'),
+      style: `--depth:${row.depth}`,
+      title: row.gloss ? `${row.coord} · ${row.gloss}` : row.coord,
+      dataset: { placement: row.placement_id },
+      onclick: () => openStation(row.placement_id),
+    },
+      h('span', { class: 'coord', text: row.coord }),
+      h('span', { class: 't', text: row.title || row.home_address }),
+      row.status === 'missing' ? h('span', { class: 'badge missing', text: 'missing' }) : null,
+      portal ? h('span', { class: 'badge portal', text: portal }) : null,
+      row.origin === 'native' && row.edge !== 'root' ? h('span', { class: 'badge native', text: 'native' }) : null,
+      n ? h('span', { class: 'badge conns', title: `${n} tree connection(s)`, text: `⟷ ${n}` }) : null,
+      row.gloss ? h('span', { class: 'gloss', text: row.gloss }) : null,
+    );
+  }
+
+  /** The Map of a Connection tree: its stations in outline order and the focused connections. */
+  function renderConnStage() {
+    const conn = state.conn;
+    const host = $('#conn-map');
+    const rows = CONN.outline(conn.tree.placements || []);
+    const connections = conn.tree.connections || [];
+    const counts = CONN.counts(connections);
+    const edges = CONN.focusEdges(connections, conn.stationId, conn.overlay);
+    $('#stage-title').textContent = `${conn.tree.title || conn.tree.tree} (${conn.tree.tree}) · ${conn.tree.counts}${conn.tree.locked ? ' · locked' : ''}`;
+    host.replaceChildren(
+      h('div', { class: 'conn-tools' },
+        h('label', { class: 'conn-overlay' },
+          h('input', { type: 'checkbox', checked: conn.overlay ? true : null, onchange: (event) => { conn.overlay = event.target.checked; renderStage(); } }),
+          ' All connections'),
+        conn.tree.can_edit_tree ? h('button', { class: 'mini-btn', text: '+ Mount a Card', onclick: () => mountHere().catch(fail) }) : null,
+        h('button', { class: 'mini-btn', text: 'Lock…', title: 'Lock this Connection tree: its stations, glosses and connections freeze and its mounted Cards are pinned', onclick: () => lockTree(conn.tree.tree).catch(fail) }),
+      ),
+      h('ol', { class: 'conn-outline', 'aria-label': `Stations of ${conn.tree.tree}` }, rows.map((row) => h('li', {}, connStationRow(row, conn, counts)))),
+      h('section', { class: 'conn-edges' },
+        h('h3', { text: conn.overlay ? `All connections · ${edges.length}` : `Connections of ${conn.station ? conn.station.coord : ''} · ${edges.length}` }),
+        edges.length ? h('ul', {}, edges.map((edge) => h('li', { class: 'conn-edge ' + edge.role + ' ' + edge.direction },
+          h('span', { class: 'prov', text: CONN.provenance(edge) }),
+          h('span', { class: 'sent', text: CONN.sentence(edge) }),
+          edge.relation_kind ? h('span', { class: 'kind', text: edge.relation_kind }) : null,
+          edge.note ? h('span', { class: 'note', text: edge.note }) : null,
+        ))) : h('p', { class: 'empty-hint', text: 'No connection here yet. Connect two stations from the reader.' }),
+      ),
+    );
+  }
+
+  async function mountHere(parent) {
+    const conn = state.conn;
+    const answerText = await promptValue('Mount a Card', `The Card to mount after ${conn.station.coord} (an address, Citation key or handle such as ~3#2); add " side" to make it a Side branch:`, '');
+    if (!answerText) return;
+    const [target, where] = answerText.trim().split(/\s+/);
+    const side = where === 'side';
+    const args = { host: conn.tree.tree, parent_placement_id: parent || conn.stationId, edge: side && conn.station.edge !== 'root' ? 'side' : 'direct', target_at: target };
+    const answer = await connWrite(`Mount ${target}`, 'place_card', args);
+    if (!answer) return;
+    toast(answer.already_placed ? `${target} already stands at ${answer.coord}` : `mounted at ${answer.coord}`);
+    openStation(answer.placement_id);
+  }
+
+  /** The station block above the Card: where it stands, why, who may edit what, and its connections. */
+  function stationBlock() {
+    const conn = state.conn;
+    const s = conn.station;
+    if (!s) return h('div', { class: 'station-block', text: 'This station no longer exists.' });
+    const lists = CONN.panel(conn.tree.connections || [], s.placement_id);
+    const others = (conn.tree.placements || []).filter((p) => p.placement_id !== s.placement_id);
+    const editHost = s.can_edit_placement;
+    const drift = s.drift;
+    const item = (edge) => h('li', { class: 'conn-item ' + edge.direction },
+      h('span', { class: 'prov', title: 'A connection recorded in this Connection tree, not a Link in either Card', text: CONN.provenance(edge) }),
+      h('span', { class: 'sent', text: CONN.sentence(edge) }),
+      edge.note ? h('span', { class: 'note', text: edge.note }) : null,
+      h('span', { class: 'conn-actions' },
+        h('button', { class: 'link-btn', text: 'Peek', title: 'Open the other end beside this Card', onclick: () => companion(edge.from.placement_id === s.placement_id ? edge.to : edge.from).catch(fail) }),
+        editHost ? h('button', { class: 'link-btn', text: 'Edit', onclick: () => editConnection(edge).catch(fail) }) : null,
+        editHost ? h('button', { class: 'link-btn', text: 'Develop', title: 'Develop an assertion: write a native Card that argues it, citing both Cards', onclick: () => developAssertion(edge).catch(fail) }) : null,
+        editHost ? h('button', { class: 'link-btn danger', text: 'Delete', onclick: () => connWrite('Delete connection', 'delete_connection', { connection_id: edge.connection_id }).then((a) => a && openStation(s.placement_id)).catch(fail) }) : null,
+      ));
+    const group = (label, list) => list.length ? h('div', { class: 'conn-group' }, h('h4', { text: `${label} · ${list.length}` }), h('ul', {}, list.map(item))) : null;
+    const labels = CONN.labelSuggestions(conn.tree.connections);
+    return h('section', { class: 'station-block' + (s.status === 'missing' ? ' missing' : '') },
+      h('nav', { class: 'station-trail', 'aria-label': 'Station' },
+        h('button', { class: 'link-btn', text: `${conn.tree.title || conn.tree.tree} (${conn.tree.tree})`, onclick: () => openStation(conn.tree.root_placement_id) }),
+        h('span', { text: ' › ' }),
+        h('b', { text: `${s.coord} · ${s.title || s.home_address}` })),
+      h('p', { class: 'station-gloss' + (s.gloss ? '' : ' empty') },
+        s.gloss ? h('span', { text: s.gloss }) : h('span', { text: s.edge === 'root' ? 'The root of this tree.' : 'No positional gloss.' }),
+        editHost && s.edge !== 'root' ? h('button', { class: 'link-btn', text: 'Edit gloss', onclick: () => editGloss(s).catch(fail) }) : null),
+      h('div', { class: 'authority-bar' },
+        s.status === 'missing'
+          ? h('span', { class: 'home missing', text: `Missing mount: ${s.home_address} (${s.title}) was deleted at its home` })
+          : h('span', { class: 'home', text: `Home: ${s.home_address} · ${s.home_role} · ${s.home_workspace}` }),
+        drift && drift.differs ? h('span', { class: 'drift', text: drift.label + (drift.reviewed ? ' · reviewed' : '') }) : null,
+        drift && drift.differs && !drift.reviewed ? h('button', { class: 'mini-btn', text: 'Mark reviewed', onclick: () => connApi('review_source', { placement_id: s.placement_id, reviewed_fp: drift.current_fp }).then(() => openStation(s.placement_id)).catch(fail) }) : null,
+        s.status === 'live' ? h('button', { class: 'mini-btn', disabled: s.can_edit_card ? null : true, title: s.can_edit_card ? 'Edit the Card at its home (Back returns here)' : 'This Card is not yours to edit here (its home Workspace or Lock)', text: 'Edit Card', onclick: () => excursion(s) }) : null,
+        s.status === 'live' ? h('button', { class: 'mini-btn', text: 'Open home tree', title: 'Read the Card in its home tree; Back to station returns here', onclick: () => excursion(s) }) : null,
+        h('span', { class: 'cap', text: editHost ? 'You may edit this station and its connections' : 'This tree is read-only here' }),
+      ),
+      h('div', { class: 'station-actions' },
+        s.status === 'live' ? h('button', { class: 'mini-btn', text: 'Copy Card citation', onclick: () => copyText(CONN.citation(s)) }) : null,
+        h('button', { class: 'mini-btn', text: 'Copy station bookmark', onclick: () => copyText(CONN.bookmark(s)) }),
+        s.status === 'live' ? h('button', { class: 'mini-btn', text: 'Dependency Lens', onclick: () => dependencyLens(s.home_address).catch(fail) }) : null,
+        editHost ? h('button', { class: 'mini-btn', text: 'Mount after', onclick: () => mountHere().catch(fail) }) : null,
+        editHost && s.edge !== 'root' ? h('button', { class: 'mini-btn', text: 'Move…', onclick: () => moveStation(s).catch(fail) }) : null,
+        editHost && s.edge !== 'root' && s.origin !== 'native' ? h('button', { class: 'mini-btn', text: 'Unplace…', onclick: () => unplaceStation(s).catch(fail) }) : null,
+        editHost && s.status === 'missing' ? h('button', { class: 'mini-btn', text: 'Rebind…', onclick: () => rebindStation(s).catch(fail) }) : null,
+        s.origin === 'native' && s.edge !== 'root' && s.status === 'live' ? h('button', { class: 'mini-btn', text: 'Promote…', onclick: () => promoteNative(s).catch(fail) }) : null,
+      ),
+      h('div', { class: 'conn-panel' },
+        h('h3', { text: 'Connections in this tree' }),
+        group('Outgoing', lists.outgoing), group('Incoming', lists.incoming), group('Neutral', lists.neutral),
+        !(lists.outgoing.length + lists.incoming.length + lists.neutral.length) ? h('p', { class: 'empty-hint', text: 'None yet.' }) : null,
+        editHost && others.length ? h('form', { class: 'conn-add', onsubmit: (event) => { event.preventDefault(); addConnection(event.target).catch(fail); } },
+          h('select', { name: 'to', 'aria-label': 'Other station' }, others.map((p) => h('option', { value: p.placement_id, text: `${p.coord} · ${p.title || p.home_address}` }))),
+          h('select', { name: 'direction', 'aria-label': 'Direction' }, h('option', { value: 'neutral', text: 'neutral (no claim)' }), h('option', { value: 'directed', text: 'this → other' })),
+          h('input', { name: 'label', placeholder: 'label (optional)', list: 'conn-labels', maxlength: '64' }),
+          h('datalist', { id: 'conn-labels' }, labels.map((label) => h('option', { value: label }))),
+          h('select', { name: 'kind', 'aria-label': 'Kind' }, h('option', { value: '', text: 'no kind' }), CONN.KINDS.map((k) => h('option', { value: k, text: k }))),
+          h('input', { name: 'note', placeholder: 'note (optional, plain text)', maxlength: '800' }),
+          h('button', { class: 'mini-btn primary', type: 'submit', text: 'Connect' })) : null,
+      ),
+      conn.places && conn.places.placements && conn.places.placements.length > 1 ? h('div', { class: 'also-in' },
+        h('h3', { text: 'Also in trees' }),
+        h('ul', {}, conn.places.placements.filter((p) => p.placement_id !== s.placement_id).map((p) => h('li', {},
+          h('button', { class: 'link-btn', text: `${p.coord} in ${p.host}`, onclick: () => openStation(p.placement_id) }),
+          p.gloss ? h('span', { class: 'gloss', text: ' · ' + p.gloss }) : null)))) : null,
+      conn.companion ? companionPane(conn.companion) : null,
+      conn.lens ? lensPane(conn.lens) : null,
+    );
+  }
+
+  async function editGloss(s) {
+    const value = await promptValue(`Gloss of ${s.coord}`, `Why this Card sits here (one line, at most ${CONN.GLOSS_LIMIT} characters, no Links). Clear it to remove the gloss:`, s.gloss || '');
+    if (value === null) return;
+    const checked = CONN.checkGloss(value);
+    if (!checked.ok) throw new Error(checked.error);
+    await connApi('edit_placement', { placement_id: s.placement_id, gloss: checked.gloss, base_gloss: s.gloss ?? null });
+    openStation(s.placement_id);
+  }
+
+  async function addConnection(form) {
+    const data = new FormData(form);
+    const input = {
+      tree: state.conn.tree.tree,
+      from_placement_id: state.conn.stationId,
+      to_placement_id: data.get('to'),
+      direction: data.get('direction'),
+      relation_label: String(data.get('label') || '').trim() || undefined,
+      relation_kind: data.get('kind') || undefined,
+      note: String(data.get('note') || '').trim() || undefined,
+    };
+    const checked = CONN.checkConnection(input);
+    if (!checked.ok) throw new Error(checked.error);
+    const answer = await connApi('connect_placements', input);
+    toast(answer.already_connected ? 'these two stations are already connected' : `connected: ${answer.sentence}`);
+    openStation(state.conn.stationId);
+  }
+
+  async function editConnection(edge) {
+    const label = await promptValue('Label', 'A free label in your words (1–32 characters); clear it to remove:', edge.relation_label || '');
+    if (label === null) return;
+    const note = await promptValue('Note', 'A plain-text note (at most 400 characters); clear it to remove:', edge.note || '');
+    if (note === null) return;
+    const args = { connection_id: edge.connection_id, relation_label: label.trim() || null, note: note.trim() || null, base_updated_at_rev: edge.updated_at_rev };
+    const checked = CONN.checkConnection({ relation_label: label, note, relation_kind: edge.relation_kind, direction: edge.direction });
+    if (!checked.ok) throw new Error(checked.error);
+    await connApi('edit_connection', args);
+    openStation(state.conn.stationId);
+  }
+
+  /** Develop an assertion: a native synthesis Card citing both endpoints, as a Side branch. */
+  async function developAssertion(edge) {
+    const conn = state.conn;
+    const title = await promptValue('Develop an assertion', 'Title of the new native Card that states and argues this connection:', CONN.sentence(edge));
+    if (!title) return;
+    const cite = (end) => {
+      const p = (conn.tree.placements || []).find((x) => x.placement_id === end.placement_id);
+      return p && p.citation ? p.citation : `[[${p ? p.home_address : end.title}]]`;
+    };
+    const body = `${cite(edge.from)} ${edge.relation_label || edge.relation_kind || '与'} ${cite(edge.to)}。${edge.note ? '\n\n' + edge.note : ''}`;
+    const parent = conn.station.edge === 'root' ? null : conn.stationId;
+    const answer = await connApi('create_connection_card', { tree: conn.tree.tree, parent_placement_id: parent || conn.tree.root_placement_id, edge: parent ? 'side' : 'direct', title, body });
+    toast(`wrote ${answer.handle}; the connection stays until you remove it`);
+    openStation(answer.placement_id);
+  }
+
+  async function moveStation(s) {
+    const where = await promptValue(`Move ${s.coord}`, 'The new parent station (a coordinate such as ~7/1), then optionally "side":', '');
+    if (!where) return;
+    const [parent, edge] = where.trim().split(/\s+/);
+    const answer = await connWrite(`Move ${s.coord}`, 'move_placement', { placement_id: s.placement_id, destination: { parent, edge: edge === 'side' ? 'side' : 'direct' } });
+    if (answer) openStation(s.placement_id);
+  }
+
+  async function unplaceStation(s) {
+    const hasChildren = (state.conn.tree.placements || []).some((p) => p.parent_id === s.placement_id);
+    const args = { placement_id: s.placement_id };
+    if (hasChildren) {
+      const policy = await promptValue(`Unplace ${s.coord}`, 'It has successors: type "reattach" (they take its place) or "detach" (the whole branch goes):', 'reattach');
+      if (!policy) return;
+      args.children = policy.trim();
+    }
+    const answer = await connWrite(`Unplace ${s.coord}`, 'unplace', args);
+    if (answer) openStation(s.parent_id || state.conn.tree.root_placement_id);
+  }
+
+  async function rebindStation(s) {
+    const target = await promptValue(`Rebind ${s.coord}`, 'The live Card that should stand here instead:', '');
+    if (!target) return;
+    const tree = state.conn.tree;
+    const incident = (tree.connections || []).filter((c) => c.from.placement_id === s.placement_id || c.to.placement_id === s.placement_id);
+    const dispositions = {};
+    for (const c of incident) {
+      const keep = await confirmPlan('Connection of the missing Card', [CONN.sentence(c), 'Type `keep` to recreate it on the new Card; cancel to delete it.'], 'keep');
+      dispositions[c.connection_id] = keep ? 'keep' : 'delete';
+    }
+    const answer = await connWrite(`Rebind ${s.coord}`, 'rebind_placement', { placement_id: s.placement_id, target_at: target.trim(), connection_dispositions: dispositions });
+    if (answer) openStation(answer.placement_id);
+  }
+
+  async function promoteNative(s) {
+    const to = await promptValue(`Promote ${s.home_address}`, 'A free Location in a Topic tree of the same Workspace (for example 3/6). Its handle keeps citing it:', '');
+    if (!to) return;
+    const answer = await connWrite(`Promote ${s.home_address}`, 'promote_card', { at: s.home_address, to: to.trim() });
+    if (answer) { toast(`${answer.handle} now lives at ${answer.address}`); openStation(s.placement_id); }
+  }
+
+  /** The companion pane: another Card beside the anchored one, without moving the Pointer. */
+  async function companion(end, mark) {
+    const p = (state.conn.tree.placements || []).find((x) => x.placement_id === end.placement_id);
+    const address = p ? p.home_address : end.address;
+    if (!address || (p && p.status === 'missing')) throw new Error('that end is a Missing mount');
+    const card = await api('card?at=' + enc(address));
+    state.conn.companion = { card, mark };
+    renderReader();
+  }
+
+  function companionPane(entry) {
+    const { card, mark } = entry;
+    let body;
+    if (mark) {
+      const [before, hit, after] = CONN.markByBytes(card.body, mark);
+      body = h('pre', { class: 'companion-body' }, before, h('mark', { text: hit }), after);
+    } else {
+      body = h('div', { class: 'md' }, bodyNodes(card.html));
+    }
+    return h('aside', { class: 'companion', 'aria-label': 'Companion card' },
+      h('header', {},
+        h('b', { text: `${card.address} · ${card.title}` }),
+        h('button', { class: 'link-btn', text: 'Open', onclick: () => go(card.address) }),
+        h('button', { class: 'link-btn', text: 'Close', onclick: () => { state.conn ? (state.conn.companion = null) : (state.companionHome = null); renderReader(); } })),
+      body);
+  }
+
+  /** The Dependency Lens of one Card, anchored beside it, with exact carrier sentences. */
+  async function dependencyLens(address) {
+    const card = await api('card?at=' + enc(address));
+    const scope = card.model || card.type === 'model' ? 'unit' : 'card';
+    const args = { at: address, scope, depth: 1 };
+    if (state.conn) args.overlay_tree = state.conn.tree.tree;
+    const lens = await connApi('get_dependencies', args);
+    if (state.conn) state.conn.lens = lens;
+    else state.lensHome = lens;
+    renderReader();
+  }
+
+  function lensPane(lens) {
+    const evidence = (ev) => h('li', { class: 'evidence' },
+      h('span', { class: 'prov', text: ev.provenance }),
+      h('button', { class: 'link-btn', text: ev.sentence, title: 'Open the carrier beside this Card with the invoking Link marked', onclick: () => companionCarrier(ev).catch(fail) }));
+    const prereqs = (lens.edges || []).filter((e) => e.from === lens.focus.address);
+    const overlay = lens.overlay ? (lens.overlay.connections || []) : [];
+    return h('section', { class: 'lens-pane' },
+      h('header', {}, h('h3', { text: `Dependency Lens · ${lens.focus.address} · ${lens.scope}` }),
+        h('button', { class: 'link-btn', text: 'Seed a Connection tree', onclick: () => seedFromLens(lens).catch(fail) }),
+        h('button', { class: 'link-btn', text: 'Close', onclick: () => { if (state.conn) state.conn.lens = null; else state.lensHome = null; renderReader(); } })),
+      h('h4', { text: `Depends on · ${prereqs.length}` }),
+      h('ul', {}, prereqs.map((e) => h('li', {}, h('button', { class: 'link-btn', text: e.to, onclick: () => go(e.to) }), h('ul', {}, e.evidence.map(evidence))))),
+      h('h4', { text: `Used by · ${(lens.dependents || []).length}` }),
+      h('ul', {}, (lens.dependents || []).map((d) => h('li', {}, h('button', { class: 'link-btn', text: `${d.node.address} · ${d.node.title}`, onclick: () => go(d.node.address) }), h('ul', {}, d.evidence.map(evidence))))),
+      (lens.cycles || []).length ? h('p', { class: 'warn', text: `Cycles: ${lens.cycles.map((c) => c.nodes.join(' → ')).join('; ')}` }) : null,
+      (lens.reach_in || []).length ? h('p', { class: 'warn', text: `Reach-in: ${lens.reach_in.map((r) => `${r.carrier} → ${r.target}`).join('; ')}` }) : null,
+      overlay.length ? h('div', { class: 'lens-overlay' }, h('h4', { text: `Working connections in ${lens.overlay.tree}` }),
+        h('ul', {}, overlay.map((o) => h('li', { class: 'ov ' + o.class }, h('span', { class: 'prov', text: o.class === 'both' ? 'In the Card and in this tree' : o.connection.provenance }), h('span', { text: o.connection.sentence }))))) : null,
+      h('p', { class: 'hint', text: 'Only authored Card-body Links enter the dependency closure and the seed order.' }));
+  }
+
+  async function companionCarrier(ev) {
+    const card = await api('card?at=' + enc(ev.carrier));
+    const entry = { card, mark: ev.macro_byte_range };
+    if (state.conn) state.conn.companion = entry; else state.companionHome = entry;
+    renderReader();
+  }
+
+  async function seedFromLens(lens) {
+    const title = await promptValue('Seed a Connection tree', 'Title of the new tree (its stations follow the prerequisite-first order once):', `Study: ${lens.focus.title}`);
+    if (!title) return;
+    const answer = await connWrite('Seed', 'seed_connection_tree', { from: 'dependencies', source_params: { at: lens.focus.address, scope: lens.scope, depth: lens.depth }, title, workspace: state.workspace });
+    if (answer) openConnTree(answer.tree);
+  }
+
+  async function newConnectionTree() {
+    if (notInPortable('Creating a Connection tree')) return;
+    const title = await promptValue('New Connection tree', 'A title is enough to start:', '');
+    if (!title) return;
+    const answer = await connApi('create_connection_tree', { title, workspace: state.workspace });
+    await refresh();
+    openConnTree(answer.tree);
+  }
+
+  /** The cabinet's third section: the Connection trees of the current Workspace. */
+  function renderConnectionDrawers() {
+    const box = $('#connection-drawers');
+    if (!box) return;
+    const filter = ($('#connection-filter') && $('#connection-filter').value || '').toLowerCase();
+    const trees = (state.connTrees || []).filter((t) => t.workspace === state.workspace)
+      .filter((t) => !filter || `${t.title} ${t.purpose || ''}`.toLowerCase().includes(filter));
+    box.replaceChildren(...(trees.length ? trees.map((t) => h('button', {
+      class: 'drawer connection' + (t.locked ? ' locked' : '') + (state.conn && state.conn.tree.tree === t.tree ? ' on' : ''),
+      title: t.title,
+      onclick: () => { openConnTree(t.tree); openRail(false); },
+    },
+      h('span', { class: 'addr', text: t.tree }),
+      h('span', { class: 't', text: t.title || '(untitled)' }),
+      h('span', { class: 'n', text: t.locked ? 'locked' : String(t.mounted + t.native) }),
+      h('span', { class: 'x', text: (t.purpose ? `${t.purpose} · ` : '') + t.counts }),
+    )) : [h('div', { class: 'empty-hint', text: 'No Connection trees yet — press + c.' })]));
+  }
+
+  async function loadConnTrees() {
+    const listed = await connApi('list_connection_trees', {}).catch(() => null);
+    state.connTrees = listed ? listed.trees : [];
+    renderConnectionDrawers();
+  }
+
+  /** At a home Card: the trees it also stands in, and the Topic-side mounts beside a Topic Card. */
+  function homeExtras(card) {
+    const extras = state.homeExtras && state.homeExtras.address === card.address ? state.homeExtras : null;
+    if (!extras) {
+      state.homeExtras = { address: card.address, places: null, shelf: null };
+      Promise.all([
+        connApi('list_placements', { at: card.address }).catch(() => null),
+        connApi('list_side_mounts', { at: card.address }).catch(() => null),
+      ]).then(([places, shelf]) => {
+        if (!state.card || state.card.address !== card.address) return;
+        state.homeExtras = { address: card.address, places, shelf };
+        const slot = document.querySelector('#home-extras');
+        if (slot) slot.replaceWith(homeExtras(card));
+        // The Map marks the Topic-side mounts beside this Card, apart from its `|a` branches.
+        const mounts = shelf && shelf.mounts ? shelf.mounts.length : 0;
+        const node = document.querySelector(`.node[data-address="${CSS.escape(card.address)}"]`);
+        if (node && mounts && !node.querySelector('.side-mounts')) {
+          node.append(h('span', { class: 'side-mounts', title: `${mounts} Topic-side mount(s) beside this Card (${card.address}+1 …); they take no |a slot`, text: `+${mounts} beside` }));
+        }
+      });
+    }
+    const places = extras && extras.places && extras.places.placements ? extras.places.placements : [];
+    const shelf = extras && extras.shelf && extras.shelf.mounts ? extras.shelf.mounts : [];
+    return h('div', { id: 'home-extras', class: 'home-extras' },
+      shelf.length ? h('section', { class: 'side-shelf', 'aria-label': 'Topic-side mounts' },
+        h('h3', { text: `Beside this Card · ${shelf.length}` }),
+        h('ul', {}, shelf.map((m) => h('li', { class: m.status === 'missing' ? 'missing' : '' },
+          h('span', { class: 'coord', text: m.coord }),
+          h('button', { class: 'link-btn', text: `${m.home_address} · ${m.title}`, onclick: () => m.status === 'live' ? go(m.home_address) : toast('Missing mount: its Card was deleted at home', 'warn') }),
+          m.gloss ? h('span', { class: 'gloss', text: m.gloss }) : null)))) : null,
+      places.length ? h('section', { class: 'also-in' }, h('h3', { text: 'Also in trees' }),
+        h('ul', {}, places.map((p) => h('li', {},
+          h('button', { class: 'link-btn', text: `${p.coord} in ${p.host}`, onclick: () => p.host.startsWith('~') ? openStation(p.placement_id) : go(p.home_address) }),
+          p.gloss ? h('span', { class: 'gloss', text: ' · ' + p.gloss }) : null)))) : null,
+      h('div', { class: 'station-actions' },
+        h('button', { class: 'mini-btn', text: 'Dependency Lens', onclick: () => dependencyLens(card.address).catch(fail) }),
+        h('button', { class: 'mini-btn', text: 'Copy Card citation', onclick: () => copyText(`[[${(extras && extras.places && extras.places.handle) || card.address}]]`) })),
+      state.lensHome && state.lensHome.focus.address === card.address ? lensPane(state.lensHome) : null,
+      state.companionHome ? companionPane(state.companionHome) : null,
+    );
+  }
+
   // --------------------------------------------------------------- routing
   function go(address) {
+    // A Connection-tree root, a coordinate or a station bookmark opens the station view.
+    if (address && /^~\d+$/.test(address)) return openConnTree(address);
+    if (address && (/^~\d+\//.test(address) || /\+\d+$/.test(address))) return openConnTree(address);
+    if (address && /^place:/.test(address)) return openStation(address.slice(6));
     const hash = address ? '#/card/' + enc(address) : '#/';
     if (location.hash === hash) route();
     else location.hash = hash;
   }
 
   function route() {
+    const parsed = CONN.parseHash(location.hash);
+    if (parsed.kind === 'place' || parsed.kind === 'conn') {
+      if (/\+\d+$/.test(parsed.value)) {
+        // A Topic-side mount coordinate: open the Card standing there.
+        connApi('list_placements', { at: parsed.value }).then((listed) => go(listed.home)).catch(fail);
+        return;
+      }
+      state.pointer = null;
+      nav.arrive(parsed.kind === 'place' ? 'place:' + parsed.value : parsed.value);
+      finder.close();
+      state.homeExtras = null;
+      loadStation(parsed).catch((error) => { toast(String(error.message || error), 'err'); });
+      return;
+    }
+    state.conn = null;
     const match = location.hash.match(/^#\/card\/(.+)$/);
     const pointer = match ? decodeURIComponent(match[1]) : null;
     const moved = pointer !== state.pointer;
@@ -1153,8 +1644,15 @@
     if (change.graph) { state.tree = null; state.outline = null; }
     if (change.graph || change.fetch.length || change.drop.length) sky.invalidate();
     state.prints = prints;
+    if (!PORTABLE) await loadConnTrees();
     renderRail();
     renderTopbar();
+    // A station view reloads its tree and station by placement ID (a write elsewhere may have moved
+    // or removed it); a removed station says so instead of opening another Card.
+    if (state.conn) {
+      await loadStation({ kind: 'place', value: state.conn.stationId }).catch((error) => toast(String(error.message || error), 'err'));
+      return;
+    }
     await loadPointer();
   }
 
@@ -1816,6 +2314,7 @@
       ? shelved.flatMap((shelf) => [shelfHead(shelf), ...shelf.trees.map(drawer)])
       : [h('div', { class: 'empty-hint', text: state.workspace === 'agent' ? 'No agent Literature yet.' : 'No Literature yet — press l.' })]));
     $('#archive-root').textContent = state.overview.archive_root;
+    renderConnectionDrawers();
   }
 
   const shelfHead = (shelf) => h('h3', { class: 'shelf-head' },
@@ -1912,6 +2411,14 @@
 
   function renderStage() {
     if (!state.overview) return;
+    const connView = state.conn && state.mode === 'map';
+    $('#conn-map').hidden = !connView;
+    if (connView) {
+      for (const id of ['#desk', '#plane', '#table-plane', '#legend', '#lens-toggle', '#term-toggle']) $(id).hidden = true;
+      $('#sky').hidden = true;
+      renderConnStage();
+      return;
+    }
     const inTree = state.mode === 'map' && state.card;
     const onTableMode = state.mode === 'table';
     $('#desk').hidden = !(state.mode === 'map' && !state.card);
@@ -4288,6 +4795,22 @@
   }
 
   function renderReader() {
+    renderCardReader();
+    const reader = $('#reader');
+    if (state.conn) {
+      // A station: where the Card stands and why, above the Card itself (or alone, when missing).
+      if (!state.card) reader.replaceChildren();
+      reader.prepend(stationBlock());
+    } else if (state.card && !PORTABLE) {
+      reader.append(homeExtras(state.card));
+    }
+    if (!state.conn && state.excursion) {
+      const back = state.excursion;
+      reader.prepend(h('button', { class: 'mini-btn back-to-station', title: 'Return to the exact station you left', text: `↩ Back to station ${back.label}`, onclick: () => openStation(back.id) }));
+    }
+  }
+
+  function renderCardReader() {
     const reader = $('#reader');
     const card = state.card;
     if (!card) {
@@ -8766,8 +9289,10 @@
     $('#search-open').addEventListener('click', () => finder.open());
     nav.install();
     for (const button of document.querySelectorAll('[data-action]')) {
-      button.addEventListener('click', () => (button.dataset.action === 'new-topic' ? newCard('topic', '') : newLiterature()).catch(fail));
+      button.addEventListener('click', () => (button.dataset.action === 'new-topic' ? newCard('topic', '')
+        : button.dataset.action === 'new-connection' ? newConnectionTree() : newLiterature()).catch(fail));
     }
+    $('#connection-filter').addEventListener('input', () => renderConnectionDrawers());
     window.addEventListener('hashchange', route);
     window.addEventListener('resize', debounce(() => renderStage(), 120));
     window.addEventListener('focus', () => watchForChanges());
@@ -8786,6 +9311,7 @@
       state.locks = locks;
       state.locksPrint = locks ? overview.locks : null;
       paintLocks();
+      if (!PORTABLE) loadConnTrees().catch(() => {});
       route();
     } catch (error) {
       fail(error);

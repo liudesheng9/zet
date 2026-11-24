@@ -1826,6 +1826,10 @@ fn connection_tool_definitions() -> Vec<Value> {
     let gloss_updates = json!({"type": "object", "description": "Gloss review: placement_id → new gloss (a string; the same text keeps it as reviewed) or null (clear). Every station whose structural predecessor changes and has a gloss must be named.", "additionalProperties": {"type": ["string", "null"]}});
     let kinds = json!({"type": "string", "enum": crate::coord::RELATION_KINDS, "description": "Optional canonical Relation kind, for local filtering only. rests-on, illustrates, relaxes, objects and specializes need direction: directed."});
     vec![
+        tool("list_side_mounts", "List Topic-side mounts",
+            "The Topic-side mounts beside one Topic home Card, in order (`3/2+1`, `3/2+2`, …): each with its placement_id, coord, the mounted Card's home address, title, status (live or missing) and gloss. A mount takes no `|a` slot and rewrites no Link.",
+            json!({"at": s("The Topic Card.")}),
+            &["at"], true, false),
         tool("list_connection_trees", "List Connection trees",
             "List the Connection trees (关联树, `~n`): each with its title, Workspace, optional shelf tag `purpose`, counts (mounted, native, missing, connections), whether it is locked and whether you may edit it.",
             json!({"workspace": {"type": "string", "enum": ["human", "agent", "all"]}, "purpose": s("Only trees with this shelf tag."), "query": s("Only trees whose title or purpose contains this text.")}),

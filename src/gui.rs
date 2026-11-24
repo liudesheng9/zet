@@ -43,6 +43,7 @@ const DRAFT_JS: &str = include_str!("gui/draft.js");
 const ASK_JS: &str = include_str!("gui/ask.js");
 const FEATURES_JS: &str = include_str!("gui/features.js");
 const LOCK_JS: &str = include_str!("gui/lock.js");
+const CONNECTIONS_JS: &str = include_str!("gui/connections.js");
 const LAYOUT_JS: &str = include_str!("gui/layout.js");
 const CHART_JS: &str = include_str!("gui/chart-frame.js");
 const KATEX_JS: &str = include_str!("gui/vendor/katex/katex.min.js");
@@ -1075,6 +1076,15 @@ impl App {
                     200,
                     "text/javascript; charset=utf-8",
                     FEATURES_JS.to_string(),
+                );
+                return;
+            }
+            (Method::Get, "/connections.js") => {
+                respond_text(
+                    request,
+                    200,
+                    "text/javascript; charset=utf-8",
+                    CONNECTIONS_JS.to_string(),
                 );
                 return;
             }
@@ -2421,7 +2431,7 @@ pub(crate) fn portable_viewer() -> String {
         "{PORTABLE_SLIP}\n<script type=\"text/plain\" id=\"zt-chart-frame\">{CHART_JS}</script>\n\
          <script id=\"zt-katex\">{KATEX_JS}</script>\n<script>{LAYOUT_JS}</script>\n<script>{DRAFT_JS}</script>\n\
          <script>{ASK_JS}</script>\n<script>{FEATURES_JS}</script>\n<script>{LOCK_JS}</script>\n\
-         <script>{PORTABLE_RULES_JS}</script>\n<script>{PORTABLE_JS}</script>\n<script>{APP_JS}</script>\n</body>"
+         <script>{CONNECTIONS_JS}</script>\n<script>{PORTABLE_RULES_JS}</script>\n<script>{PORTABLE_JS}</script>\n<script>{APP_JS}</script>\n</body>"
     );
     page.replacen("</head>", &head, 1).replacen("</body>", &scripts, 1)
 }
@@ -3509,6 +3519,85 @@ mod tests {
     /// grouping — are the page's own DOM-free code (`src/gui/lock.js`), run here rather than described.
     fn lock_js(expression: &str) -> Option<Value> {
         page_module_js("lock.js", LOCK_JS, "ZtLock", expression)
+    }
+
+    /// The Connection-tree page rules (`src/gui/connections.js`, proposal §9.1), run under Node.
+    fn connections_js(expression: &str) -> Option<Value> {
+        page_module_js("connections.js", CONNECTIONS_JS, "C", expression)
+    }
+
+    #[test]
+    fn the_connection_map_outlines_stations_and_shows_focused_connections_only() {
+        let Some(value) = connections_js(
+            "(() => {
+               const st = [
+                 { placement_id: 'r', edge: 'root', coord: '~7/0' },
+                 { placement_id: 'b', edge: 'direct', parent_id: 'a', coord: '~7/2' },
+                 { placement_id: 'a', edge: 'direct', parent_id: 'r', coord: '~7/1' },
+                 { placement_id: 's2', edge: 'side', parent_id: 'a', ordinal: 2, coord: '~7/1|b' },
+                 { placement_id: 's1', edge: 'side', parent_id: 'a', ordinal: 1, coord: '~7/1|a' },
+               ];
+               const edges = [
+                 { connection_id: 'e1', direction: 'directed', from: { placement_id: 'b', title: 'Hart' }, to: { placement_id: 'a', title: 'Grossman' }, relation_label: 'relaxes', provenance: 'In this tree · ~7' },
+                 { connection_id: 'e2', direction: 'neutral', from: { placement_id: 's1', title: 'X' }, to: { placement_id: 's2', title: 'Y' } },
+               ];
+               return {
+                 order: C.outline(st).map((r) => [r.coord, r.depth]),
+                 focus: C.focusEdges(edges, 'a', false).map((e) => [e.connection_id, e.role]),
+                 overlay: C.focusEdges(edges, 'a', true).map((e) => e.connection_id),
+                 sentence: C.sentence(edges[0]),
+                 neutral: C.sentence(edges[1]),
+                 prov: [C.provenance(edges[0]), C.provenance({ carrier: 'BookB/5|a|2' })],
+                 counts: [...C.counts(edges).entries()].sort(),
+               };
+             })()",
+        ) else {
+            return;
+        };
+        assert_eq!(
+            value["order"],
+            json!([["~7/0", 0], ["~7/1", 1], ["~7/1|a", 2], ["~7/1|b", 2], ["~7/2", 1]]),
+            "the root's Direct chain stands as top-level peers; Side branches indent"
+        );
+        assert_eq!(value["focus"], json!([["e1", "incoming"]]), "only the focused station's connections by default");
+        assert_eq!(value["overlay"], json!(["e1", "e2"]));
+        assert_eq!(value["sentence"], "Hart relaxes Grossman");
+        assert_eq!(value["neutral"], "X — Y", "a neutral pair makes no claim");
+        assert_eq!(value["prov"], json!(["In this tree · ~7", "In the Card · BookB/5|a|2"]));
+        assert_eq!(value["counts"], json!([["a", 1], ["b", 1], ["s1", 1], ["s2", 1]]));
+    }
+
+    #[test]
+    fn the_connection_page_checks_like_the_server_and_routes_by_placement() {
+        let Some(value) = connections_js(
+            "({
+               long: C.checkConnection({ relation_label: 'x'.repeat(33) }).ok,
+               han: C.checkConnection({ relation_label: '共同假设'.repeat(8) }).ok,
+               link: C.checkConnection({ note: 'see [[A]]' }).ok,
+               kind: C.checkConnection({ relation_kind: 'rests-on', direction: 'neutral' }).error,
+               ok: C.checkConnection({ relation_kind: 'contrasts', direction: 'neutral' }).ok,
+               gloss: [C.checkGloss('  ').gloss, C.checkGloss('a\\nb').ok, C.checkGloss('Compare here.').gloss],
+               hash: [C.stationHash('ab-1'), C.parseHash('#/place/ab-1'), C.parseHash('#/conn/~7%2F2%7Ca'), C.parseHash('#/')],
+               copy: [C.citation({ citation: '[[~7#4]]', home_address: '3/6' }), C.bookmark({ title: 'Hart [1995]', placement_id: 'p1' })],
+               portal: C.portalLabel({ portal: { role: 'literature', cards: 500 } }),
+               mark: C.markByBytes('依据 [[D1]]：开覆盖', [7, 13]),
+             })",
+        ) else {
+            return;
+        };
+        assert_eq!(value["long"], false);
+        assert_eq!(value["han"], true, "32 Han characters are 32 scalar values");
+        assert_eq!(value["link"], false);
+        assert_eq!(value["kind"], "rests-on has a direction: choose directed");
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["gloss"], json!([null, false, "Compare here."]));
+        assert_eq!(value["hash"][0], "#/place/ab-1");
+        assert_eq!(value["hash"][1], json!({"kind": "place", "value": "ab-1"}));
+        assert_eq!(value["hash"][2], json!({"kind": "conn", "value": "~7/2|a"}));
+        assert_eq!(value["hash"][3], json!({"kind": "root", "value": null}));
+        assert_eq!(value["copy"], json!(["[[~7#4]]", "[Hart 1995](place:p1)"]));
+        assert_eq!(value["portal"], "Book · 500 cards");
+        assert_eq!(value["mark"], json!(["依据 ", "[[D1]]", "：开覆盖"]), "byte ranges mark the exact macro in Chinese text");
     }
 
     #[test]
@@ -4818,6 +4907,7 @@ mod tests {
             ("ask.js", ASK_JS),
             ("features.js", FEATURES_JS),
             ("lock.js", LOCK_JS),
+            ("connections.js", CONNECTIONS_JS),
             ("portable-rules.js", PORTABLE_RULES_JS),
             ("portable.js", PORTABLE_JS),
         ] {

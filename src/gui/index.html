@@ -14,6 +14,7 @@
 <script src="/ask.js" defer></script>
 <script src="/features.js" defer></script>
 <script src="/lock.js" defer></script>
+<script src="/connections.js" defer></script>
 <script src="/app.js" defer></script>
 </head>
 <body>
@@ -69,6 +70,11 @@
         <header><h2>Literature zone</h2><button class="mini-btn" data-action="new-literature" title="New Literature Card (l)">+ l</button></header>
         <div id="literature-drawers" class="drawers"></div>
       </section>
+      <section class="drawer-group">
+        <header><h2>Connection trees</h2><button class="mini-btn" data-action="new-connection" title="New Connection tree (关联树): a title is enough">+ c</button></header>
+        <input class="conn-filter" id="connection-filter" type="search" placeholder="filter by title or purpose" aria-label="Filter Connection trees">
+        <div id="connection-drawers" class="drawers"></div>
+      </section>
     </div>
     <footer class="rail-footer">
       <button class="mini-btn" id="locks-open" title="Tree locks: the frozen trees, their seals and history">Locks</button>
@@ -123,6 +129,7 @@
     </div>
     <div class="viewport" id="viewport">
       <div class="desk" id="desk" hidden></div>
+      <div class="conn-map" id="conn-map" hidden></div>
       <div class="plane" id="plane">
         <svg class="edges" id="edges"></svg>
         <div class="nodes" id="nodes"></div>

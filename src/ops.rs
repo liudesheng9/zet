@@ -1723,6 +1723,8 @@ pub(crate) fn kind(card: &Card) -> &'static str {
         "literature"
     } else if card.is_topic {
         "topic"
+    } else if crate::coord::Handle::parse(&card.address).is_some_and(|h| h.local.is_none()) {
+        "connection"
     } else {
         "regular"
     }
@@ -1730,7 +1732,9 @@ pub(crate) fn kind(card: &Card) -> &'static str {
 
 /// The Zone a tree root opens: Topic trees or Literature trees.
 pub(crate) fn zone(card: &Card) -> &'static str {
-    if crate::is_literature_tree_id(crate::tree_id(&card.address)) {
+    if card.address.starts_with('~') {
+        "connection"
+    } else if crate::is_literature_tree_id(crate::tree_id(&card.address)) {
         "literature"
     } else {
         "topic"
