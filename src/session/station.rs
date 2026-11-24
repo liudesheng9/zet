@@ -93,6 +93,13 @@ pub(super) fn execute(
         return Ok(None);
     }
     let id = at_station.expect("station");
+    // Leaving the station never depends on it still existing.
+    if matches!(
+        parts.first().copied(),
+        None | Some("go" | "root" | "ws" | "back" | "fwd" | "q" | "help" | "stats" | "status" | "lsbk" | "t" | "l")
+    ) {
+        return Ok(None);
+    }
     let conn = crate::open_db(root)?;
     let here = station(&conn, &id)?;
     let home = coord::address_of_card_id(&conn, &here.card_id)?;

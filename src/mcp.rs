@@ -1164,7 +1164,8 @@ fn optional_zone(args: &Value) -> Result<Option<&'static str>> {
         None | Some("all") => Ok(None),
         Some("topic") | Some("topics") => Ok(Some("topic")),
         Some("literature") => Ok(Some("literature")),
-        Some(other) => bail!("unknown zone `{other}`; expected topic or literature"),
+        Some("connection") | Some("connections") => Ok(Some("connection")),
+        Some(other) => bail!("unknown zone `{other}`; expected topic, literature or connection"),
     }
 }
 
@@ -1314,7 +1315,7 @@ fn tool_definitions() -> Vec<Value> {
             "List tree roots (Topics and Literature Cards) with their Workspace, Zone, title, size, how many Event Cards, Finding Cards, and models each holds, and `locked` (whether an active Tree Lock governs that tree).",
             json!({
                 "workspace": workspace_filter,
-                "zone": { "type": "string", "enum": ["topic", "literature", "all"], "description": "Only this Zone; omit for both." },
+                "zone": { "type": "string", "enum": ["topic", "literature", "connection", "all"], "description": "Only this Zone; omit for both Topic and Literature trees. `connection` lists the Connection trees (`~n`) here too." },
             }),
             &[],
             true,
@@ -1333,7 +1334,7 @@ fn tool_definitions() -> Vec<Value> {
             "export_titles",
             "Export titles",
             "Read titles in one selected-text pass, filtered by Workspace and Zone. Each row carries `restatement` when the Card holds the derived navigation role of an accepted restatement entry (a `## 同述入口` section), so a title-only reader never treats an entry as a claim, and the Card's active Lock facts (`lock`, `pinned_by`) so a destination plan sees the Cards a Lock freezes. Includes count and archive revision; no bodies.",
-            json!({"workspace":workspace_filter,"zone":{"type":"string","enum":["topic","literature","all"]}}),
+            json!({"workspace":workspace_filter,"zone":{"type":"string","enum":["topic","literature","connection","all"]}}),
             &[],
             true,
             false,
@@ -1908,7 +1909,7 @@ fn connection_tool_definitions() -> Vec<Value> {
             &["from", "source_params", "title"], false, false),
         tool("review_source", "Mark a mounted source reviewed",
             "Owner action on a locked host: record that the current version of a mounted Card that differs from its lock-time version was reviewed. The reviewed fingerprint you were shown must still be current. It never changes the Lock seal.",
-            json!({"placement_id": s("The station."), "reviewed_fp": s("The current fingerprint you reviewed."), "note": s("Optional note.")}),
+            json!({"placement_id": s("The station."), "reviewed_fp": s("The current fingerprint you reviewed."), "lock_id": {"type": "integer", "description": "The Lock the review was shown under; a different active Lock refuses the review."}, "note": s("Optional note.")}),
             &["placement_id", "reviewed_fp"], false, false),
     ]
 

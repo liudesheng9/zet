@@ -70,40 +70,23 @@ fn unit_head(conn: &Connection, card: &crate::Card) -> Option<String> {
     })
 }
 
-/// The carriers of a unit: its head, the parts filed under it, and the parts its head names.
+/// The carriers of a unit: its head and its parts, exactly as the Model report counts them (filed
+/// under the head, Direct or Side, and named by the head; never a `**引入**` import).
 fn unit_carriers(conn: &Connection, head: &str) -> Result<Vec<String>> {
-    let mut carriers = vec![head.to_string()];
-    let mut stmt = conn.prepare_cached(
-        "SELECT location FROM cards WHERE card_type = 'model' AND model_facet IS NOT NULL
-           AND location >= ?1 AND location < ?2 ORDER BY location",
-    )?;
-    let lower = format!("{head}|");
-    let upper = format!("{head}}}");
-    let filed = stmt
-        .query_map([&lower, &upper], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for address in filed {
-        let card = crate::load_card(conn, &address)?;
-        if unit_head(conn, &card).as_deref() == Some(head) {
-            carriers.push(address);
-        }
-    }
-    // Parts the head names (shared parts) belong to it too.
     let head_card = crate::load_card(conn, head)?;
-    let body = crate::parse_card_text(&head_card.text)?.body;
-    for occurrence in crate::link::LinkBody::for_rendering(&body).occurrences() {
-        if occurrence.form == crate::link::LinkForm::Term {
-            continue;
-        }
-        if let Ok(card) = crate::load_card(conn, occurrence.target)
-            && card.card_type == CardType::Model
-            && card.facet.is_some()
-            && !carriers.contains(&card.address)
-        {
-            carriers.push(card.address.clone());
+    let mut carriers = vec![head.to_string()];
+    for part in crate::model::parts_in_db(conn, &head_card)? {
+        if !carriers.contains(&part) {
+            carriers.push(part);
         }
     }
     Ok(carriers)
+}
+
+/// Whether a Model part carries a proof or derivation step (`证明：…`, `推导…`), not a statement.
+fn is_proof_part(facet: &crate::model::Facet) -> bool {
+    let id = facet.id().trim().to_lowercase();
+    crate::model::is_derivation(facet) || id.starts_with("证明") || id.starts_with("proof")
 }
 
 #[derive(Clone)]
@@ -342,6 +325,13 @@ pub(crate) fn get(conn: &Connection, args: &Value) -> Result<Value> {
                 let Some(target_address) = coord::canonical(conn, &occ.target)? else { continue };
                 let (target, reached) = node_of(conn, &target_address, unit_scope)?;
                 if target.address == node.address {
+                    // A Link between two carriers of one unit is internal; a Card that cites itself
+                    // is a genuine self-loop and reaches the cycle report.
+                    if target_address == occ.carrier {
+                        let mut ev = evidence(conn, &mut bodies, &occ)?;
+                        ev["via_model"] = json!(node.unit);
+                        edges.entry((node.address.clone(), node.address.clone())).or_default().push(ev);
+                    }
                     continue;
                 }
                 let mut ev = evidence(conn, &mut bodies, &occ)?;
@@ -355,10 +345,7 @@ pub(crate) fn get(conn: &Connection, args: &Value) -> Result<Value> {
                 if let Some(part) = &reached {
                     // A Link into another unit's own proof or derivation part reaches into it.
                     let part_card = crate::load_card(conn, part)?;
-                    let is_statement = part_card
-                        .facet
-                        .as_ref()
-                        .is_some_and(|f| !crate::model::is_derivation(f));
+                    let is_statement = part_card.facet.as_ref().is_some_and(|f| !is_proof_part(f));
                     if !is_statement {
                         reach_in.push(json!({"carrier": occ.carrier, "ord": occ.ord, "target": part, "unit": target.address, "detail": "links a proof or derivation part of another unit rather than its statement"}));
                     }
@@ -395,6 +382,10 @@ pub(crate) fn get(conn: &Connection, args: &Value) -> Result<Value> {
             ev["via_model"] = json!(source.unit);
             ev["class"] = json!(class);
             if class == "vocabulary" {
+                continue;
+            }
+            if !nodes.contains_key(&source.address) && nodes.len() >= max_nodes {
+                truncated = true;
                 continue;
             }
             dependents.entry(source.address.clone()).or_default().push(ev);
@@ -491,7 +482,11 @@ fn overlay_value(
         if from_node.is_none() && to_node.is_none() {
             continue;
         }
-        let compatible = e.directed && e.kind.as_deref().is_none_or(|k| k == "rests-on");
+        // Only a directed connection stating dependence matches an authored rests-on edge: its kind
+        // is rests-on, or it carries neither a kind nor a label (a label such as "objects to" is a
+        // different claim).
+        let compatible = e.directed
+            && (e.kind.as_deref() == Some("rests-on") || (e.kind.is_none() && e.label.is_none()));
         let value = crate::connection::edge_value(conn, &shape, &e)?;
         if compatible
             && let (Some(f), Some(t)) = (&from_node, &to_node)
@@ -579,6 +574,29 @@ pub(crate) fn seed(
                 for at in &order {
                     if !allowed.contains(at) {
                         bail!("`{at}` is not in this Dependency Lens; reorder only its Cards");
+                    }
+                }
+                let given: BTreeSet<&String> = order.iter().collect();
+                if given.len() != order.len() || given.len() != allowed.len() {
+                    bail!("a chosen order names every Card of the Dependency Lens once ({} Cards)", allowed.len());
+                }
+                // Outside a cycle a prerequisite stays before the Card that rests on it.
+                let in_cycle = |a: &str, b: &str| {
+                    lens["cycles"].as_array().into_iter().flatten().any(|c| {
+                        let nodes: Vec<&str> = c["nodes"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                        nodes.contains(&a) && nodes.contains(&b)
+                    })
+                };
+                let position = |a: &str| order.iter().position(|x| x == a);
+                for edge in lens["edges"].as_array().into_iter().flatten() {
+                    let (Some(from), Some(to)) = (edge["from"].as_str(), edge["to"].as_str()) else { continue };
+                    if from == to || in_cycle(from, to) {
+                        continue;
+                    }
+                    if let (Some(f), Some(t)) = (position(from), position(to))
+                        && t > f
+                    {
+                        bail!("`{to}` is a prerequisite of `{from}` and comes first outside a cycle");
                     }
                 }
                 order

@@ -4190,7 +4190,7 @@ fn shell_delete(command: DeleteCommand) -> Result<()> {
     tree_lock::ensure_unlocked(&conn, plan.gate())?;
     coord_lock::ensure_delete_allowed(&conn, &plan.delete_set)?;
     print_delete_verification(&plan);
-    for line in coord::delete_impact_lines(&conn, &plan.delete_set)? {
+    for line in coord::delete_impact_lines(&conn, &plan.delete_set, plan.kept_root().map(|(root, _)| root))? {
         println!("{line}");
     }
     read_confirmation(&mut input, &plan.confirmation)?;
@@ -5141,6 +5141,16 @@ fn cmd_lsbk() -> Result<()> {
             broken.source_title,
             broken.detail(),
             broken.source_line
+        );
+    }
+    // Missing mounts are their own category: a station whose Card was deleted at its home.
+    for missing in coord::missing_mounts(&conn, None)? {
+        println!(
+            "missing mount {} in {}: {} ({})",
+            missing["coord"].as_str().unwrap_or("-"),
+            missing["host"].as_str().unwrap_or("-"),
+            missing["last_address"].as_str().unwrap_or("-"),
+            missing["last_title"].as_str().unwrap_or("-")
         );
     }
     Ok(())

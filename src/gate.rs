@@ -912,6 +912,12 @@ fn gather(
         }));
     }
     facts.book = zt_check::text::literature_tree(&facts.tree);
+    // A Card that lives in a Connection tree has no book of its home: its book is the one its own
+    // `来源` line names, when that is a Literature tree of this archive (proposal §8.2), so a native
+    // Finding is checked against its real source and never against the tree.
+    if candidate.address.starts_with('~') {
+        facts.book = source_book(conn, &parsed.body)?;
+    }
     let head = head_model(conn, candidate)?;
     facts.level = match (&candidate.facet, &head) {
         (Some(_), Some(head)) => crate::load_card(conn, head)
@@ -933,6 +939,28 @@ fn gather(
     facts.term = term_facts(conn, candidate, parsed)?;
     facts.category = category(conn, candidate, parsed, &facts)?;
     Ok(facts)
+}
+
+/// The Literature tree the `来源`/`出处`/`Source` line of a body names first, if it exists.
+fn source_book(conn: &Connection, body: &str) -> Result<Option<String>> {
+    for line in body.lines() {
+        // The label may be bold or a list item: `**来源**：`, `- 来源：`.
+        let trimmed = line.trim_start().trim_start_matches(['-', '*', '+', ' ']);
+        let Some(rest) = ["来源", "出处", "Source", "source"].iter().find_map(|label| trimmed.strip_prefix(label)) else {
+            continue;
+        };
+        let rest = rest.trim_start().trim_start_matches('*').trim_start();
+        if !(rest.starts_with('：') || rest.starts_with(':')) {
+            continue;
+        }
+        for occurrence in crate::link::LinkBody::for_rendering(rest).occurrences() {
+            let tree = crate::tree_id(occurrence.target);
+            if crate::is_literature_tree_id(tree) && crate::citation_key_exists(conn, tree)? {
+                return Ok(Some(tree.to_string()));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Gather the bounded Term context of one proposed Card (design 11.2–11.3): the computed role

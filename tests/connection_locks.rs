@@ -334,3 +334,26 @@ fn tampering_with_locked_coordinate_evidence_is_an_integrity_fault() {
     assert!(!out.status.success(), "{text}");
     assert!(text.contains("coordinate-structure-changed"), "{text}");
 }
+
+fn finding_body(source: &str) -> String {
+    format!("**测量**：乡镇工业产值。\n**数据**：1984年县级统计。\n**方法**：县际比较。\n**结果**：产值上升约三成。\n**局限**：样本只有十个县。\n**来源**：{source}")
+}
+
+/// Review finding P2.14: a native Finding is checked against the book its own source line names (a
+/// book anchor passes F2, another Card of a known book does not) and never against the tree; a
+/// general source keeps the general-source branch.
+#[test]
+fn a_native_finding_is_checked_against_the_book_its_source_names() {
+    let scratch = ScratchBox::up();
+    let mut mcp = scratch.mcp(&[]);
+    book(&mut mcp, "Stat1984");
+    mcp.ok("create_successor", json!({"at": "Stat1984/1", "kind": "side", "title": "附表", "body": "附表。\n\n来源：[[Stat1984]] 附表"}));
+    mcp.ok("create_connection_tree", json!({"title": "Findings"}));
+    let f2 = |value: &Value| value.to_string().contains("source_wrong_book");
+    let anchor = mcp.ok("create_connection_card", json!({"tree": "~1", "parent_coord": "~1/0", "type": "finding", "title": "乡镇产值上升三成", "body": finding_body("[[Stat1984/1]] 表 3")}));
+    assert!(!f2(&anchor), "a book anchor satisfies F2: {anchor}");
+    let general = mcp.ok("create_connection_card", json!({"tree": "~1", "parent_coord": "~1/1", "type": "finding", "title": "档案中的产值记录", "body": finding_body("县档案馆 1985 年卷宗")}));
+    assert!(!f2(&general), "{general}");
+    let (deep, failed) = mcp.call("create_connection_card", json!({"tree": "~1", "parent_coord": "~1/2", "type": "finding", "title": "附表中的产值", "body": finding_body("[[Stat1984/1|a]]")}));
+    assert!(f2(&deep), "a known book's non-anchor Card is the wrong source line (failed: {failed}): {deep}");
+}

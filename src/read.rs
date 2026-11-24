@@ -768,7 +768,7 @@ pub(crate) fn titles(
 ) -> Result<Value> {
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
-    let mut statement=tx.prepare("SELECT COALESCE(location,citation_key),text,workspace,card_type,model_facet,row_id FROM cards WHERE (?1 IS NULL OR workspace=?1) AND (?2 IS NULL OR CASE WHEN is_lit=1 OR citation_key IS NOT NULL OR location GLOB '[A-Za-z]*' THEN 'literature' ELSE 'topic' END=?2)")?;
+    let mut statement=tx.prepare("SELECT COALESCE(location,citation_key),text,workspace,card_type,model_facet,row_id FROM cards WHERE (?1 IS NULL OR workspace=?1) AND (?2 IS NULL OR CASE WHEN location GLOB '~*' THEN 'connection' WHEN is_lit=1 OR citation_key IS NOT NULL OR location GLOB '[A-Za-z]*' THEN 'literature' ELSE 'topic' END=?2)")?;
     let rows = statement.query_map(
         rusqlite::params![workspace.map(crate::Workspace::id), zone],
         |r| {
@@ -836,7 +836,9 @@ pub(crate) fn trees(
 ) -> Result<Value> {
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
-    let mut query=tx.prepare("SELECT COALESCE(location,citation_key) FROM cards WHERE (is_topic=1 OR is_lit=1) AND (?1 IS NULL OR workspace=?1) AND (?2 IS NULL OR CASE WHEN is_lit=1 THEN 'literature' ELSE 'topic' END=?2)")?;
+    // Topic and Literature trees by default; the Connection trees (`~n`) only when asked for by
+    // zone, so a reader that knows two Zones keeps reading two.
+    let mut query=tx.prepare("SELECT COALESCE(location,citation_key) FROM cards WHERE (is_topic=1 OR is_lit=1 OR (?2='connection' AND location GLOB '~[0-9]*' AND instr(location,'#')=0)) AND (?1 IS NULL OR workspace=?1) AND (?2 IS NULL OR CASE WHEN location GLOB '~*' THEN 'connection' WHEN is_lit=1 THEN 'literature' ELSE 'topic' END=?2)")?;
     let mut roots = query
         .query_map(
             rusqlite::params![workspace.map(crate::Workspace::id), zone],
@@ -858,7 +860,9 @@ pub(crate) fn trees(
         let tree = crate::tree_id(&at);
         let lower = format!("{tree}/");
         let upper = format!("{tree}0");
-        let (count,events,findings,models,terms):(u64,u64,u64,u64,u64)=tx.query_row("SELECT COUNT(*),COALESCE(SUM(card_type='event' AND model_facet IS NULL),0),COALESCE(SUM(card_type='finding' AND model_facet IS NULL),0),COALESCE(SUM(card_type='model' AND model_facet IS NULL),0),COALESCE(SUM(card_type='term'),0) FROM cards WHERE (location>=?1 AND location<?2) OR citation_key=?3",rusqlite::params![lower,upper,tree],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+        // A Connection tree's home members are its root and its native Cards `~n#k`.
+        let (lower, upper) = if tree.starts_with('~') { (format!("{tree}#"), format!("{tree}$")) } else { (lower, upper) };
+        let (count,events,findings,models,terms):(u64,u64,u64,u64,u64)=tx.query_row("SELECT COUNT(*),COALESCE(SUM(card_type='event' AND model_facet IS NULL),0),COALESCE(SUM(card_type='finding' AND model_facet IS NULL),0),COALESCE(SUM(card_type='model' AND model_facet IS NULL),0),COALESCE(SUM(card_type='term'),0) FROM cards WHERE (location>=?1 AND location<?2) OR citation_key=?3 OR location=?3",rusqlite::params![lower,upper,tree],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
         trees.push(json!({"tree":tree,"root":at,"workspace":card.workspace.id(),"kind":crate::ops::zone(&card),"literature_type":if card.is_lit {Some(crate::literature::stored_type(&tx,card.row_id)?.id())} else {None},"title":parsed.title,"excerpt":crate::ops::excerpt(&parsed.body),"count":count,"events":events,"findings":findings,"models":models,"terms":terms,"locked":lock.is_locked(card.row_id)}));
     }
     tx.commit()?;

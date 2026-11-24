@@ -623,7 +623,7 @@ pub(crate) fn delete(
     crate::coord_lock::ensure_delete_allowed(&conn, &plan.delete_set)?;
     if confirm != Some(plan.confirmation.as_str()) {
         let mut lines = crate::delete_verification_lines(&plan);
-        lines.extend(crate::coord::delete_impact_lines(&conn, &plan.delete_set)?);
+        lines.extend(crate::coord::delete_impact_lines(&conn, &plan.delete_set, plan.kept_root().map(|(root, _)| root))?);
         return Ok(Outcome::Confirm {
             confirm: plan.confirmation.clone(),
             lines,

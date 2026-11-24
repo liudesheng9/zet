@@ -406,6 +406,18 @@ fn view_lines(conn: &Connection, pointer: &Pointer, workspace: Workspace) -> Res
                     lines.push(ViewLine::Hint(empty_hint.to_string()));
                 }
             }
+            // The Connection trees (`~n`) of this Workspace, once there is one.
+            let connection_roots = cards
+                .iter()
+                .filter(|card| card.workspace == workspace && crate::coord::Handle::parse(&card.address).is_some_and(|h| h.local.is_none()))
+                .collect::<Vec<_>>();
+            if !connection_roots.is_empty() {
+                lines.push(ViewLine::Heading("connection trees:".to_string()));
+                for card in connection_roots {
+                    let parsed = parse_card_text(&card.text)?;
+                    lines.push(ViewLine::entry(&card.address, &parsed.title));
+                }
+            }
         }
         Pointer::Card(target) => {
             let card = load_card(conn, target)?;

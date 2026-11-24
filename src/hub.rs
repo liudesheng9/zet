@@ -1141,7 +1141,12 @@ pub(crate) fn draft(snapshot: &Snapshot, args: &Value) -> Result<Value> {
         "trees": trees.iter().map(|(tree, held)| json!({
             "tree": tree,
             "title": tree_title(snapshot, tree),
-            "kind": if snapshot.by_address.get(&crate::tree_root_address(tree)).is_some_and(|root| root.is_topic) { "topic" } else { "literature" },
+            "kind": match snapshot.by_address.get(&crate::tree_root_address(tree)) {
+                Some(root) if root.is_topic => "topic",
+                Some(root) if root.is_lit => "literature",
+                Some(_) => "connection",
+                None => "literature",
+            },
             "workspace": snapshot.by_address.get(&crate::tree_root_address(tree)).map(|root| root.workspace.id()),
             "cards": held.iter().map(|member| member.address.clone()).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),

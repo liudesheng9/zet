@@ -166,8 +166,12 @@ fn request_core(tool: &str, args: &Value) -> Value {
 /// lock and one transaction.
 pub(crate) fn run(root: &Path, access: Access, tool: &str, args: &Value) -> Result<Value> {
     if !is_write_tool(tool) {
+        // One read transaction: every row of the answer belongs to one archive revision.
         let conn = crate::open_db(root)?;
-        return read(&conn, access, tool, args);
+        let view = conn.unchecked_transaction()?;
+        let value = read(&view, access, tool, args)?;
+        view.rollback()?;
+        return Ok(value);
     }
     let _lock = crate::acquire_edit_lock_within(root, crate::ops::EDIT_PATIENCE, "connection tree")?;
     let mut conn = crate::open_db(root)?;
@@ -213,9 +217,9 @@ pub(crate) fn run(root: &Path, access: Access, tool: &str, args: &Value) -> Resu
     }
     let mut value = value;
     value["archive_revision"] = json!(crate::link_index::revision(&tx)?);
-    if let Some(key) = &op_key
-        && changed
-    {
+    // Every applied keyed request keeps its receipt, also a no-op (an already-placed Card, an
+    // existing blank pair): a retry after later changes replays this answer instead of acting again.
+    if let Some(key) = &op_key {
         tx.execute(
             "INSERT INTO applied_ops(op_key, request_hash, result_json, committed_at)
              VALUES(?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
@@ -917,7 +921,7 @@ pub(crate) fn create_tree_tx(
             gloss: None,
         },
     )?;
-    crate::link_index::source_changed(conn, &handle)?;
+    crate::link_index::sync_source(conn, &handle)?;
     let mut value = json!({
         "tree": handle,
         "tree_id": tree_id,
@@ -1375,7 +1379,7 @@ fn create_native(ctx: &mut Ctx) -> Result<Value> {
         },
     )?;
     apply_glosses(conn, &decided)?;
-    crate::link_index::source_changed(conn, &handle)?;
+    crate::link_index::sync_source(conn, &handle)?;
     let shape = validate_tree(conn, &tree)?;
     ctx.changed = true;
     let mut value = json!({
@@ -1753,6 +1757,17 @@ fn unplace(ctx: &mut Ctx) -> Result<Value> {
                 }
                 reattach_to = Some(target.placement_id);
             }
+            if reattach_to.is_none()
+                && continuation.is_none()
+                && !sides.is_empty()
+                && station.edge == EdgeKind::Direct
+                && station.parent_id.as_ref().and_then(|p| shape.by_id.get(p)).is_some_and(|p| p.edge == EdgeKind::Root)
+            {
+                bail!(
+                    "station {} has Side branches and no Direct continuation, and the root takes no Side successor: pass reattach_to (a station that should hold them) or children: \"detach\"",
+                    shape.coord[&station.placement_id]
+                );
+            }
             affected.extend(continuation.iter().cloned());
             affected.extend(sides.iter().cloned());
         }
@@ -1798,8 +1813,10 @@ fn unplace(ctx: &mut Ctx) -> Result<Value> {
         kids.extend(continuation.iter().cloned());
         kids.extend(sides.iter().cloned());
         park(conn, &shape, &kids)?;
-        conn.execute("DELETE FROM placements WHERE placement_id = ?1", [&station.placement_id])
-            .ok();
+        let gone = conn.execute("DELETE FROM placements WHERE placement_id = ?1", [&station.placement_id])?;
+        if gone != 1 {
+            bail!("station {} could not be removed", station.placement_id);
+        }
         // Re-insert the station temporarily is unnecessary: it is removed below.
         match &reattach_to {
             Some(target) => {
@@ -1982,6 +1999,9 @@ fn rebind(ctx: &mut Ctx) -> Result<Value> {
                     if moved.to == station.placement_id {
                         moved.to = new_id.clone();
                     }
+                    // A kept assertion now joins a different Card: it is a new record made by this rebind.
+                    moved.created_by = author(ctx.access).to_string();
+                    moved.created_at_rev = revision;
                     moved.updated_by = author(ctx.access).to_string();
                     moved.updated_at_rev = revision;
                     normalize_edge(&mut moved)?;

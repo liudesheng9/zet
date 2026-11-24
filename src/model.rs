@@ -336,7 +336,7 @@ pub(crate) fn ensure_allowed(
 
 /// The parts of the Model Card `head`: those filed under it and those it links, apart from the
 /// Cards its `**引入**` section imports (#205): an import never keeps a Model Card from changing type.
-fn parts_in_db(conn: &Connection, head: &Card) -> Result<Vec<String>> {
+pub(crate) fn parts_in_db(conn: &Connection, head: &Card) -> Result<Vec<String>> {
     let linked = crate::parse_card_text(&head.text)
         .ok()
         .and_then(|parsed| {

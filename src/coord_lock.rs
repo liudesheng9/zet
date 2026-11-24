@@ -477,6 +477,11 @@ pub(crate) fn review_source(conn: &Connection, access: Access, args: &Value) -> 
         bail!("stale review: the source changed since it was shown; read it again and review the current version");
     }
     let lock_id = state["lock_id"].as_i64().context("lock id")?;
+    if let Some(shown) = args.get("lock_id").and_then(Value::as_i64)
+        && shown != lock_id
+    {
+        bail!("stale review: the station is now under Lock {lock_id}, not the Lock {shown} that was shown; review it again");
+    }
     conn.execute(
         "INSERT INTO lock_source_reviews(lock_id, placement_id, card_id, reviewed_fp, reviewed_at_rev, reviewed_at, note)
          VALUES(?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?6)",

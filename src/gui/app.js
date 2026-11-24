@@ -1078,7 +1078,9 @@
   }
 
   /** Load the tree and station a `#/conn/…` or `#/place/…` route names, then the Card standing there. */
+  const stationLoads = ZtLayout.latestOnly();
   async function loadStation(parsed) {
+    const seq = stationLoads.begin();
     let treeName = null;
     let stationId = null;
     if (parsed.kind === 'place') {
@@ -1096,7 +1098,9 @@
     } else {
       treeName = parsed.value.split('/')[0];
     }
-    const tree = await connApi('get_connection_tree', { tree: treeName });
+    // The whole tree in one read (a page of 5,000 stations), so a bookmark to any station opens.
+    const tree = await connApi('get_connection_tree', { tree: treeName, limit: 5000 });
+    if (!stationLoads.isLatest(seq)) return;
     if (parsed.kind === 'conn') {
       const coord = parsed.value.includes('/') ? parsed.value : `${tree.tree}/0`;
       const found = tree.placements.find((p) => p.coord === coord);
@@ -1108,10 +1112,12 @@
     let card = null;
     if (station && station.status === 'live') card = await api('card?at=' + enc(station.home_address));
     const placesOf = station && station.status === 'live' ? await connApi('list_placements', { card_id: station.card_id }).catch(() => null) : null;
+    if (!stationLoads.isLatest(seq)) return;
     state.excursion = null;
     state.conn = { tree, stationId, station, places: placesOf, overlay: state.conn ? state.conn.overlay : false, companion: null, lens: null };
     state.card = card;
-    if (card && card.workspace && card.workspace !== state.workspace) setWorkspace(card.workspace);
+    // The station view stands in its host tree's Workspace, whatever the mounted Card's home is.
+    if (tree.workspace && tree.workspace !== state.workspace) setWorkspace(tree.workspace);
     renderAll();
   }
 
@@ -1213,7 +1219,7 @@
           ? h('span', { class: 'home missing', text: `Missing mount: ${s.home_address} (${s.title}) was deleted at its home` })
           : h('span', { class: 'home', text: `Home: ${s.home_address} · ${s.home_role} · ${s.home_workspace}` }),
         drift && drift.differs ? h('span', { class: 'drift', text: drift.label + (drift.reviewed ? ' · reviewed' : '') }) : null,
-        drift && drift.differs && !drift.reviewed ? h('button', { class: 'mini-btn', text: 'Mark reviewed', onclick: () => connApi('review_source', { placement_id: s.placement_id, reviewed_fp: drift.current_fp }).then(() => openStation(s.placement_id)).catch(fail) }) : null,
+        drift && drift.differs && !drift.reviewed ? h('button', { class: 'mini-btn', text: 'Mark reviewed', onclick: () => connApi('review_source', { placement_id: s.placement_id, reviewed_fp: drift.current_fp, lock_id: drift.lock_id }).then(() => openStation(s.placement_id)).catch(fail) }) : null,
         s.status === 'live' ? h('button', { class: 'mini-btn', disabled: s.can_edit_card ? null : true, title: s.can_edit_card ? 'Edit the Card at its home (Back returns here)' : 'This Card is not yours to edit here (its home Workspace or Lock)', text: 'Edit Card', onclick: () => excursion(s) }) : null,
         s.status === 'live' ? h('button', { class: 'mini-btn', text: 'Open home tree', title: 'Read the Card in its home tree; Back to station returns here', onclick: () => excursion(s) }) : null,
         h('span', { class: 'cap', text: editHost ? 'You may edit this station and its connections' : 'This tree is read-only here' }),
@@ -1409,7 +1415,11 @@
 
   async function companionCarrier(ev) {
     const card = await api('card?at=' + enc(ev.carrier));
-    const entry = { card, mark: ev.macro_byte_range };
+    // The byte range belongs to the carrier as the lens read it: a carrier edited since is shown
+    // unmarked, with a note, rather than marking the wrong words.
+    const current = !ev.carrier_fp || card.authored_fingerprint === ev.carrier_fp;
+    if (!current) toast(`${ev.carrier} changed since the Dependency Lens read it; open the lens again to mark the exact sentence`, 'warn');
+    const entry = { card, mark: current ? ev.macro_byte_range : null };
     if (state.conn) state.conn.companion = entry; else state.companionHome = entry;
     paintReader();
   }

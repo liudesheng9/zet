@@ -1094,13 +1094,17 @@ pub(crate) fn load_tree_shape(conn: &Connection, tree: &ConnTree) -> Result<Tree
     if side.contains_key(&root) {
         bail!("a Side branch starts at the root");
     }
-    let side: BTreeMap<String, Vec<String>> = side
-        .into_iter()
-        .map(|(parent, mut kids)| {
-            kids.sort();
-            (parent, kids.into_iter().map(|(_, id)| id).collect())
-        })
-        .collect();
+    let mut dense = BTreeMap::new();
+    for (parent, mut kids) in side {
+        kids.sort();
+        for (index, (ordinal, _)) in kids.iter().enumerate() {
+            if *ordinal != index as u64 + 1 {
+                bail!("the Side ordinals of one station are not 1..{} in order", kids.len());
+            }
+        }
+        dense.insert(parent, kids.into_iter().map(|(_, id)| id).collect::<Vec<_>>());
+    }
+    let side: BTreeMap<String, Vec<String>> = dense;
     for parent in direct.keys().chain(side.keys()) {
         if !by_id.contains_key(parent) {
             bail!("a station's parent is outside this tree");
@@ -1328,11 +1332,43 @@ pub(crate) fn delete_all_hosts(conn: &Connection) -> Result<()> {
 
 /// The plan lines a home delete adds for the coordinate data it affects: trees it removes, and
 /// stations in other trees that will show as Missing mounts (with their connections, kept).
-pub(crate) fn delete_impact_lines(conn: &Connection, delete_set: &BTreeSet<String>) -> Result<Vec<String>> {
+pub(crate) fn delete_impact_lines(
+    conn: &Connection,
+    delete_set: &BTreeSet<String>,
+    keep_root: Option<&str>,
+) -> Result<Vec<String>> {
     if !installed(conn) {
         return Ok(Vec::new());
     }
     let mut lines = Vec::new();
+    // Host data this delete owns and removes: the stations and connections of an emptied
+    // Connection tree, and the mounts beside deleted Topic Cards.
+    if let Some(root) = keep_root
+        && let Some(handle) = Handle::parse(root).filter(|h| h.local.is_none())
+        && let Some(tree) = tree_by_num(conn, handle.tree)?
+    {
+        let stations = placements_of_host(conn, &tree.tree_id)?.len().saturating_sub(1);
+        let edges: i64 = conn.query_row("SELECT COUNT(*) FROM placement_edges WHERE tree_id = ?1", [&tree.tree_id], |r| r.get(0))?;
+        lines.push(format!("{root} keeps its root station; its other {stations} station(s) and {edges} tree connection(s) are removed"));
+    }
+    let mut beside = 0usize;
+    for address in delete_set {
+        if TreeRole::of_address(address) != TreeRole::Topic {
+            continue;
+        }
+        let Ok(card) = crate::load_card(conn, address) else { continue };
+        beside += attachments_of_anchor(conn, &card_id_of_row(conn, card.row_id)?)?.len();
+    }
+    if beside > 0 {
+        lines.push(format!("{beside} Topic-side mount(s) beside the deleted Topic Cards are removed with them"));
+    }
+    for address in delete_set {
+        if let Some(handle) = Handle::parse(address).filter(|h| h.local.is_some())
+            && !delete_set.contains(&Handle::root(handle.tree))
+        {
+            lines.push(format!("{address} leaves its home station in ~{} as a Missing mount (unplace or rebind it there)", handle.tree));
+        }
+    }
     let mut removed_hosts = BTreeSet::new();
     for address in delete_set {
         if let Some(handle) = Handle::parse(address).filter(|h| h.local.is_none())
