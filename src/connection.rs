@@ -439,7 +439,10 @@ fn station_value(
         value["home_address"] = json!(card.address);
         value["home_role"] = json!(role.id());
         value["home_workspace"] = json!(card.workspace.id());
-        value["title"] = json!(crate::parse_card_text(&card.text).map(|p| p.title).unwrap_or_else(|_| identity.last_title.clone()));
+        let parsed = crate::parse_card_text(&card.text).ok();
+        value["title"] = json!(parsed.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| identity.last_title.clone()));
+        // The opening lines, as the Map shows them on a lifted card.
+        value["excerpt"] = json!(parsed.as_ref().map(|p| crate::ops::excerpt(&p.body)).unwrap_or_default());
         value["type"] = json!(card.card_type.id());
         value["origin"] = json!(if native { "native" } else { "mount" });
         value["can_edit_card"] = json!(can_edit_card(conn, access, &card));

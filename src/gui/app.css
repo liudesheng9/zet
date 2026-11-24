@@ -3107,31 +3107,14 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 }
 
 /* ---------------------------------------------- Connection trees (关联树), proposal §9.1 */
+.conn-item { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 4px 0; font-size: 13px; }
 .conn-filter { width: 100%; margin: 4px 0 6px; padding: 4px 8px; border: 1px solid var(--line, #d8cfc0); border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: 12px; }
-.drawer.connection .addr { color: var(--accent, #c4622d); }
-.conn-map { position: absolute; inset: 0; overflow: auto; padding: 16px 20px 40px; }
-.conn-tools { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; font-size: 12px; }
-.conn-outline { list-style: none; margin: 0; padding: 0; }
-.conn-outline li { margin: 0; }
-.conn-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; width: 100%; text-align: left; border: 1px solid transparent; border-radius: 6px; background: transparent; color: inherit; font: inherit; padding: 5px 8px 5px calc(8px + var(--depth, 0) * 22px); cursor: pointer; }
-.conn-row:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
-.conn-row.on { border-color: var(--accent, #c4622d); background: color-mix(in srgb, var(--accent, #c4622d) 10%, transparent); }
-.conn-row .coord { font-family: ui-monospace, monospace; font-size: 12px; opacity: .7; min-width: 64px; }
-.conn-row .t { font-weight: 600; }
-.conn-row .gloss { flex-basis: 100%; padding-left: 70px; font-size: 12px; font-style: italic; opacity: .75; }
-.conn-row.missing .t { text-decoration: line-through; opacity: .6; }
-.conn-row .badge { font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid color-mix(in srgb, currentColor 25%, transparent); opacity: .85; }
-.conn-row .badge.missing { color: #b3402a; border-color: #b3402a; }
-.conn-row .badge.portal { font-style: italic; }
-.conn-row .badge.native { color: var(--accent, #c4622d); }
-.conn-edges { margin-top: 16px; border-top: 1px dashed color-mix(in srgb, currentColor 25%, transparent); padding-top: 10px; }
-.conn-edges h3, .conn-panel h3, .also-in h3, .side-shelf h3, .lens-pane h3 { font-size: 13px; margin: 8px 0 6px; }
-.conn-edges ul, .conn-panel ul, .also-in ul, .side-shelf ul, .lens-pane ul { list-style: none; margin: 0; padding: 0; }
-.conn-edge, .conn-item { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 4px 0; font-size: 13px; }
-.conn-edge.other { opacity: .6; }
+.drawer.connection .addr { color: oklch(var(--tree-l) var(--tree-c) 322); }
+.conn-panel h3, .also-in h3, .side-shelf h3, .lens-pane h3 { font-size: 13px; margin: 8px 0 6px; }
+.conn-panel ul, .also-in ul, .side-shelf ul, .lens-pane ul { list-style: none; margin: 0; padding: 0; }
 .prov { font-size: 11px; padding: 0 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent, #c4622d) 12%, transparent); white-space: nowrap; }
-.conn-edge .kind, .conn-item .kind { font-family: ui-monospace, monospace; font-size: 11px; opacity: .7; }
-.conn-edge .note, .conn-item .note { flex-basis: 100%; font-size: 12px; opacity: .75; padding-left: 8px; }
+.conn-item .kind { font-family: ui-monospace, monospace; font-size: 11px; opacity: .7; }
+.conn-item .note { flex-basis: 100%; font-size: 12px; opacity: .75; padding-left: 8px; }
 .station-block { border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 10px; padding: 10px 12px; margin: 0 0 12px; font-size: 13px; }
 .station-block.missing { border-color: #b3402a; }
 .station-trail { font-size: 12px; opacity: .85; margin-bottom: 6px; }
@@ -3163,4 +3146,77 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .side-shelf li.missing { opacity: .6; text-decoration: line-through; }
 .gloss { font-style: italic; opacity: .75; }
 .back-to-station { display: block; margin: 0 0 10px; }
-.node .side-mounts { position: absolute; right: -6px; top: -9px; font-size: 10px; padding: 0 5px; border-radius: 8px; border: 1px dashed var(--accent, #c4622d); background: var(--bg, #1b1b1b); color: var(--accent, #c4622d); }
+
+/* ------------------------------------------- one Map for every tree role: card stock by tree
+   A Connection tree is drawn by the Map like any tree. Cards pulled from different drawers keep
+   the card stock of their drawer: each home tree has its own colour (Literature warm, Topic green,
+   the Connection tree's own Cards plum), a faint tint of the stock and its ink on the home stamp,
+   so a glance tells which tree each station comes from while the pointer card keeps the lift. */
+:root { --tree-l: 56%; --tree-c: .15; --tree-stock: 11%; }
+:root[data-theme="dark"] { --tree-l: 74%; --tree-c: .14; --tree-stock: 14%; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --tree-l: 74%; --tree-c: .14; --tree-stock: 14%; } }
+.node.station, .beside-tab, .legend .tk { --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170)); }
+.node.station {
+  background-color: color-mix(in oklab, var(--tree-ink) var(--tree-stock), var(--stock));
+  border-color: color-mix(in oklab, var(--tree-ink) 30%, var(--stock-edge));
+  /* The coloured top edge of the card, as coloured index cards have: the tree at one glance. */
+  border-top: 3px solid var(--tree-ink);
+}
+.node.station.slip { background-color: color-mix(in oklab, var(--tree-ink) var(--tree-stock), color-mix(in srgb, var(--stock) 82%, var(--desk))); }
+.node.station.root { background-color: color-mix(in oklab, var(--tree-ink) calc(var(--tree-stock) * 2), var(--stock)); }
+.node.station.root .addr, .node.station.portal .addr { color: var(--tree-ink); font-weight: 600; }
+/* The home stamp: a small rubber stamp in the home tree's ink, as a library stamps its books. */
+.node.station .home-stamp {
+  flex: none; font: 500 9.5px/14px var(--mono); color: var(--tree-ink); white-space: nowrap;
+  padding: 0 4px; border: 1px solid color-mix(in oklab, var(--tree-ink) 55%, transparent); border-radius: 2px;
+  rotate: -1.5deg;
+}
+.node.station.slip .home-stamp { margin-left: auto; rotate: 0deg; }
+.node.station.native .home-stamp { border-style: dashed; }
+.node.station .badge.portal { background: color-mix(in oklab, var(--tree-ink) 16%, transparent); color: var(--tree-ink); }
+/* The curator's gloss: a pencil line under the title of the lifted card. */
+.node.focus.station .gloss {
+  margin-top: 3px; opacity: 1; color: var(--ink-soft); font: italic 12.5px/20px var(--serif);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.node.focus.station .gloss::before { content: "✎ "; color: var(--ink-faint); font-style: normal; }
+.node.focus.station.glossed .x { -webkit-line-clamp: 1; }
+/* A missing mount: the place in the drawer stays, with nothing in it but its label. */
+.node.station.missing {
+  background-color: transparent; background-image: none;
+  border: 1.5px dashed color-mix(in srgb, var(--broken) 50%, var(--ink-faint)); box-shadow: none;
+}
+.node.station.missing .t { color: var(--ink-faint); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--broken) 55%, transparent); }
+.node.station.missing .home-stamp { color: var(--broken); border-color: color-mix(in srgb, var(--broken) 50%, transparent); }
+.node.focus.station.missing { border-color: var(--pointer); }
+
+/* The Topic-side mounts beside a Map card: cards tucked behind its right edge, each peeking out
+   on the stock of the tree it comes from. A tab slides out a little under the hand. */
+.beside-tabs { position: absolute; left: calc(100% - 3px); top: 6px; display: flex; flex-direction: column; gap: 2px; z-index: -1; }
+.beside-tab {
+  display: block; max-width: 138px; padding: 1px 9px 1px 8px; cursor: pointer;
+  font: 500 11px/16px var(--serif); color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background: color-mix(in oklab, var(--tree-ink) calc(var(--tree-stock) * 1.6), var(--stock));
+  border: 1px solid color-mix(in oklab, var(--tree-ink) 30%, var(--stock-edge)); border-left: 0; border-radius: 0 3px 3px 0;
+  box-shadow: 1px 1px 3px -1px rgba(60, 45, 20, .3);
+  transition: translate .22s var(--ease), color .2s;
+}
+.beside-tab b { font: 600 9.5px var(--mono); color: var(--tree-ink); margin-right: 5px; }
+.beside-tab:hover, .beside-tab:focus-visible { translate: 6px 0; color: var(--ink); }
+.beside-tab.missing { background: transparent; border-style: dashed; text-decoration: line-through; }
+.beside-tab.more { font: 500 10px/16px var(--mono); color: var(--ink-faint); background: var(--stock); cursor: default; }
+.beside-tab.more:hover { translate: none; }
+
+/* The colour key of a Connection tree: each home tree's card stock, named, before the line key. */
+.legend.conn { flex-wrap: wrap; row-gap: 6px; max-width: calc(100% - 220px); }
+.legend .tree-key { order: -1; flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-soft); }
+.legend .tk { white-space: nowrap; }
+.legend .tk i {
+  width: 16px; height: 11px; margin-right: 6px; vertical-align: -1px; border-radius: 1px;
+  border: 1px solid color-mix(in oklab, var(--tree-ink) 40%, var(--stock-edge)); border-top: 2px solid var(--tree-ink);
+  background: color-mix(in oklab, var(--tree-ink) calc(var(--tree-stock) * 2), var(--stock));
+}
+.legend .tk.missing i { background: transparent; border: 1px dashed var(--broken); }
+.legend.conn .lg-link-row, .legend:not(.conn) .lg-conn-row { display: none; }
+/* The Connection tree's own tools, at the desk's lower right. */
+.conn-bar { position: absolute; right: 16px; bottom: 14px; z-index: 6; display: flex; gap: 6px; }

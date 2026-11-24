@@ -129,7 +129,7 @@
     </div>
     <div class="viewport" id="viewport">
       <div class="desk" id="desk" hidden></div>
-      <div class="conn-map" id="conn-map" hidden></div>
+      <div class="conn-bar" id="conn-bar" hidden></div>
       <div class="plane" id="plane">
         <svg class="edges" id="edges"></svg>
         <div class="nodes" id="nodes"></div>
@@ -149,9 +149,11 @@
     <div class="legend" id="legend">
       <span><i class="lg-direct"></i>direct successor</span>
       <span><i class="lg-side"></i>side successor</span>
-      <span><i class="lg-link"></i>link of the pointer</span>
+      <span class="lg-link-row"><i class="lg-link"></i>link of the pointer</span>
+      <span class="lg-conn-row"><i class="lg-link"></i>connection of the station</span>
       <span class="lg-term-row" hidden><i class="lg-term"></i>term use</span>
       <span><b class="lg-fold">+3</b>cards filed behind</span>
+      <span class="tree-key" id="tree-key" hidden></span>
     </div>
   </main>
 

@@ -202,10 +202,145 @@
     return [dec.decode(bytes.slice(0, start)), dec.decode(bytes.slice(start, end)), dec.decode(bytes.slice(end))];
   }
 
+  // ------------------------------------------------------------ one Map for every tree role
+  // A Connection tree is drawn on the same desk as a Topic or Literature tree: its stations are
+  // index cards in the same focus lens. Cards pulled from different drawers keep the colour of their
+  // drawer: each home tree has one hue, the same in every view, from a palette of seven that stay
+  // apart at a glance and leave out the pointer's gold and the Link's blue. A Connection tree's own
+  // Cards are plum. Inside one view no two trees share a hue.
+
+  /** The tree a Card lives in: `~7` for `~7` and `~7#4`, else the part before the first `/`. */
+  function treeOf(address) {
+    const text = String(address || '');
+    const handle = text.match(/^~\d+/);
+    return handle ? handle[0] : text.split('/')[0];
+  }
+
+  /** A tree's role from its id: a handle, a Topic number, or a Citation key. */
+  function roleOf(tree) {
+    const text = String(tree || '');
+    return text.startsWith('~') ? 'connection' : /^\d/.test(text) ? 'topic' : 'literature';
+  }
+
+  // OKLCH hues: red, orange, green, teal, cyan, violet, rose. Gold (the pointer, ~85) and blue (a
+  // Link, ~255) stay out; plum is a Connection tree's own.
+  const PALETTE = [25, 50, 140, 172, 205, 292, 352];
+  const OWN_HUE = 322;
+
+  /** A tree's place in the palette: a hash of its id, the same in every view. */
+  function paletteSlot(tree) {
+    let hash = 2166136261;
+    for (const ch of String(tree || '')) {
+      hash ^= ch.codePointAt(0);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return hash % PALETTE.length;
+  }
+
+  /** The stable hue (OKLCH degrees) of one tree; a Connection tree is plum. */
+  function treeHue(tree, role) {
+    return (role || roleOf(tree)) === 'connection' ? OWN_HUE : PALETTE[paletteSlot(tree)];
+  }
+
+  /**
+   * A Connection tree as the Map draws it: one Card summary per station, keyed by coordinate, with
+   * the outline fields (`parent`, `edge`), the tree connections as `links` (a neutral connection
+   * runs both ways) and `inbound` counts, and `station`: the home address, home tree, role, hue,
+   * origin, status, gloss and portal of what stands there. `tree` is a `get_connection_tree` answer.
+   */
+  function mapTree(tree) {
+    const stations = (tree && tree.placements) || [];
+    const byId = new Map(stations.map((s) => [s.placement_id, s]));
+    const coordOf = (id) => (byId.has(id) ? byId.get(id).coord : null);
+    const out = new Map();
+    const inn = new Map();
+    const add = (map, key, value) => {
+      if (!map.has(key)) map.set(key, []);
+      if (!map.get(key).includes(value)) map.get(key).push(value);
+    };
+    for (const e of (tree && tree.connections) || []) {
+      const a = coordOf(e.from && e.from.placement_id);
+      const b = coordOf(e.to && e.to.placement_id);
+      if (!a || !b || a === b) continue;
+      add(out, a, b); add(inn, b, a);
+      if (e.direction !== 'directed') { add(out, b, a); add(inn, a, b); }
+    }
+    const own = tree && tree.tree;
+    // Two trees whose hashes meet are told apart in this view: a later one takes the next free hue
+    // of the palette. Only past seven trees do two share one.
+    const hues = new Map();
+    const hueOf = (homeTree, role) => {
+      if (hues.has(homeTree)) return hues.get(homeTree);
+      let hue = OWN_HUE;
+      if (role !== 'connection') {
+        const taken = new Set(hues.values());
+        const start = paletteSlot(homeTree);
+        hue = PALETTE[start];
+        for (let step = 1; step < PALETTE.length && taken.has(hue); step += 1) hue = PALETTE[(start + step) % PALETTE.length];
+      }
+      hues.set(homeTree, hue);
+      return hue;
+    };
+    let root = null;
+    const byCoord = new Map();
+    const cards = stations.map((s) => {
+      if (s.edge === 'root') root = s.coord;
+      const home = s.home_address || '';
+      const homeTree = s.edge === 'root' ? own : treeOf(home);
+      const role = s.edge === 'root' ? 'connection' : roleOf(homeTree);
+      byCoord.set(s.coord, s.placement_id);
+      return {
+        address: s.coord,
+        parent: s.parent_id ? coordOf(s.parent_id) : null,
+        edge: s.edge,
+        title: s.title || home,
+        type: s.type || 'idea',
+        excerpt: s.excerpt || '',
+        links: out.get(s.coord) || [],
+        kinds: {},
+        inbound: (inn.get(s.coord) || []).length,
+        kind: s.edge === 'root' ? 'connection' : undefined,
+        station: {
+          id: s.placement_id, home, tree: homeTree, role, hue: hueOf(homeTree, role),
+          origin: s.edge === 'root' ? 'root' : s.origin || 'mount', status: s.status || 'live',
+          gloss: s.gloss || '', portal: s.portal || null,
+        },
+      };
+    });
+    return { tree: 'conn:' + own, handle: own, kind: 'connection', title: (tree && tree.title) || own, root, cards, byCoord, inbound: inn };
+  }
+
+  /** The focus the Map lays out at one station: its coordinate and its connections as Links. */
+  function focusCard(map, coord) {
+    const card = map.cards.find((c) => c.address === coord) || map.cards.find((c) => c.address === map.root);
+    const address = card ? card.address : coord;
+    const near = map.inbound.get(address) || [];
+    return {
+      address, tree: map.tree, model: null,
+      outbound: ((card && card.links) || []).map((at) => ({ address: at })),
+      inbound: near.map((at) => ({ address: at })),
+      inbound_near: near,
+    };
+  }
+
+  /** The colour key of a mapped tree: each home tree once, in the order the tree first shows it. */
+  function treeKey(map) {
+    const seen = new Map();
+    for (const c of map.cards) {
+      const s = c.station;
+      if (s.status === 'missing') continue;
+      if (!seen.has(s.tree)) seen.set(s.tree, { tree: s.tree, role: s.role, hue: s.hue, count: 0 });
+      seen.get(s.tree).count += 1;
+    }
+    const missing = map.cards.filter((c) => c.station.status === 'missing').length;
+    return { trees: [...seen.values()], missing };
+  }
+
   return {
     GLOSS_LIMIT, LABEL_LIMIT, NOTE_LIMIT, KINDS, DIRECTIONAL,
     outline, counts, focusEdges, panel, provenance, sentence, labelSuggestions,
     checkConnection, checkGloss, citation, bookmark, stationHash, treeHash, parseHash,
     portalLabel, glossReview, markByBytes,
+    PALETTE, OWN_HUE, treeOf, roleOf, treeHue, mapTree, focusCard, treeKey,
   };
 });

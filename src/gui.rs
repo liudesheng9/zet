@@ -3636,6 +3636,63 @@ mod tests {
         assert_eq!(value["counts"], json!([["a", 1], ["b", 1], ["s1", 1], ["s2", 1]]));
     }
 
+    /// One Map for every tree role: a Connection tree's stations become Map cards keyed by
+    /// coordinate, each on the colour of its home tree; two trees never share a colour in one view,
+    /// a tree keeps its colour across views, and the tree's own Cards are plum.
+    #[test]
+    fn a_connection_tree_maps_onto_the_card_map_coloured_by_home_tree() {
+        let Some(value) = connections_js(
+            "(() => {
+               const tree = { tree: '~3', title: 'T', placements: [
+                 { placement_id: 'r', edge: 'root', coord: '~3/0', home_address: '~3', title: 'T' },
+                 { placement_id: 'a', edge: 'direct', parent_id: 'r', coord: '~3/1', home_address: 'Hart1995/2', origin: 'mount', status: 'live', gloss: 'why' },
+                 { placement_id: 'b', edge: 'direct', parent_id: 'a', coord: '~3/2', home_address: 'Will1985/1', origin: 'mount', status: 'live' },
+                 { placement_id: 's', edge: 'side', parent_id: 'b', ordinal: 1, coord: '~3/2|a', home_address: '~3#1', origin: 'native', status: 'live' },
+                 { placement_id: 'm', edge: 'direct', parent_id: 'b', coord: '~3/3', home_address: 'Gone/4', origin: 'mount', status: 'missing' },
+               ], connections: [
+                 { direction: 'directed', from: { placement_id: 'b' }, to: { placement_id: 'a' } },
+                 { direction: 'neutral', from: { placement_id: 's' }, to: { placement_id: 'a' } },
+               ] };
+               const m = C.mapTree(tree);
+               const by = Object.fromEntries(m.cards.map((c) => [c.address, c]));
+               const f = C.focusCard(m, '~3/1');
+               return {
+                 tree: m.tree, root: m.root,
+                 outline: m.cards.map((c) => [c.address, c.parent, c.edge]),
+                 links: [by['~3/2'].links, by['~3/1'].links, by['~3/1'].inbound],
+                 roles: m.cards.map((c) => c.station.role),
+                 own: [by['~3/0'].station.hue, by['~3/2|a'].station.hue, C.OWN_HUE],
+                 apart: new Set(m.cards.filter((c) => c.station.role !== 'connection').map((c) => c.station.hue)).size,
+                 stable: C.treeHue('Hart1995') === C.treeHue('Hart1995') && C.PALETTE.includes(C.treeHue('Hart1995')),
+                 gloss: by['~3/1'].station.gloss, missing: by['~3/3'].station.status,
+                 focus: [f.address, f.outbound.map((l) => l.address), f.inbound_near],
+                 key: C.treeKey(m),
+                 trees: [C.treeOf('~3#1'), C.treeOf('Hart1995/2|a'), C.roleOf('12'), C.roleOf('~9')],
+               };
+             })()",
+        ) else {
+            return;
+        };
+        assert_eq!(value["tree"], "conn:~3", "a mapped tree never shares an id with a real tree");
+        assert_eq!(value["root"], "~3/0");
+        assert_eq!(
+            value["outline"],
+            json!([["~3/0", null, "root"], ["~3/1", "~3/0", "direct"], ["~3/2", "~3/1", "direct"], ["~3/2|a", "~3/2", "side"], ["~3/3", "~3/2", "direct"]])
+        );
+        assert_eq!(value["links"], json!([["~3/1"], ["~3/2|a"], 2]), "a neutral connection runs both ways");
+        assert_eq!(value["roles"], json!(["connection", "literature", "literature", "connection", "literature"]));
+        assert_eq!(value["own"][0], value["own"][2]);
+        assert_eq!(value["own"][1], value["own"][2], "a native Card wears its tree's own plum");
+        assert_eq!(value["apart"], 3, "three home trees, three colours");
+        assert_eq!(value["stable"], true);
+        assert_eq!(value["gloss"], "why");
+        assert_eq!(value["missing"], "missing");
+        assert_eq!(value["focus"], json!(["~3/1", ["~3/2|a"], ["~3/2", "~3/2|a"]]));
+        assert_eq!(value["key"]["missing"], 1);
+        assert_eq!(value["key"]["trees"].as_array().unwrap().len(), 3, "the tree, Hart1995 and Will1985");
+        assert_eq!(value["trees"], json!(["~3", "Hart1995", "topic", "connection"]));
+    }
+
     #[test]
     fn the_connection_page_checks_like_the_server_and_routes_by_placement() {
         let Some(value) = connections_js(

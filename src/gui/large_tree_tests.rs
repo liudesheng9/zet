@@ -317,7 +317,7 @@ fn a_map_move_writes_only_what_changed_and_draws_only_what_the_camera_sees() {
     assert!(map.contains("if (view.index.has(address)) el.remove(); // still in the lens, only out of view"));
     let camera = &APP_JS[APP_JS.find("  function applyCamera() {").unwrap()..];
     let camera = &camera[..camera.find("\n  }\n").unwrap()];
-    assert!(camera.contains("if (state.mode === 'map' && state.card) map.cameraMoved();"), "{camera}");
+    assert!(camera.contains("if (onMap()) map.cameraMoved();"), "{camera}");
     // Bundles riffle without moving the Pointer.
     assert!(map.contains("if (bundle) { riffle(address); return; }"));
     assert!(map.contains("windows = { ...windows, [bundle.parent]: bundle.anchor };"));

@@ -1132,54 +1132,26 @@
     renderAll();
   }
 
-  function connStationRow(row, conn, counts) {
-    const portal = CONN.portalLabel(row);
-    const on = row.placement_id === conn.stationId;
-    const n = counts.get(row.placement_id) || 0;
-    return h('button', {
-      class: 'conn-row' + (on ? ' on' : '') + (row.status === 'missing' ? ' missing' : '') + ' ' + (row.origin || 'mount'),
-      style: `--depth:${row.depth}`,
-      title: row.gloss ? `${row.coord} · ${row.gloss}` : row.coord,
-      dataset: { placement: row.placement_id },
-      onclick: () => openStation(row.placement_id),
-    },
-      h('span', { class: 'coord', text: row.coord }),
-      h('span', { class: 't', text: row.title || row.home_address }),
-      row.status === 'missing' ? h('span', { class: 'badge missing', text: 'missing' }) : null,
-      portal ? h('span', { class: 'badge portal', text: portal }) : null,
-      row.origin === 'native' && row.edge !== 'root' ? h('span', { class: 'badge native', text: 'native' }) : null,
-      n ? h('span', { class: 'badge conns', title: `${n} tree connection(s)`, text: `⟷ ${n}` }) : null,
-      row.gloss ? h('span', { class: 'gloss', text: row.gloss }) : null,
+  /** The Connection tree's own tools above the Map: mount a Card after the station, lock the tree. */
+  function renderConnBar() {
+    const conn = state.conn;
+    const bar = $('#conn-bar');
+    bar.replaceChildren(
+      conn.tree.can_edit_tree && conn.station ? h('button', { class: 'mini-btn', text: '+ Mount a Card', title: `Mount a Card after ${conn.station.coord}`, onclick: () => mountHere().catch(fail) }) : null,
+      h('button', { class: 'mini-btn', text: 'Lock…', title: 'Lock this Connection tree: its stations, glosses and connections freeze and its mounted Cards are pinned', onclick: () => lockTree(conn.tree.tree).catch(fail) }),
     );
   }
 
-  /** The Map of a Connection tree: its stations in outline order and the focused connections. */
-  function renderConnStage() {
-    const conn = state.conn;
-    const host = $('#conn-map');
-    const rows = CONN.outline(conn.tree.placements || []);
-    const connections = conn.tree.connections || [];
-    const counts = CONN.counts(connections);
-    const edges = CONN.focusEdges(connections, conn.stationId, conn.overlay);
-    $('#stage-title').textContent = `${conn.tree.title || conn.tree.tree} (${conn.tree.tree}) · ${conn.tree.counts}${conn.tree.locked ? ' · locked' : ''}`;
-    host.replaceChildren(
-      h('div', { class: 'conn-tools' },
-        h('label', { class: 'conn-overlay' },
-          h('input', { type: 'checkbox', checked: conn.overlay ? true : null, onchange: (event) => { conn.overlay = event.target.checked; renderStage(); } }),
-          ' All connections'),
-        conn.tree.can_edit_tree ? h('button', { class: 'mini-btn', text: '+ Mount a Card', onclick: () => mountHere().catch(fail) }) : null,
-        h('button', { class: 'mini-btn', text: 'Lock…', title: 'Lock this Connection tree: its stations, glosses and connections freeze and its mounted Cards are pinned', onclick: () => lockTree(conn.tree.tree).catch(fail) }),
-      ),
-      h('ol', { class: 'conn-outline', 'aria-label': `Stations of ${conn.tree.tree}` }, rows.map((row) => h('li', {}, connStationRow(row, conn, counts)))),
-      h('section', { class: 'conn-edges' },
-        h('h3', { text: conn.overlay ? `All connections · ${edges.length}` : `Connections of ${conn.station ? conn.station.coord : ''} · ${edges.length}` }),
-        edges.length ? h('ul', {}, edges.map((edge) => h('li', { class: 'conn-edge ' + edge.role + ' ' + edge.direction },
-          h('span', { class: 'prov', text: CONN.provenance(edge) }),
-          h('span', { class: 'sent', text: CONN.sentence(edge) }),
-          edge.relation_kind ? h('span', { class: 'kind', text: edge.relation_kind }) : null,
-          edge.note ? h('span', { class: 'note', text: edge.note }) : null,
-        ))) : h('p', { class: 'empty-hint', text: 'No connection here yet. Connect two stations from the reader.' }),
-      ),
+  /** The colour key under a Connection tree: each home tree's card stock, named. */
+  function renderTreeKey(map) {
+    const key = CONN.treeKey(map);
+    const titles = new Map((state.overview.trees || []).map((tree) => [tree.tree, tree.title]));
+    const roles = { literature: 'Literature', topic: 'Topic', connection: 'Connection' };
+    const name = (entry) => entry.tree === map.handle ? `${map.title} · this tree` : `${titles.get(entry.tree) || entry.tree} · ${roles[entry.role]}`;
+    $('#tree-key').replaceChildren(
+      ...key.trees.map((entry) => h('span', { class: 'tk ' + entry.role, style: `--tree-h:${entry.hue}`, title: `${entry.tree} · ${entry.count} station${entry.count === 1 ? '' : 's'}` },
+        h('i'), name(entry))),
+      key.missing ? h('span', { class: 'tk missing' }, h('i'), `missing · ${key.missing}`) : null,
     );
   }
 
@@ -1489,12 +1461,11 @@
         state.homeExtras = { address: card.address, places, shelf };
         const slot = document.querySelector('#home-extras');
         if (slot) slot.replaceWith(homeExtras(card));
-        // The Map marks the Topic-side mounts beside this Card, apart from its `|a` branches.
-        const mounts = shelf && shelf.mounts ? shelf.mounts.length : 0;
+        // The Map tucks the Topic-side mounts behind this Card: each peeks out on the card stock of
+        // the tree it comes from, apart from the Card's own `|a` branches.
+        const mounts = shelf && shelf.mounts ? shelf.mounts : [];
         const node = document.querySelector(`.node[data-address="${CSS.escape(card.address)}"]`);
-        if (node && mounts && !node.querySelector('.side-mounts')) {
-          node.append(h('span', { class: 'side-mounts', title: `${mounts} Topic-side mount(s) beside this Card (${card.address}+1 …); they take no |a slot`, text: `+${mounts} beside` }));
-        }
+        if (node && mounts.length && !node.querySelector('.beside-tabs')) node.append(besideTabs(card.address, mounts));
       });
     }
     const places = extras && extras.places && extras.places.placements ? extras.places.placements : [];
@@ -1516,6 +1487,25 @@
       state.lensHome && state.lensHome.focus.address === card.address ? lensPane(state.lensHome) : null,
       state.companionHome ? companionPane(state.companionHome) : null,
     );
+  }
+
+  /** The Topic-side mounts of a Map card, tucked behind its right edge: three tabs and a +N. */
+  function besideTabs(anchor, mounts) {
+    const shown = mounts.slice(0, 3);
+    const tab = (m) => {
+      const tree = CONN.treeOf(m.home_address);
+      const role = CONN.roleOf(tree);
+      const missing = m.status === 'missing';
+      return h('span', {
+        class: 'beside-tab ' + role + (missing ? ' missing' : ''), role: 'button', tabindex: '0',
+        style: `--tree-h:${CONN.treeHue(tree, role)}`,
+        title: `${m.coord} · ${missing ? 'missing: ' : ''}${m.home_address} · ${m.title}${m.gloss ? ' — ' + m.gloss : ''}`,
+        onclick: (event) => { event.stopPropagation(); if (missing) toast('Missing mount: its Card was deleted at home', 'warn'); else go(m.home_address); },
+      }, h('b', { text: '+' + m.coord.split('+').pop() }), m.title);
+    };
+    return h('span', { class: 'beside-tabs', 'aria-label': `${mounts.length} Topic-side mount(s) beside ${anchor}` },
+      ...shown.map(tab),
+      mounts.length > shown.length ? h('span', { class: 'beside-tab more', text: `+${mounts.length - shown.length} more` }) : null);
   }
 
   // --------------------------------------------------------------- routing
@@ -2404,6 +2394,9 @@
   /** The camera of the view that lays Cards on a plane: the Map's or the Table's. */
   const planeCamera = () => (state.mode === 'table' ? camera.table : camera.map);
   const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  /** Whether the Map shows a tree now: an open Card, or a station of a Connection tree. */
+  const onMap = () => state.mode === 'map' && !!(state.conn ? state.conn.focusCard : state.card);
+
   // The viewport's size, read once and then kept current by a ResizeObserver (#240), so a render
   // never forces a layout just to learn it. A size of zero (the stage not laid out yet) is read again.
   const viewportSize = (() => {
@@ -2416,8 +2409,12 @@
         if (!watched && typeof ResizeObserver === 'function') {
           watched = true;
           new ResizeObserver(() => {
+            const unsized = !box.w || !box.h;
             box.w = viewport.clientWidth; box.h = viewport.clientHeight;
-            if (state.mode === 'map' && state.card) map.cameraMoved();
+            // A stage first laid out after its first render (a pane still opening) places the
+            // camera again; later size changes only draw what came into view.
+            if (unsized && box.w && box.h) renderStage();
+            else if (onMap()) map.cameraMoved();
           }).observe(viewport);
         }
       }
@@ -2456,12 +2453,40 @@
 
   function renderStage() {
     if (!state.overview) return;
-    const connView = state.conn && state.mode === 'map';
-    $('#conn-map').hidden = !connView;
+    const connView = !!(state.conn && state.mode === 'map');
+    $('#conn-bar').hidden = !connView;
+    $('#tree-key').hidden = !connView;
+    $('#legend').classList.toggle('conn', connView);
     if (connView) {
-      for (const id of ['#desk', '#plane', '#table-plane', '#legend', '#lens-toggle', '#term-toggle']) $(id).hidden = true;
-      $('#sky').hidden = true;
-      renderConnStage();
+      // The stations are index cards in the same focus lens as a Topic or Literature tree, each on
+      // the card stock of the tree it comes from; the tree connections are the focus's Links.
+      const conn = state.conn;
+      if (conn.mapFrom !== conn.tree) {
+        conn.map = CONN.mapTree(conn.tree);
+        conn.outline = ZtLayout.outline(conn.map.cards, conn.map.root);
+        conn.mapFrom = conn.tree;
+      }
+      state.tree = conn.map;
+      state.outline = conn.outline;
+      conn.focusCard = CONN.focusCard(conn.map, conn.station ? conn.station.coord : conn.map.root);
+      for (const id of ['#desk', '#table-plane', '#term-toggle', '#sky', '#table-tools']) $(id).hidden = true;
+      $('#plane').hidden = false;
+      $('#legend').hidden = false;
+      $('.zoom').hidden = false;
+      $('#viewport').classList.remove('table-mode');
+      $('#app').classList.remove('at-table');
+      const lens = $('#lens-toggle');
+      lens.hidden = false;
+      lens.classList.toggle('on', state.expandAll);
+      lens.querySelector('span').textContent = state.expandAll ? 'Whole tree' : 'Focus';
+      renderConnBar();
+      renderTreeKey(conn.map);
+      map.render();
+      const total = conn.map.cards.length;
+      const shown = map.shownCount();
+      $('#stage-title').textContent = `Connection ${conn.tree.tree} · ${conn.tree.title || ''} — `
+        + (shown < total ? `${shown} of ${total} stations in view` : `${total} station${total === 1 ? '' : 's'}`)
+        + (conn.tree.locked ? ' · locked' : '');
       return;
     }
     const inTree = state.mode === 'map' && state.card;
@@ -2628,6 +2653,7 @@
     }
 
     function content(el, card, n, outline) {
+      if (card.station) { stationContent(el, card, n); return; }
       const external = card.links.filter((target) => !outline.card.has(target)).length;
       const signature = [n.lod, n.role, n.folded, card.title, card.type, card.facet, card.emphasis, card.level, card.inbound, external, card.excerpt].join('\u0001');
       setClass(el, ['node', n.lod, 'role-' + n.role,
@@ -2669,6 +2695,62 @@
       ].filter(Boolean));
     }
 
+    /**
+     * A station of a Connection tree: the same index card at the same level of detail, on the
+     * card stock of its home tree (`--tree-h`), with its home address stamped in that tree's ink,
+     * the curator's gloss pencilled under the title, a missing mount as an empty dashed place, and a
+     * mounted tree root as a portal that names its tree.
+     */
+    function stationContent(el, card, n) {
+      const st = card.station;
+      setClass(el, ['node', n.lod, 'role-' + n.role, 'station', st.origin, st.role,
+        st.status === 'missing' ? 'missing' : '', st.portal ? 'portal' : '', st.gloss ? 'glossed' : '',
+        card.type && card.type !== 'idea' ? 'type-' + card.type : '',
+        n.folded ? 'folded' : '',
+        state.linkedIn && state.linkedIn.has(card.address) ? 'in' : '',
+        state.linkedOut && state.linkedOut.has(card.address) ? 'out' : '',
+      ].filter(Boolean).join(' '));
+      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.inbound, card.excerpt, st.home, st.status, st.gloss, st.hue].join('\u0001');
+      if (el.dataset.sig === signature) return;
+      el.dataset.sig = signature;
+      el.style.setProperty('--tree-h', st.hue);
+      const missing = st.status === 'missing';
+      el.title = (missing ? `Missing mount: ${st.home} was deleted at home` : `${card.title} · from ${st.home}`)
+        + (st.gloss ? `\n\n${st.gloss}` : '') + (card.excerpt ? `\n\n${card.excerpt}` : '');
+      const fold = n.folded ? h('span', { class: 'badge fold', title: `${n.folded} more station${n.folded === 1 ? '' : 's'} filed behind`, text: '+' + n.folded }) : null;
+      const title = h('span', { class: 't' + (card.title ? '' : ' untitled') }, card.title ? titleNodes(card.title) : 'untitled');
+      // The home stamp: where the Card lives. A native Card is written here and needs none.
+      const stampText = st.origin === 'root' ? null : missing ? 'missing' : st.origin === 'native' ? 'native' : (n.lod === 'focus' ? st.home : shortHome(st.home));
+      const stamp = stampText ? h('span', { class: 'home-stamp', title: missing ? 'Its Card was deleted at home; the station keeps its place, gloss and connections' : st.origin === 'native' ? `Written in this tree · ${st.home}` : `Its home: ${st.home}`, text: stampText }) : null;
+      const portal = st.portal ? h('span', { class: 'badge portal', text: CONN.portalLabel({ portal: st.portal }) }) : null;
+      if (n.lod === 'slip') {
+        el.replaceChildren(...[h('span', { class: 'addr', text: card.address }), title, stamp, fold].filter(Boolean));
+        return;
+      }
+      el.replaceChildren(...[
+        h('span', { class: 'top' },
+          h('span', { class: 'addr', text: card.address }),
+          h('span', { class: 'badges' },
+            stamp, portal,
+            typeStamp(card.type, null),
+            card.inbound ? h('span', { class: 'badge in', title: `${card.inbound} tree connection(s) point here`, text: '←' + card.inbound }) : null,
+            fold,
+          ),
+        ),
+        title,
+        n.lod === 'focus' && st.gloss ? h('span', { class: 'gloss', text: st.gloss }) : null,
+        n.lod === 'focus' && card.excerpt ? h('span', { class: 'x', text: card.excerpt }) : null,
+      ].filter(Boolean));
+    }
+
+    /** A home address short enough for a stamp: a long Citation key keeps its start and its tail. */
+    function shortHome(address) {
+      const slash = address.indexOf('/');
+      if (slash < 0) return address.length > 14 ? address.slice(0, 12) + '…' : address;
+      const key = address.slice(0, slash);
+      return (key.length > 8 ? key.slice(0, 6) + '…' : key) + address.slice(slash);
+    }
+
     /** A bundle (#239): the slips a long list's window leaves out, as one thick stack of slip
      *  edges. It is thicker the more slips it holds, names how many and which, and a click
      *  riffles through them. */
@@ -2696,6 +2778,7 @@
         onclick: (event) => {
           event.stopPropagation();
           if (bundle) { riffle(address); return; }
+          if (state.conn) { go(address); return; }
           // Alt-click marks a span from the open card through this one (S7, #235).
           if (event.altKey) { markSpan(address); return; }
           // Shift-click lays the card on the Table, or takes it back, without leaving the Map.
@@ -2705,7 +2788,7 @@
         onpointerenter: bundle ? null : () => { hovered = address; paintEdges(drawn); },
         onpointerleave: bundle ? null : () => { if (hovered === address) { hovered = null; paintEdges(drawn); } },
       });
-      if (!bundle) wireDrag(el, address);
+      if (!bundle && !state.conn) wireDrag(el, address);
       els.set(address, el);
       $('#nodes').append(el);
       return el;
@@ -2876,7 +2959,7 @@
     /** After the camera moved (a pan, a zoom, a fit, the end of a glide): draw what came into
      *  view and drop what left it. */
     function cull() {
-      if (!view || !state.card || state.mode !== 'map') return;
+      if (!view || !focusOf() || state.mode !== 'map') return;
       sync(inView(drawn, cam), new Set(), drawn);
       place(drawn);
       paintEdges(drawn);
@@ -2906,8 +2989,13 @@
       requestAnimationFrame(step);
     }
 
+    /** What the lens centres on: the open Card, or at a station the station's own summary. */
+    function focusOf() {
+      return state.conn && state.mode === 'map' ? state.conn.focusCard : state.card;
+    }
+
     function render() {
-      const card = state.card;
+      const card = focusOf();
       const outline = state.outline;
       if (!card || !outline) return;
       const inTree = (address) => outline.card.has(address) && address !== card.address;
@@ -3009,7 +3097,7 @@
     const t = camera.table;
     $('#table-plane').style.transform = `translate(${t.x}px, ${t.y}px) scale(${t.k})`;
     // The Map draws only what the camera sees (#241): a pan or zoom draws what came into view.
-    if (state.mode === 'map' && state.card) map.cameraMoved();
+    if (onMap()) map.cameraMoved();
   }
 
   function fitView() {
@@ -9205,7 +9293,7 @@
         case 'w': return run(() => setWorkspace(state.workspace === 'agent' ? 'human' : 'agent', { toRoot: true }));
         case 'y': return spreads.previewing() ? run(keepAskSpread) : undefined;
         case 'f': return run(() => fitView());
-        case 'x': return state.card && state.mode === 'map' ? run(() => setExpandAll(!state.expandAll)) : undefined;
+        case 'x': return onMap() ? run(() => setExpandAll(!state.expandAll)) : undefined;
         case '?': return run(showHelp);
         case 's': return isStudied(card) ? run(() => study.open(card.address)) : undefined;
         case 'Escape': return run(() => (spreads.previewing() ? cancelAskSpread() : pullout.node ? dropBack() : openRail(false)));
