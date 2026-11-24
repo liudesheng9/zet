@@ -17,6 +17,7 @@ mod batch;
 mod card;
 mod card_type;
 mod cited;
+mod coord;
 mod dump;
 mod entry;
 mod export;
@@ -1621,6 +1622,13 @@ fn initialize_database(root: &Path) -> Result<()> {
             log_event(root, &format!("tree lock {}", integrity.summary())).ok();
         }
     }
+    {
+        // Multi-tree coordinates: identity, handles, Connection trees, placements and tree
+        // connections, plus the writer fence over every table. Installed after every Card-table
+        // rebuild and after the Lock tables exist, so the fence covers them too.
+        let _lock = acquire_edit_lock(root, "coordinate storage")?;
+        coord::ensure_schema(&conn, root)?;
+    }
     drop(conn);
     Ok(())
 }
@@ -2612,6 +2620,8 @@ fn open_db(root: &Path) -> Result<Connection> {
     let conn = Connection::open(db_path(root))
         .with_context(|| format!("failed to open {}", db_path(root).display()))?;
     tree_lock::register_sql_functions(&conn)?;
+    // The coordinate tables rely on deferred composite foreign keys; enforce them explicitly.
+    conn.pragma_update(None, "foreign_keys", "ON")?;
     Ok(conn)
 }
 

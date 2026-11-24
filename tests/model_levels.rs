@@ -3,6 +3,9 @@
 
 #![allow(dead_code)]
 
+#[path = "support/writer.rs"]
+mod writer;
+
 use assert_cmd::Command;
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -50,7 +53,7 @@ impl TestHome {
     }
 
     fn facet(&self, address: &str) -> Option<String> {
-        Connection::open(self.archive_root.join("zt.sqlite3"))
+        writer::open(self.archive_root.join("zt.sqlite3"))
             .expect("open db")
             .query_row(
                 "SELECT model_facet FROM cards WHERE location = ?1",
@@ -146,7 +149,7 @@ fn address(value: Value) -> String {
 }
 
 fn level(home: &TestHome, address: &str) -> Option<String> {
-    Connection::open(home.archive_root.join("zt.sqlite3"))
+    writer::open(home.archive_root.join("zt.sqlite3"))
         .expect("open db")
         .query_row(
             "SELECT model_level FROM cards WHERE location = ?1",
@@ -538,7 +541,8 @@ fn an_archive_from_before_empirical_models_upgrades_in_place() {
     drop(mcp);
     home.cmd().arg("down").assert().success();
     {
-        let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+        let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+        writer::strip_coordinates(&conn);
         let sql: String = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",

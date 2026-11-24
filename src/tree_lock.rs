@@ -300,7 +300,9 @@ pub(crate) fn register_sql_functions(conn: &Connection) -> Result<()> {
         Ok::<Option<String>, rusqlite::Error>(final_tree_root(&address))
     })
     .context("failed to register zt_tree_root")?;
-    Ok(())
+    // The coordinate functions ride along: every connection that can write a Lock-protected
+    // archive can also pass the identity triggers and the writer fence.
+    crate::coord::register_sql_functions(conn)
 }
 
 /// The authored fingerprint of one stored Card row, with every raw metadata value validated instead
@@ -4860,6 +4862,8 @@ mod tests {
         lock_tx(&tx, &plan).expect("lock");
         tx.commit().expect("commit");
         let raw = Connection::open(conn.path().expect("database path")).expect("raw connection");
+        // A current-format writer: the coordinate identity triggers need the registered functions.
+        register_sql_functions(&raw).expect("register functions");
         raw.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type)
              VALUES(?1, NULL, 0, 0, NULL, ?2, 'human', 'idea')",
@@ -5772,6 +5776,8 @@ mod tests {
         );
         assert!(!previous_table.contains("term"), "{previous_table}");
         let columns = "row_id, location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form";
+        // That release had no coordinate storage either.
+        crate::coord::strip_for_legacy_fixture(conn);
         conn.execute_batch(&format!(
             "BEGIN IMMEDIATE;
              {previous_table}
@@ -6896,8 +6902,18 @@ mod tests {
                 "UPDATE cards SET text = '# Topic\n\nrewritten\n\n<!-- zt:reverse-links -->\n' WHERE location = ?1",
                 [&root],
             )
-            .expect_err("the built-in trigger refuses the older client's write");
-        assert!(refused.to_string().contains("locked tree"), "{refused}");
+            .expect_err("the older client's write is refused");
+        // The coordinate writer fence (§10.1.2) refuses it before the locked-tree trigger runs.
+        let refused = refused.to_string();
+        assert!(
+            refused.contains("locked tree") || refused.contains("no such function"),
+            "{refused}"
+        );
+        // The fence refuses an older client's write to an unlocked row too.
+        let unlocked = old
+            .execute("UPDATE metadata SET value = value WHERE key = 'archive_revision'", [])
+            .expect_err("an older client cannot write even metadata");
+        assert!(unlocked.to_string().contains("no such function"), "{unlocked}");
     }
 
     /// R278/R027: the comparison uses the caller's transaction when there is one, so a tamper

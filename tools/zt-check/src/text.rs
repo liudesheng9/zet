@@ -60,8 +60,10 @@ pattern!(TABLE_RULE, r"^-+$|^:?-+:?$");
 pattern!(AVOID_SPLIT, r"[、,，/]");
 pattern!(AVOID_NONE, r"^[-—无]+$");
 
-pattern!(BOOK_CARD, r"^[^\d/|][^/|]*$");
-pattern!(BOOK_ANCHOR, r"^[^\d/|][^/|]*/\d+$");
+// A book is a Citation key (it starts with an ASCII letter); a Topic starts with a digit and a
+// Connection handle or coordinate (`~7`, `~7#4`, `~7/2`) with `~`, and neither is a book.
+pattern!(BOOK_CARD, r"^[^\d/|~][^/|]*$");
+pattern!(BOOK_ANCHOR, r"^[^\d/|~][^/|]*/\d+$");
 pattern!(SOURCE_LINE, r"(?i)^\s*(来源|出处|Source)\s*[：:]");
 // The Literature Card's document line (`原书文档：[原书 PDF](scholar:78) · …`): a row of document links, a
 // locator like the source line, never a prose sentence.

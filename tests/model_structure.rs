@@ -2,6 +2,9 @@
 //! filing or by Link, read and written over MCP and the GUI; and the GUI's rendering of
 //! TeX math and HTML charts in Card bodies.
 
+#[path = "support/writer.rs"]
+mod writer;
+
 use assert_cmd::Command;
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -49,7 +52,7 @@ impl TestHome {
     }
 
     fn facet(&self, address: &str) -> Option<String> {
-        Connection::open(self.archive_root.join("zt.sqlite3"))
+        writer::open(self.archive_root.join("zt.sqlite3"))
             .expect("open db")
             .query_row(
                 "SELECT model_facet FROM cards WHERE location = ?1",
@@ -606,7 +609,7 @@ fn up_opens_the_facets_of_an_archive_written_by_zt_0_6() {
         .assert()
         .success();
     fs::create_dir_all(&home.archive_root).expect("archive root");
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("0.6 db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("0.6 db");
     conn.execute_batch(
         "CREATE TABLE cards (
             row_id INTEGER PRIMARY KEY,
@@ -645,7 +648,7 @@ fn up_opens_the_facets_of_an_archive_written_by_zt_0_6() {
     drop(conn);
 
     home.cmd().arg("up").assert().success();
-    let db = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let db = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     let rows = db
         .prepare("SELECT row_id, COALESCE(location, citation_key), model_facet, model_emphasis FROM cards ORDER BY row_id")
         .unwrap()

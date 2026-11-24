@@ -2512,7 +2512,7 @@ pub fn category_with_parts(
     if register_parts.contains(&text(prop(card, "address"))) {
         return "register-part".into();
     }
-    if ps_in(&text(prop(card, "kind")), &["topic", "literature"]) {
+    if ps_in(&text(prop(card, "kind")), &["topic", "literature", "connection"]) {
         return "root".into();
     }
     match text(prop(card, "type")).as_str() {

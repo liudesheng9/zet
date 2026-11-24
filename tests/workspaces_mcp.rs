@@ -2,6 +2,9 @@
 //! Literature Zones, Links across them, no moves between them, and an MCP
 //! client that may read both but change only the agent Workspace.
 
+#[path = "support/writer.rs"]
+mod writer;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use rusqlite::Connection;
@@ -128,7 +131,7 @@ fn a_sequence_preview_matches_real_chunk_boundaries_and_recovers_partial_receipt
             .iter()
             .all(|r| r["replayed"] == true)
     );
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).unwrap();
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).unwrap();
     assert_eq!(
         conn.query_row("SELECT count(*) FROM applied_ops", [], |r| r
             .get::<_, i64>(0))
@@ -282,7 +285,7 @@ fn ordinary_and_identified_writes_refuse_a_duplicate_leading_title_but_preserve_
     );
     let legacy =
         format!("# {title}\n\n# {title}\n\n原有的待审内容。\n\n<!-- zt:reverse-links -->\n");
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).unwrap();
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).unwrap();
     conn.execute("UPDATE cards SET text=?1 WHERE location='0/1'", [&legacy])
         .unwrap();
     drop(conn);
@@ -336,7 +339,7 @@ fn a_ledger_can_distinguish_archive_replacement_from_a_consistent_restore_at_the
         identity
     );
     let saved = home.archive_root.join("consistent-snapshot.sqlite3");
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).unwrap();
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).unwrap();
     conn.execute("VACUUM INTO ?1", [saved.to_string_lossy().as_ref()])
         .unwrap();
     drop(conn);
@@ -379,7 +382,7 @@ fn a_ledger_can_distinguish_archive_replacement_from_a_consistent_restore_at_the
         identity,
         "deleting every Card keeps the archive identity"
     );
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).unwrap();
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).unwrap();
     conn.execute("DELETE FROM metadata WHERE key='archive_id'", [])
         .unwrap();
     let (missing, failed) = restored.call("get_cards", json!({"addresses":[],"view":"text"}));
@@ -2968,7 +2971,7 @@ impl TestHome {
     }
 
     fn db(&self) -> Connection {
-        Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db")
+        writer::open(self.archive_root.join("zt.sqlite3")).expect("open db")
     }
 
     fn text(&self, address: &str) -> String {
@@ -3297,7 +3300,7 @@ fn up_adds_workspaces_to_an_existing_archive_with_every_card_in_the_human_worksp
     let home = TestHome::new();
     home.configure();
     fs::create_dir_all(&home.archive_root).expect("archive root");
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("old db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("old db");
     conn.execute_batch(
         "CREATE TABLE cards (
             row_id INTEGER PRIMARY KEY,

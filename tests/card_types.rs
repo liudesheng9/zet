@@ -2,6 +2,9 @@
 //! shown, searchable, kept through moves and renames, and dumped; Topic and
 //! Literature Cards stay Idea Cards.
 
+#[path = "support/writer.rs"]
+mod writer;
+
 use assert_cmd::Command;
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -80,7 +83,7 @@ impl TestHome {
     }
 
     fn db(&self) -> Connection {
-        Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db")
+        writer::open(self.archive_root.join("zt.sqlite3")).expect("open db")
     }
 
     fn text(&self, address: &str) -> String {
@@ -243,7 +246,7 @@ fn up_adds_card_types_to_an_existing_archive_with_every_card_an_idea_card() {
     let home = TestHome::new();
     home.configure();
     fs::create_dir_all(&home.archive_root).expect("archive root");
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("0.4 db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("0.4 db");
     conn.execute_batch(
         "CREATE TABLE cards (
             row_id INTEGER PRIMARY KEY,
@@ -780,6 +783,7 @@ fn up_rebuilds_an_archive_from_before_finding_cards_once() {
 
     // The schema of zt 0.17: every column of today, but no `finding` type.
     let db = home.db();
+    writer::strip_coordinates(&db);
     let definition: String = db
         .query_row(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",

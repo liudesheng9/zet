@@ -5,6 +5,9 @@
 
 #![allow(dead_code)]
 
+#[path = "support/writer.rs"]
+mod writer;
+
 use assert_cmd::Command;
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -52,7 +55,7 @@ impl TestHome {
     }
 
     fn db(&self) -> Connection {
-        Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db")
+        writer::open(self.archive_root.join("zt.sqlite3")).expect("open db")
     }
 
     fn revision(&self) -> i64 {

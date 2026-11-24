@@ -9,6 +9,9 @@
 
 mod support;
 
+#[path = "support/writer.rs"]
+mod writer;
+
 use assert_cmd::Command;
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -102,7 +105,7 @@ impl TestHome {
     }
 
     fn db(&self) -> Connection {
-        Connection::open(self.archive_root.join("zt.sqlite3")).expect("open database")
+        writer::open(self.archive_root.join("zt.sqlite3")).expect("open database")
     }
 
     /// The stored Term name of one Card, read straight from the archive.
@@ -4945,6 +4948,7 @@ fn previous_release_cards(conn: &Connection) {
         CHECK(math_form IS NULL OR (card_type = 'model' AND model_facet IS NULL))
     );";
     let columns = "row_id, location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form";
+    writer::strip_coordinates(conn);
     conn.execute_batch(&format!(
         "BEGIN IMMEDIATE;
          {previous}

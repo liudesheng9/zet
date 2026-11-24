@@ -1,3 +1,6 @@
+#[path = "support/writer.rs"]
+mod writer;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use rusqlite::Connection;
@@ -125,7 +128,7 @@ impl TestHome {
     }
 
     fn card_text(&self, location: &str) -> String {
-        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        let conn = writer::open(self.archive_root.join("zt.sqlite3")).expect("open db");
         conn.query_row(
             "SELECT text FROM cards WHERE location = ?1",
             [location],
@@ -135,7 +138,7 @@ impl TestHome {
     }
 
     fn location_exists(&self, location: &str) -> bool {
-        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        let conn = writer::open(self.archive_root.join("zt.sqlite3")).expect("open db");
         conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM cards WHERE location = ?1)",
             [location],
@@ -146,7 +149,7 @@ impl TestHome {
     }
 
     fn literature_count(&self) -> i64 {
-        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        let conn = writer::open(self.archive_root.join("zt.sqlite3")).expect("open db");
         conn.query_row("SELECT COUNT(*) FROM cards WHERE is_lit = 1", [], |row| {
             row.get(0)
         })
@@ -154,7 +157,7 @@ impl TestHome {
     }
 
     fn literature_data(&self, citation_key: &str) -> (String, String) {
-        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        let conn = writer::open(self.archive_root.join("zt.sqlite3")).expect("open db");
         conn.query_row(
             "SELECT bibtex, text FROM cards WHERE citation_key = ?1",
             [citation_key],
@@ -164,7 +167,7 @@ impl TestHome {
     }
 
     fn revision(&self) -> i64 {
-        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        let conn = writer::open(self.archive_root.join("zt.sqlite3")).expect("open db");
         conn.query_row(
             "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'archive_revision'",
             [],
@@ -174,7 +177,7 @@ impl TestHome {
     }
 
     fn next_topic_id(&self) -> i64 {
-        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        let conn = writer::open(self.archive_root.join("zt.sqlite3")).expect("open db");
         conn.query_row(
             "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'next_topic_id'",
             [],
@@ -189,7 +192,7 @@ impl TestHome {
         &self,
         key: &str,
     ) -> (i64, String, Option<String>, i64, i64, String, Option<String>, String) {
-        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        let conn = writer::open(self.archive_root.join("zt.sqlite3")).expect("open db");
         conn.query_row(
             "SELECT row_id, COALESCE(location, citation_key), citation_key, is_topic, is_lit,\
                     card_type, bibtex, workspace FROM cards WHERE location = ?1 OR citation_key = ?1",
@@ -211,7 +214,7 @@ impl TestHome {
     }
 
     fn metadata(&self, key: &str) -> String {
-        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        let conn = writer::open(self.archive_root.join("zt.sqlite3")).expect("open db");
         conn.query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
             row.get(0)
         })
@@ -219,7 +222,7 @@ impl TestHome {
     }
 
     fn applied_ops(&self) -> i64 {
-        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        let conn = writer::open(self.archive_root.join("zt.sqlite3")).expect("open db");
         let created: i64 = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'applied_ops')",
@@ -569,7 +572,7 @@ fn service_bootstraps_configured_archive_root_and_reports_status() {
 
     assert!(home.archive_root.join("zt.sqlite3").exists());
     assert!(home.archive_root.join("zt.log").exists());
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     let journal_mode: String = conn
         .query_row("PRAGMA journal_mode", [], |row| row.get(0))
         .expect("journal mode");
@@ -678,7 +681,7 @@ fn version_publishes_the_executable_rule_schema_and_capability_contract() {
 fn literature_schema_enforces_card_kind_states_and_case_insensitive_identity() {
     let home = TestHome::new();
     home.configure_and_up();
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
 
     for sql in [
         "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES(NULL, NULL, 0, 0, NULL, 'x')",
@@ -739,7 +742,7 @@ fn legacy_cards_schema_is_rejected_without_modifying_the_database() {
         .success();
     fs::create_dir_all(&home.archive_root).expect("archive root");
     let db = home.archive_root.join("zt.sqlite3");
-    let conn = Connection::open(&db).expect("legacy db");
+    let conn = writer::open(&db).expect("legacy db");
     conn.execute_batch(
         "CREATE TABLE cards(location TEXT PRIMARY KEY, is_topic INTEGER NOT NULL, text TEXT NOT NULL);
          CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -759,7 +762,7 @@ fn legacy_cards_schema_is_rejected_without_modifying_the_database() {
     assert_eq!(fs::read(&db).expect("legacy bytes after"), before);
     assert!(!home.archive_root.join("zt.pid").exists());
     assert!(!home.archive_root.join("zt.log").exists());
-    let conn = Connection::open(&db).expect("reopen legacy db");
+    let conn = writer::open(&db).expect("reopen legacy db");
     let row: (String, i64, String) = conn
         .query_row("SELECT location, is_topic, text FROM cards", [], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
@@ -1182,7 +1185,7 @@ fn malformed_stored_link_text_remains_readable_and_validation_is_scoped_to_its_s
     home.create_topic_and_base();
 
     let malformed = "# Base\n\nbefore [[0/0\n\n<!-- zt:reverse-links -->\n";
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     conn.execute(
         "UPDATE cards SET text = ?1 WHERE location = '0/1'",
         [malformed],
@@ -2511,7 +2514,7 @@ fn keep_root_keeps_the_literature_root_identity_links_and_allocation() {
         .assert()
         .success();
     // A Spread holding the root and one of its Regular Cards.
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     conn.execute(
         "INSERT INTO metadata(key, value) VALUES('gui_spreads', ?1)",
         [r#"{"current":"s1","spreads":[{"id":"s1","name":"Spread","cards":[{"at":"KeepMe","x":0,"y":0},{"at":"KeepMe/1","x":40,"y":10}]}]}"#],
@@ -2689,7 +2692,7 @@ fn keep_root_rolls_every_effect_back_when_the_delete_fails() {
         .assert()
         .success();
     let spreads = r#"{"current":"s1","spreads":[{"id":"s1","name":"Spread","cards":[{"at":"0/0","x":0,"y":0},{"at":"0/1","x":10,"y":0}]}]}"#;
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     conn.execute(
         "INSERT INTO metadata(key, value) VALUES('gui_spreads', ?1)",
         [spreads],
@@ -2728,7 +2731,7 @@ fn keep_root_drops_a_deleted_card_from_saved_spread_positions() {
     home.configure_and_up();
     home.create_topic_and_base();
     let spreads = r#"{"current":"s1","spreads":[{"id":"s1","name":"Spread","cards":[{"at":"0/0","x":0,"y":0},{"at":"0/1","x":10,"y":0}]}]}"#;
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     conn.execute(
         "INSERT INTO metadata(key, value) VALUES('gui_spreads', ?1)",
         [spreads],
@@ -3011,7 +3014,7 @@ fn empty_dump_creates_timestamped_zip_with_empty_mapping() {
     assert_eq!(locks["events"], serde_json::json!([]));
     assert_eq!(locks["integrity"]["ok"], serde_json::json!(true));
     assert_eq!(locks["integrity"]["summary"], serde_json::json!("integrity ok"));
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     let identity: String = conn
         .query_row("SELECT value FROM metadata WHERE key='archive_id'", [], |row| {
             row.get(0)
@@ -3816,7 +3819,7 @@ fn delete_all_empties_both_workspaces_resets_allocation_and_keeps_config_dumps_a
     fs::create_dir_all(artifact.parent().unwrap()).expect("artifact root");
     fs::write(&artifact, b"keep this figure").expect("artifact marker");
     // A receipt that survives the reset (R267, R277): old keys are never replayed to recreate Cards.
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS applied_ops(op_key TEXT NOT NULL PRIMARY KEY, request_hash TEXT NOT NULL, result_json TEXT NOT NULL, committed_at TEXT NOT NULL);
          INSERT INTO applied_ops(op_key, request_hash, result_json, committed_at)
@@ -3838,7 +3841,7 @@ fn delete_all_empties_both_workspaces_resets_allocation_and_keeps_config_dumps_a
     home.cmd().arg("stats").assert().success().stdout(
         predicate::str::is_match(r"^total: 0\ntopics: 0\nregular: 0\nliterature: 0\n$").unwrap(),
     );
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     let cards: i64 = conn
         .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))
         .unwrap();
@@ -3913,7 +3916,7 @@ fn delete_all_advances_one_revision_for_a_change_and_none_for_an_empty_zero_arch
     assert_eq!(home.revision(), before);
 
     // A nonzero allocation alone is still a state change, so it resets and advances once.
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     conn.execute(
         "UPDATE metadata SET value = '7' WHERE key = 'next_topic_id'",
         [],
@@ -3947,7 +3950,7 @@ fn delete_all_keeps_saved_spread_metadata_while_a_tree_delete_follows_positions(
     home.configure_and_up();
     home.create_topic_and_base();
     let spreads = r#"{"current":"s1","spreads":[{"id":"s1","name":"Spread","cards":[{"at":"0/0","x":0,"y":0},{"at":"0/1","x":10,"y":0}]}]}"#;
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     conn.execute(
         "INSERT INTO metadata(key, value) VALUES('gui_spreads', ?1)",
         [spreads],
@@ -3961,7 +3964,7 @@ fn delete_all_keeps_saved_spread_metadata_while_a_tree_delete_follows_positions(
         .assert()
         .success();
 
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     let stored: String = conn
         .query_row("SELECT value FROM metadata WHERE key = 'gui_spreads'", [], |row| {
             row.get(0)
@@ -3982,7 +3985,7 @@ fn delete_all_rolls_back_cards_links_and_allocation_when_the_reset_fails() {
         .args(["n", "--at", "0/1"])
         .assert()
         .success();
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     conn.execute_batch(
         "CREATE TRIGGER fail_topic_reset
          BEFORE UPDATE OF value ON metadata
@@ -4007,7 +4010,7 @@ fn delete_all_rolls_back_cards_links_and_allocation_when_the_reset_fails() {
     for address in ["0/0", "0/1", "0/2"] {
         assert!(home.location_exists(address), "`{address}` stays");
     }
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     let links_after: i64 = conn
         .query_row("SELECT COUNT(*) FROM links", [], |row| row.get(0))
         .expect("links");
@@ -4529,7 +4532,7 @@ fn up_converts_pre_markdown_cards_after_backing_up_the_archive() {
         .assert()
         .success();
     fs::create_dir_all(&home.archive_root).expect("archive root");
-    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("old db");
+    let conn = writer::open(home.archive_root.join("zt.sqlite3")).expect("old db");
     conn.execute_batch(
         "CREATE TABLE cards (
             row_id INTEGER PRIMARY KEY,
@@ -4588,7 +4591,7 @@ fn up_converts_pre_markdown_cards_after_backing_up_the_archive() {
         .filter(|name| name.starts_with("zt.sqlite3.pre-markdown-") && name.ends_with(".bak"))
         .collect::<Vec<_>>();
     assert_eq!(backups.len(), 1, "one backup of the pre-Markdown archive");
-    let backup = Connection::open(home.archive_root.join(&backups[0])).expect("backup db");
+    let backup = writer::open(home.archive_root.join(&backups[0])).expect("backup db");
     let old_text: String = backup
         .query_row("SELECT text FROM cards WHERE location = '0/1'", [], |row| {
             row.get(0)

@@ -3,6 +3,9 @@
 //! The role is computed from the type and the placement, never stored; `get_cited` reads it.
 #![allow(dead_code)]
 
+#[path = "support/writer.rs"]
+mod writer;
+
 use assert_cmd::Command;
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -50,7 +53,7 @@ impl TestHome {
     }
 
     fn db(&self) -> Connection {
-        Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db")
+        writer::open(self.archive_root.join("zt.sqlite3")).expect("open db")
     }
 
     fn mcp(&self) -> Mcp {
@@ -258,6 +261,7 @@ fn an_archive_from_before_cited_cards_upgrades_in_place_and_keeps_its_cards() {
     // Put the type CHECK back to its pre-#217 form, as an older zt left it.
     {
         let conn = home.db();
+        writer::strip_coordinates(&conn);
         let sql: String = conn
             .query_row("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'", [], |row| row.get(0))
             .unwrap();
