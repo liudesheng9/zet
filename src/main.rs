@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
@@ -17,7 +17,10 @@ mod batch;
 mod card;
 mod card_type;
 mod cited;
+mod connection;
 mod coord;
+mod coord_lock;
+mod dependencies;
 mod dump;
 mod entry;
 mod export;
@@ -2661,7 +2664,7 @@ impl Card {
 }
 
 fn link_lifecycle(conn: &Connection) -> Result<link::LinkLifecycle> {
-    link_lifecycle_from_cards(&load_cards(conn)?)
+    Ok(link_lifecycle_from_cards(&load_cards(conn)?)?.with_aliases(coord::aliases(conn)?))
 }
 
 fn link_lifecycle_from_cards(cards: &[Card]) -> Result<link::LinkLifecycle> {
@@ -2821,6 +2824,9 @@ fn citation_key_exists(conn: &Connection, citation_key: &str) -> Result<bool> {
 }
 
 fn target_exists(conn: &Connection, target: &str) -> Result<bool> {
+    if coord::is_handle(target) {
+        return Ok(coord::canonical(conn, target)?.is_some());
+    }
     if is_valid_location(target) {
         location_exists(conn, target)
     } else if literature::validate_citation_key(target).is_ok() {
@@ -2851,14 +2857,32 @@ fn card_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
 }
 
 fn load_card(conn: &Connection, target: &str) -> Result<Card> {
-    conn.query_row(
-        "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form, term_name
-         FROM cards WHERE location = ?1 OR citation_key = ?1",
-        [target],
-        card_from_row,
-    )
-    .with_context(|| format!("card `{target}` does not exist"))
+    let found = conn
+        .query_row(
+            "SELECT row_id, COALESCE(location, citation_key), citation_key,
+                    is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form, term_name
+             FROM cards WHERE location = ?1 OR citation_key = ?1",
+            [target],
+            card_from_row,
+        )
+        .optional()?;
+    if let Some(card) = found {
+        return Ok(card);
+    }
+    // A permanent handle whose Card was promoted out of its Connection tree (`~7#4` → `3/6`)
+    // still names that Card; a coordinate never does (it is navigation, not identity).
+    if coord::is_handle(target)
+        && let Some(address) = coord::handle_target(conn, target)?
+        && address != target
+    {
+        return load_card(conn, &address);
+    }
+    if coord::is_coordinate(target) {
+        bail!(
+            "`{target}` is a coordinate (a station of a tree), not a Card address; read it with get_card, or act on the Card at its home address"
+        );
+    }
+    bail!("card `{target}` does not exist")
 }
 
 #[cfg(test)]
@@ -4098,7 +4122,9 @@ fn regenerate_reverse_links_tx(conn: &Connection) -> Result<()> {
         return link_index::bump_revision(conn);
     }
     let cards = load_cards(conn)?;
-    let reverse_sections = link_lifecycle_from_cards(&cards)?.reverse_sections()?;
+    let reverse_sections = link_lifecycle_from_cards(&cards)?
+        .with_aliases(coord::aliases(conn)?)
+        .reverse_sections()?;
     for card in &cards {
         let parsed = parse_card_text(&card.text)?;
         let reverse = reverse_sections

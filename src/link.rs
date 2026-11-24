@@ -28,12 +28,20 @@ impl<'a> LinkBody<'a> {
         // link names a Regular Location only (R0252).
         for occurrence in &occurrences {
             let valid = match occurrence.form {
-                LinkForm::Ordinary => {
-                    crate::is_valid_location(occurrence.target)
-                        || crate::literature::validate_citation_key(occurrence.target).is_ok()
-                }
+                LinkForm::Ordinary => crate::coord::is_card_address(occurrence.target),
                 LinkForm::Term => crate::is_valid_regular_location(occurrence.target),
             };
+            // A navigation coordinate (`~7/2`, `3/2+1`) or a station bookmark changes when its tree
+            // is reorganized, so it never stands inside `[[…]]` (proposal §5.2).
+            if !valid
+                && (crate::coord::is_coordinate(occurrence.target)
+                    || occurrence.target.starts_with("place:"))
+            {
+                bail!(
+                    "invalid link macro target: {}",
+                    crate::coord::coordinate_link_hint(occurrence.target)
+                );
+            }
             if !valid {
                 bail!(
                     "invalid {}link macro target `{}`",
@@ -395,6 +403,9 @@ pub(crate) struct LinkLifecycle {
     cards: Vec<CardSnapshot>,
     addresses: BTreeSet<String>,
     term_heads: BTreeSet<String>,
+    /// Permanent handles whose Card now lives at another address (a promoted native Card):
+    /// `{handle → current address}`. A Link spelled with the handle reaches that Card.
+    aliases: BTreeMap<String, String>,
 }
 
 impl LinkLifecycle {
@@ -409,7 +420,22 @@ impl LinkLifecycle {
             cards,
             addresses,
             term_heads,
+            aliases: BTreeMap::new(),
         }
+    }
+
+    /// The same lifecycle, with the live handle aliases of the archive.
+    pub(crate) fn with_aliases(mut self, aliases: BTreeMap<String, String>) -> Self {
+        self.aliases = aliases;
+        self
+    }
+
+    /// The stored address an authored target names: itself, or the Card a handle aliases.
+    fn resolve<'s>(&'s self, target: &'s str) -> Option<&'s str> {
+        if self.addresses.contains(target) {
+            return Some(target);
+        }
+        self.aliases.get(target).map(String::as_str).filter(|a| self.addresses.contains(*a))
     }
 
     pub(crate) fn classify_for_rendering<'a>(&self, body: &'a str) -> Vec<ClassifiedLink<'a>> {
@@ -438,16 +464,13 @@ impl LinkLifecycle {
     /// ordinary Link needs the stored row, while a Term use also needs that row to be a Term head.
     fn reaches_valid_target(&self, occurrence: &LinkOccurrence) -> bool {
         let grammar_valid = match occurrence.form {
-            LinkForm::Ordinary => {
-                crate::is_valid_location(occurrence.target)
-                    || crate::literature::validate_citation_key(occurrence.target).is_ok()
-            }
+            LinkForm::Ordinary => crate::coord::is_card_address(occurrence.target),
             LinkForm::Term => crate::is_valid_regular_location(occurrence.target),
         };
         grammar_valid
-            && self.addresses.contains(occurrence.target)
-            && (occurrence.form == LinkForm::Ordinary
-                || self.term_heads.contains(occurrence.target))
+            && self.resolve(occurrence.target).is_some_and(|address| {
+                occurrence.form == LinkForm::Ordinary || self.term_heads.contains(address)
+            })
     }
 
     /// Why one occurrence is unusable, for both the Broken-link report and the reader (S11, #153;
@@ -490,18 +513,19 @@ impl LinkLifecycle {
             let body = LinkBody::parse(&source.body)?;
             let mut seen = BTreeSet::new();
             for occurrence in body.occurrences() {
-                if !self.addresses.contains(occurrence.target) {
+                let Some(target) = self.resolve(occurrence.target) else {
                     continue;
-                }
+                };
                 // Deduplicate by (form, target) within one source, so the same source may appear
-                // once in each section when it writes both an ordinary Link and a Term use.
+                // once in each section when it writes both an ordinary Link and a Term use. A
+                // promoted Card cited by its handle and by its address is one target.
                 let is_term = occurrence.form == LinkForm::Term;
-                if !seen.insert((is_term, occurrence.target)) {
+                if !seen.insert((is_term, target)) {
                     continue;
                 }
                 let bucket = if is_term { &mut term_uses } else { &mut ordinary };
                 bucket
-                    .entry(occurrence.target)
+                    .entry(target)
                     .or_default()
                     .insert(&source.address);
             }

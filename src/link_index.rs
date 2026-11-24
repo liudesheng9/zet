@@ -228,6 +228,24 @@ pub(crate) fn source_changed(conn: &Connection, at: &str) -> Result<()> {
     Ok(())
 }
 
+/// A Card took a new address while its authored Links stay as written (a promoted native Card
+/// `~7#4` → `3/6`): its rows are re-keyed as a **source** only. Targets spelled `~7#4` keep that
+/// spelling and still reach the Card through its handle. The Cards it links list its new address,
+/// and its own generated section lists every source citing either spelling.
+pub(crate) fn source_rekeyed(conn: &Connection, old: &str, new: &str) -> Result<()> {
+    if !ready(conn) {
+        return crate::regenerate_reverse_links_tx(conn);
+    }
+    conn.execute("UPDATE links SET source=?2 WHERE source=?1", params![old, new])?;
+    if charts_ready(conn) {
+        conn.execute("UPDATE chart_links SET source=?2 WHERE source=?1", params![old, new])?;
+    }
+    let mut affected: BTreeSet<String> = source_rows(conn, new)?.into_iter().map(|row| row.2).collect();
+    affected.insert(new.to_string());
+    let changed = refresh_reverse(conn, &affected)?;
+    write_stats(conn, 1, affected.len(), changed)
+}
+
 /// A batch/edit owns the revision boundary and calls this before its commit.
 pub(crate) fn sync_source(conn: &Connection, at: &str) -> Result<()> {
     sync_sources(conn, &BTreeSet::from([at.to_string()]))
@@ -461,13 +479,7 @@ fn source_rows(conn: &Connection, at: &str) -> Result<Vec<Row>> {
 /// root Link wrapper's: an ordinary Link needs an existing target, and a new Term use needs a Term
 /// head with the legacy multiplicity exception (S10, #151).
 pub(crate) fn validate(conn: &Connection, body: &str, old_body: Option<&str>) -> Result<()> {
-    let exists = |at: &str| -> Result<bool> {
-        Ok(conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM cards WHERE location=?1 OR citation_key=?1)",
-            [at],
-            |r| r.get(0),
-        )?)
-    };
+    let exists = |at: &str| -> Result<bool> { Ok(crate::coord::canonical(conn, at)?.is_some()) };
     let is_head = |at: &str| crate::term::is_head(conn, at);
     crate::link::validate(body, old_body, exists, is_head)
 }
@@ -475,8 +487,16 @@ pub(crate) fn validate(conn: &Connection, body: &str, old_body: Option<&str>) ->
 fn refresh_reverse(conn: &Connection, affected: &BTreeSet<String>) -> Result<usize> {
     let mut changed = 0;
     let mut titles = std::collections::HashMap::<String, String>::new();
+    let mut done = BTreeSet::new();
     for target in affected {
-        let Some(card) = optional_card(conn, target)? else {
+        // A target spelled with a promoted Card's handle refreshes the Card at its current address.
+        let Some(address) = crate::coord::canonical(conn, target)? else {
+            continue;
+        };
+        if !done.insert(address.clone()) {
+            continue;
+        }
+        let Some(card) = optional_card(conn, &address)? else {
             continue;
         };
         // One row per (source, form): ordinary Reverse links and Term uses are separate sections,
@@ -487,11 +507,14 @@ fn refresh_reverse(conn: &Connection, affected: &BTreeSet<String>) -> Result<usi
              JOIN cards c ON (c.location=l.source OR c.citation_key=l.source)
              WHERE l.target=?1 ORDER BY l.source, term",
         )?;
-        let rows = sources
-            .query_map([target], |r| {
+        let mut rows = BTreeSet::new();
+        for spelling in crate::coord::spellings(conn, &address)? {
+            for row in sources.query_map([&spelling], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            })? {
+                rows.insert(row?);
+            }
+        }
         let mut ordinary = Vec::new();
         let mut term_uses = Vec::new();
         for (address, is_term) in rows {
@@ -565,7 +588,9 @@ pub(crate) fn check(conn: &Connection) -> Result<Value> {
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     actual.sort();
-    let reverse = crate::link_lifecycle_from_cards(&cards)?.reverse_sections()?;
+    let reverse = crate::link_lifecycle_from_cards(&cards)?
+        .with_aliases(crate::coord::aliases(conn)?)
+        .reverse_sections()?;
     let mut faults = Vec::new();
     if charts_ready(conn) {
         let mut want = BTreeSet::new();

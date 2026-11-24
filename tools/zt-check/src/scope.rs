@@ -30,7 +30,8 @@ pub fn topic_links(text: &str) -> Vec<String> {
             LinkForm::Term => occurrence.is_valid_term_macro(),
         })
         .map(|occurrence| occurrence.target.trim().to_string())
-        .filter(|target| is_topic_address(target))
+        // A Connection-tree Card (`~7`, `~7#4`) is outside the Literature trees too.
+        .filter(|target| is_topic_address(target) || target.starts_with('~'))
         .collect()
 }
 

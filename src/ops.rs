@@ -887,7 +887,7 @@ impl Snapshot {
         let cards = crate::load_cards(conn)?;
         let lock = crate::tree_lock::LockView::read(conn, None)?;
         let revision = crate::link_index::revision(conn)?;
-        Ok(Self::from_cards(cards, lock, revision)?
+        Ok(Self::from_cards_aliased(cards, lock, revision, crate::coord::aliases(conn)?)?
             .with_literature_types(crate::literature::stored_types(conn)?))
     }
 
@@ -911,7 +911,18 @@ impl Snapshot {
         lock: crate::tree_lock::LockView,
         revision: u64,
     ) -> Result<Self> {
-        let lifecycle = crate::link_lifecycle_from_cards(&cards)?;
+        Self::from_cards_aliased(cards, lock, revision, BTreeMap::new())
+    }
+
+    /// The same, with the archive's live handle aliases (a promoted native Card is cited as
+    /// `[[~7#4]]` and lives at `3/6`): a Link spelled with the handle reaches the Card.
+    pub(crate) fn from_cards_aliased(
+        cards: Vec<Card>,
+        lock: crate::tree_lock::LockView,
+        revision: u64,
+        aliases: BTreeMap<String, String>,
+    ) -> Result<Self> {
+        let lifecycle = crate::link_lifecycle_from_cards(&cards)?.with_aliases(aliases.clone());
         let mut parsed = BTreeMap::new();
         for card in &cards {
             parsed.insert(card.address.clone(), crate::parse_card_text(&card.text)?);
@@ -925,23 +936,28 @@ impl Snapshot {
         let mut term_inbound: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         for card in &cards {
             for occurrence in LinkBody::parse(&parsed[&card.address].body)?.occurrences() {
-                if !by_address.contains_key(occurrence.target) {
-                    continue;
-                }
+                let target = if by_address.contains_key(occurrence.target) {
+                    occurrence.target
+                } else {
+                    match aliases.get(occurrence.target) {
+                        Some(address) if by_address.contains_key(address) => address.as_str(),
+                        _ => continue,
+                    }
+                };
                 inbound
-                    .entry(occurrence.target.to_string())
+                    .entry(target.to_string())
                     .or_default()
                     .insert(card.address.clone());
                 match occurrence.form {
                     crate::link::LinkForm::Ordinary => {
                         reverse_inbound
-                            .entry(occurrence.target.to_string())
+                            .entry(target.to_string())
                             .or_default()
                             .insert(card.address.clone());
                     }
                     crate::link::LinkForm::Term => {
                         term_inbound
-                            .entry(occurrence.target.to_string())
+                            .entry(target.to_string())
                             .or_default()
                             .entry(card.address.clone())
                             .or_insert_with(|| occurrence.label.unwrap_or_default().to_string());

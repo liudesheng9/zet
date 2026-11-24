@@ -1327,6 +1327,7 @@ impl App {
             (Method::Post, "/api/delete") => self.delete(body),
             (Method::Post, "/api/move") => self.move_card(body),
             (Method::Post, "/api/batch") => self.batch(body),
+            (Method::Post, "/api/connection") => self.connection(body),
             (Method::Post, "/api/export") => self.export(body),
             (Method::Post, "/api/insert") => self.insert_card(body),
             (Method::Post, "/api/reply") => self.reply(body),
@@ -2237,6 +2238,17 @@ impl App {
             confirm_field(body),
         )?
         .into_value())
+    }
+
+    /// One Connection-tree, Topic-side mount or Dependency Lens tool as the owner
+    /// (docs/multi-tree-coordinates-proposal.md §9): `{tool, args}`, the MCP tool names and arguments.
+    fn connection(&self, body: &Value) -> ApiResult {
+        let tool = str_field(body, "tool")?;
+        if !crate::connection::is_tool(&tool) {
+            return Err(ApiError::new(format!("unknown Connection tree tool `{tool}`")));
+        }
+        let args = body.get("args").cloned().unwrap_or_else(|| json!({}));
+        Ok(crate::connection::run(&self.root, ACCESS, &tool, &args)?)
     }
 
     /// One batch plan as the owner (S7, #235): the `apply_batch` arguments. A plan with a tree

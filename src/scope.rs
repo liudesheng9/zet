@@ -111,6 +111,28 @@ impl WriteScope {
         args: &Value,
         made_here: &BTreeSet<String>,
     ) -> Result<()> {
+        if crate::connection::is_write_tool(tool) {
+            let at = ["host", "tree", "placement_id", "connection_id", "source_tree", "at", "anchor_at"]
+                .iter()
+                .find_map(|field| args.get(*field).and_then(Value::as_str))
+                .unwrap_or_default();
+            if self.kind == Kind::Literature {
+                return Err(self.refuse(
+                    tool,
+                    at,
+                    "connection_tree",
+                    "this connection writes only Literature trees: it makes or changes no Connection tree, Topic-side mount or tree connection".to_string(),
+                ));
+            }
+            if self.allow.is_some() {
+                return Err(self.refuse(
+                    tool,
+                    at,
+                    "structural",
+                    format!("{tool} is not allowed under this connection's allow list"),
+                ));
+            }
+        }
         if self.kind == Kind::Literature {
             self.check_literature(conn, tool, args)?;
         }

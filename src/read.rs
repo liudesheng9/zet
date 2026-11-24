@@ -483,7 +483,7 @@ fn context(conn: &Connection, addresses: &[String], models: bool) -> Result<Snap
     let rows = cards.iter().map(|card| card.row_id).collect::<Vec<_>>();
     let lock = crate::tree_lock::LockView::read(conn, Some(&rows))?;
     let revision = crate::link_index::revision(conn)?;
-    Ok(Snapshot::from_cards(cards, lock, revision)?
+    Ok(Snapshot::from_cards_aliased(cards, lock, revision, crate::coord::aliases(conn)?)?
         .with_literature_types(crate::literature::stored_types(conn)?))
 }
 
@@ -994,7 +994,7 @@ fn hub_read(conn: &Connection) -> Result<HubRead> {
     drop(query);
     let revision = crate::link_index::revision(conn)?;
     let lock = crate::tree_lock::LockView::read(conn, None)?;
-    let snapshot = Snapshot::from_cards(cards, lock, revision)?;
+    let snapshot = Snapshot::from_cards_aliased(cards, lock, revision, crate::coord::aliases(conn)?)?;
     let mut query = conn.prepare(
         "SELECT source,target FROM links GROUP BY source,target ORDER BY source,MIN(ord)",
     )?;

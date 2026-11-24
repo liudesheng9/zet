@@ -326,6 +326,8 @@ pub(crate) const TARGET_BUDGET: usize = 1024;
 pub(crate) enum Kind {
     Topic,
     Literature,
+    /// The root Card of a Connection tree (`~7`): a title, an optional framing body.
+    Connection,
     Regular,
 }
 
@@ -335,6 +337,8 @@ impl Kind {
             Kind::Topic
         } else if card.is_lit {
             Kind::Literature
+        } else if crate::coord::Handle::parse(&card.address).is_some_and(|h| h.local.is_none()) {
+            Kind::Connection
         } else {
             Kind::Regular
         }
@@ -344,6 +348,7 @@ impl Kind {
         match self {
             Kind::Topic => "topic",
             Kind::Literature => "literature",
+            Kind::Connection => "connection",
             Kind::Regular => "regular",
         }
     }
