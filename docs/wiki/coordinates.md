@@ -96,6 +96,7 @@ The deviations from the proposal's §6.2 and the accepted limits are listed in d
 
 ## Change history
 
+- 2026-11-24: zt 0.67.0: `connection::elsewhere` names, for one Topic or Literature tree, every coordinate its Cards have outside it; the GUI stamps them on each Card's head ([GUI](gui.md)).
 - 2026-11-24: zt 0.66.2: a portal station counts its tree's Cards with two index lookups (`home_tree_size`), not a `LIKE` scan.
 - 2026-11-24: zt 0.66.0: the GUI draws a Connection tree with the card Map, each station on its home tree's colour ([GUI](gui.md)).
 - 2026-11-24: the block (zt 0.65.0): Phases 1–4, four Astra review rounds with regression tests (`tests/coordinate_review_fixes.rs`, `tests/coordinate_third_review.rs`).

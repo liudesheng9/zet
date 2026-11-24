@@ -368,6 +368,45 @@ impl Host {
     }
 }
 
+/// Every coordinate the Cards of one Topic or Literature tree have outside their home: the stations
+/// of Connection trees and the Topic-side mounts, by the Card's address. The page stamps them on
+/// the head of each Card, so a Card in several trees shows each place it stands.
+pub(crate) fn elsewhere(conn: &Connection, tree: &str) -> Result<Value> {
+    let mut out = serde_json::Map::new();
+    if !coord::installed(conn) {
+        return Ok(Value::Object(out));
+    }
+    // The Literature root by its key, every Location under `tree/` as an index range.
+    let rows: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT p.placement_id, COALESCE(c.location, c.citation_key) FROM placements p
+             JOIN card_identity i ON i.card_id = p.card_id AND i.status = 'live'
+             JOIN cards c ON c.row_id = i.card_row
+             WHERE c.citation_key = ?1 OR (c.location >= ?2 AND c.location < ?3)",
+        )?
+        .query_map(params![tree, format!("{tree}/"), format!("{tree}0")], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, address) in rows {
+        let Some(p) = coord::placement(conn, &id)? else { continue };
+        let Ok(host) = host_of(conn, &p) else { continue };
+        let entry = json!({
+            "placement_id": id,
+            "coord": coord::coordinate_of(conn, &p)?,
+            "host": host.label(),
+            "gloss": p.gloss,
+        });
+        if let Value::Array(list) = out.entry(address).or_insert_with(|| json!([])) {
+            list.push(entry);
+        }
+    }
+    for list in out.values_mut() {
+        if let Value::Array(list) = list {
+            list.sort_by(|a, b| a["coord"].as_str().cmp(&b["coord"].as_str()));
+        }
+    }
+    Ok(Value::Object(out))
+}
+
 /// The host of an existing placement.
 pub(crate) fn host_of(conn: &Connection, placement: &Placement) -> Result<Host> {
     if placement.host_kind == "topic" {

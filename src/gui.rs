@@ -1425,8 +1425,14 @@ impl App {
             "title": snapshot.title(&root),
         })
         .to_string();
-        // The head object without its closing brace, then the cards.
-        Ok(format!("{},\"cards\":{cards}}}", &head[..head.len() - 1]))
+        // Where the tree's Cards also stand (Connection-tree stations, Topic-side mounts), read at
+        // the request: the cached summaries know nothing of the coordinate tables.
+        let elsewhere = crate::open_db(&self.root)
+            .and_then(|conn| crate::connection::elsewhere(&conn, crate::tree_id(&root)))
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "{}".to_string());
+        // The head object without its closing brace, then the coordinates and the cards.
+        Ok(format!("{},\"elsewhere\":{elsewhere},\"cards\":{cards}}}", &head[..head.len() - 1]))
     }
 
     fn graph(&self) -> ApiResult {
@@ -5432,7 +5438,7 @@ mod tests {
         let stamp = js_function("function addressStamp(");
         assert_eq!(APP_JS.matches("class: 'stamp'").count(), 1, "no stamp is built outside addressStamp");
         assert!(stamp.contains("class: 'stamp'"), "{stamp}");
-        assert_eq!(APP_JS.matches("addressStamp(card.address)").count(), 2, "the reader and the search preview");
+        assert_eq!(APP_JS.matches("addressStamp(card.address").count(), 2, "the reader and the search preview");
         assert_eq!(APP_JS.matches("addressStamp(address, () =>").count(), 2, "the pulled-out card and the study desk");
 
         assert!(stamp.contains("dataset: { address }") && stamp.contains("class: 'addr-stub'") && stamp.contains("class: 'addr-whole'"), "{stamp}");
@@ -5558,7 +5564,7 @@ mod tests {
     fn the_front_end_names_term_facts_quietly_and_folds_term_uses_to_their_count() {
         let reader = js_function("function renderReader()");
         assert!(
-            reader.contains("h('h1', { class: 'title' }, titleNodes(card.title || '(untitled)')),\n        termFactsLine(card),"),
+            reader.contains("h('h1', { class: 'title' }, titleNodes(card.title || '(untitled)')),\n        state.conn ? stationNote() : null,\n        termFactsLine(card),"),
             "the Term facts line sits under the title in the card head: {reader}"
         );
         let line = js_function("function termFactsLine(card)");

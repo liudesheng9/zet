@@ -3110,21 +3110,11 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .conn-item { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 4px 0; font-size: 13px; }
 .conn-filter { width: 100%; margin: 4px 0 6px; padding: 4px 8px; border: 1px solid var(--line, #d8cfc0); border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: 12px; }
 .drawer.connection .addr { color: oklch(var(--tree-l) var(--tree-c) 328); }
-.conn-panel h3, .also-in h3, .side-shelf h3, .lens-pane h3 { font-size: 13px; margin: 8px 0 6px; }
-.conn-panel ul, .also-in ul, .side-shelf ul, .lens-pane ul { list-style: none; margin: 0; padding: 0; }
+.conn-panel h3, .side-shelf h3, .lens-pane h3 { font-size: 13px; margin: 8px 0 6px; }
+.conn-panel ul, .side-shelf ul, .lens-pane ul { list-style: none; margin: 0; padding: 0; }
 .prov { font-size: 11px; padding: 0 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent, #c4622d) 12%, transparent); white-space: nowrap; }
 .conn-item .kind { font-family: ui-monospace, monospace; font-size: 11px; opacity: .7; }
 .conn-item .note { flex-basis: 100%; font-size: 12px; opacity: .75; padding-left: 8px; }
-.station-block { border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 10px; padding: 10px 12px; margin: 0 0 12px; font-size: 13px; }
-.station-block.missing { border-color: #b3402a; }
-.station-trail { font-size: 12px; opacity: .85; margin-bottom: 6px; }
-.station-gloss { font-style: italic; margin: 4px 0 8px; display: flex; gap: 8px; align-items: baseline; }
-.station-gloss.empty { opacity: .55; }
-.authority-bar, .station-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
-.authority-bar .home { font-weight: 600; }
-.authority-bar .home.missing { color: #b3402a; }
-.authority-bar .drift { color: #a26a00; font-weight: 600; }
-.authority-bar .cap { font-size: 11px; opacity: .6; }
 .conn-actions { display: inline-flex; gap: 4px; }
 .link-btn { border: 0; background: transparent; color: var(--accent, #c4622d); font: inherit; cursor: pointer; padding: 0 2px; text-decoration: underline; text-underline-offset: 2px; }
 .link-btn.danger { color: #b3402a; }
@@ -3220,3 +3210,63 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .legend.conn .lg-link-row, .legend:not(.conn) .lg-conn-row { display: none; }
 /* The Connection tree's own tools, at the desk's lower right. */
 .conn-bar { position: absolute; right: 16px; bottom: 14px; z-index: 6; display: flex; gap: 6px; }
+
+/* ------------------------------------- a Card's coordinates on its head, in every tree
+   The address stamp is the Card's home. Each other place it stands (a Connection-tree station, a
+   mount beside a Topic Card) is a smaller stamp beside it in that tree's ink, pressed a little
+   askew like the address stamp; the station open here is inked in full. */
+.coord-stamps { display: inline-flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.coord-stamps:empty { display: none; }
+.coord-stamp {
+  --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170));
+  font: 600 11px var(--mono); padding: 2px 7px; border-radius: 4px; cursor: pointer;
+  color: var(--tree-ink); background: none; border: 1.5px solid color-mix(in oklab, var(--tree-ink) 70%, transparent);
+  rotate: 1.5deg; transition: rotate .2s var(--ease), background .15s;
+}
+.coord-stamp:nth-child(even) { rotate: -1deg; }
+.coord-stamp:hover, .coord-stamp:focus-visible { rotate: 0deg; background: color-mix(in oklab, var(--tree-ink) 12%, transparent); }
+.coord-stamp.here { background: color-mix(in oklab, var(--tree-ink) 18%, transparent); border-color: var(--tree-ink); cursor: copy; }
+
+/* The station's note: a pencil line under the title, as on the lifted card in the Map. */
+.station-note { margin: 6px 0 0; font: italic 14px/1.5 var(--serif); color: var(--ink-soft); }
+.station-note::before { content: "✎ "; font-style: normal; color: var(--ink-faint); }
+.station-note.editable { cursor: text; }
+.station-note.editable:hover { color: var(--ink); }
+
+/* Tree connections read like Links: the far station's coordinate and title, the relation word
+   before them in the colour of the far Card's tree. The pencil and the cross lie behind the chip
+   until the hand comes near. */
+.conn-chip { --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170)); display: inline-flex; align-items: center; max-width: 100%; position: relative; }
+.conn-chip .chip { border-left: 3px solid var(--tree-ink); }
+.conn-chip .way { color: var(--ink-faint); font: 600 12px var(--mono); }
+.conn-chip .rel { font: italic 12px var(--serif); color: var(--tree-ink); }
+.conn-chip .addr { color: var(--tree-ink); font-family: var(--mono); font-size: 11px; }
+.conn-tools { display: inline-flex; gap: 2px; margin-left: 2px; opacity: 0; transition: opacity .15s; }
+.conn-chip:hover .conn-tools, .conn-chip:focus-within .conn-tools { opacity: 1; }
+.conn-tools button { border: 0; background: none; color: var(--ink-faint); font-size: 13px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
+.conn-tools button:hover { background: var(--line-soft); color: var(--ink); }
+.conn-tools button.danger:hover { color: var(--broken); }
+.beside-chip { --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170)); border-left: 3px solid var(--tree-ink); }
+.beside-chip .addr { color: var(--tree-ink); font-family: var(--mono); font-size: 11px; }
+
+/* The Connect dialog: one labelled field a line. */
+.conn-form { display: grid; gap: 8px; }
+.conn-field { display: grid; grid-template-columns: 82px minmax(0, 1fr); align-items: center; gap: 10px; font-size: 12.5px; color: var(--ink-soft); }
+.conn-field select, .conn-field input { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--ink); min-width: 0; }
+
+/* A missing station in the reader: the same card, its title struck, its body a quiet note. */
+.card.missing-station { background-image: none; border: 1.5px dashed color-mix(in srgb, var(--broken) 45%, var(--ink-faint)); box-shadow: none; }
+.card.missing-station .title { color: var(--ink-faint); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--broken) 55%, transparent); }
+.card.missing-station .kind-tag { color: var(--broken); }
+
+/* The other coordinates of a card in the Map: small marks on its head in each tree's ink. */
+.coord-marks { display: inline-flex; gap: 3px; align-items: center; flex: none; }
+.coord-mark {
+  --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170));
+  font: 600 9.5px/14px var(--mono); padding: 0 4px; border-radius: 3px; white-space: nowrap;
+  color: var(--tree-ink); border: 1px solid color-mix(in oklab, var(--tree-ink) 60%, transparent);
+  background: color-mix(in oklab, var(--tree-ink) 8%, transparent); cursor: pointer;
+}
+.coord-mark:hover { background: color-mix(in oklab, var(--tree-ink) 20%, transparent); }
+.coord-mark.more { color: var(--ink-faint); border-color: var(--line); background: none; cursor: default; }
+.node.slip .coord-marks { margin-left: auto; }
