@@ -3128,7 +3128,7 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 /* ------------------------------------------- one Map for every tree role: card stock by tree
    A Connection tree is drawn by the Map like any tree. Cards pulled from different drawers keep
    the card stock of their drawer: each home tree has its own colour (Literature warm, Topic green,
-   the Connection tree's own Cards plum), a faint tint of the stock and its ink on the home stamp,
+   the Connection tree's own Cards plain, as in any tree), a faint tint of the stock and its ink on the home stamp,
    so a glance tells which tree each station comes from while the pointer card keeps the lift. */
 :root { --tree-l: 56%; --tree-c: .15; --tree-stock: 11%; }
 :root[data-theme="dark"] { --tree-l: 74%; --tree-c: .14; --tree-stock: 14%; }
@@ -3141,9 +3141,15 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
   border-top: 3px solid var(--tree-ink);
 }
 .node.station.slip { background-color: color-mix(in oklab, var(--tree-ink) var(--tree-stock), color-mix(in srgb, var(--stock) 82%, var(--desk))); }
-.node.station.root { background-color: color-mix(in srgb, var(--lit-soft) 80%, var(--stock)); border-top-color: var(--lit); }
+/* The Connection tree's own Cards are drawn as the Cards of any tree: the root on the Literature
+   root's stock, every other Card on plain stock with no coloured edge. Only a Card mounted from
+   another tree wears that tree's tint. */
+.node.station.native { --tree-ink: var(--lit); background-color: var(--stock); border-color: var(--stock-edge); border-top: 1px solid var(--stock-edge); }
+.node.station.native.slip { background-color: color-mix(in srgb, var(--stock) 82%, var(--desk)); }
+.node.station.root { background-color: color-mix(in srgb, var(--lit-soft) 80%, var(--stock)); border-color: var(--stock-edge); border-top: 1px solid var(--stock-edge); }
 .node.station.root .addr { color: var(--lit); }
-.node.station.native { --tree-ink: var(--lit); }
+.node.station.native.in, .node.station.native.out { border-color: color-mix(in srgb, var(--link) 50%, var(--stock-edge)); }
+.node.focus.station.native { border-color: var(--pointer); }
 .node.station.root .addr, .node.station.portal .addr { color: var(--tree-ink); font-weight: 600; }
 /* The curator's gloss: a pencil line under the title of the lifted card. */
 .node.focus.station .gloss {

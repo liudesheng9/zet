@@ -5524,6 +5524,21 @@ mod tests {
         &rule[..=rule.find('}').expect("end of rule")]
     }
 
+    /// A Connection tree's own Cards are drawn as the Cards of any tree: plain stock with no coloured
+    /// edge, the root alone on the Literature root's stock; only a mounted Card wears its home tint.
+    #[test]
+    fn connection_tree_own_cards_are_plain_like_any_tree() {
+        let native = css_rule(".node.station.native");
+        assert!(native.contains("background-color: var(--stock);"), "{native}");
+        assert!(native.contains("border-top: 1px solid var(--stock-edge);"), "{native}");
+        let root = css_rule(".node.station.root");
+        assert!(root.contains("var(--lit-soft) 80%, var(--stock)"), "{root}");
+        assert!(root.contains("border-top: 1px solid var(--stock-edge);"), "no coloured edge on the root: {root}");
+        assert!(APP_CSS.contains(".node.focus.station.native { border-color: var(--pointer); }"));
+        // The mounted Cards keep the tint of their home tree.
+        assert!(css_rule(".node.station").contains("border-top: 3px solid var(--tree-ink);"));
+    }
+
     /// The `app.js` function that starts with `head`, up to the next function at the same depth.
     fn js_function<'a>(head: &str) -> &'a str {
         let start = APP_JS.find(head).unwrap_or_else(|| panic!("no function {head}"));
