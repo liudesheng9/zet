@@ -594,6 +594,170 @@ impl Zt {
             archive_revision: revision.context("incomplete Card read: no revision")?,
         })
     }
+
+    /// Reads optional addresses in bounded chunks without failing on missing targets.
+    /// Splits chunks on `read_limit`, validates each chunk against the core `get_cards` contract
+    /// (`cards.len() + missing.len() == chunk.len()`, `complete == missing.is_empty()`),
+    /// enforces one coherent `archive_revision`, and preserves ordered `(requested, card)` pairs (H9).
+    pub fn cards_optional(&mut self, addresses: &[String], view: &str) -> Result<OptionalCardRead> {
+        if addresses.is_empty() {
+            let reply = self.call("get_cards", json!({"addresses": [], "view": view}))?;
+            let rev = reply["archive_revision"]
+                .as_u64()
+                .context("incomplete Card read: missing archive revision")?;
+            return Ok(OptionalCardRead {
+                cards: Vec::new(),
+                resolved: Vec::new(),
+                missing: Vec::new(),
+                archive_revision: rev,
+            });
+        }
+        let mut cards = Vec::new();
+        let mut resolved = Vec::new();
+        let mut missing = Vec::new();
+        let mut revision: Option<u64> = None;
+        let mut offset = 0usize;
+        let mut width = 64usize;
+        while offset < addresses.len() {
+            let end = (offset + width).min(addresses.len());
+            let chunk = &addresses[offset..end];
+            let reply = self.request("get_cards", json!({"addresses": chunk, "view": view}))?;
+            if let Some(message) = reply_error(&reply) {
+                let fault = reply["result"]
+                    .get("structuredContent")
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        serde_json::from_str(&reply_text(&reply)).unwrap_or(Value::Null)
+                    });
+                if fault["code"] == "read_limit"
+                    && matches!(
+                        fault["limit_kind"].as_str(),
+                        Some("reply_bytes" | "addresses")
+                    )
+                    && chunk.len() > 1
+                {
+                    width = chunk.len() / 2;
+                    continue;
+                }
+                bail!("zt: {message}");
+            }
+            let value: Value = serde_json::from_str(&reply_text(&reply))
+                .context("incomplete Card read: answer is not JSON")?;
+            let (chunk_resolved, chunk_missing, current) = parse_optional_chunk(chunk, &value)?;
+            if revision.is_some_and(|old| old != current) {
+                bail!("incomplete Card read: changing view across archive revisions");
+            }
+            revision = Some(current);
+            for (req, card) in chunk_resolved {
+                cards.push(card.clone());
+                resolved.push((req, card));
+            }
+            missing.extend(chunk_missing);
+            offset += chunk.len();
+        }
+        Ok(OptionalCardRead {
+            cards,
+            resolved,
+            missing,
+            archive_revision: revision.context("incomplete Card read: no revision")?,
+        })
+    }
+}
+
+fn is_positive_decimal(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with('0')
+        && s.bytes().all(|b| b.is_ascii_digit())
+        && s.parse::<u64>().is_ok()
+}
+
+/// Matches the core permanent Connection-handle grammar (`src/coord.rs::Handle::parse`):
+/// `~<n>` or `~<n>#<k>`. Only permanent handles may resolve to a different canonical address.
+fn is_permanent_handle(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix('~') else {
+        return false;
+    };
+    match rest.split_once('#') {
+        Some((tree, local)) => is_positive_decimal(tree) && is_positive_decimal(local),
+        None => is_positive_decimal(rest),
+    }
+}
+
+/// Validates one `get_cards` chunk reply against the core contract (`src/read.rs:658-701`):
+/// every requested address is accounted for in order as either a returned card or a `missing` entry,
+/// and `complete == missing.is_empty()`. Ordinary addresses must match the returned card `address`
+/// exactly; only permanent handles (`~n` / `~n#k`) may resolve to a canonical address (H9).
+pub(crate) fn parse_optional_chunk(
+    chunk: &[String],
+    value: &Value,
+) -> Result<(Vec<(String, Value)>, Vec<String>, u64)> {
+    let rows = value["cards"]
+        .as_array()
+        .context("incomplete Card read: missing cards array")?;
+    let miss_arr = value["missing"]
+        .as_array()
+        .context("incomplete Card read: missing missing-address list")?;
+    let mut chunk_missing = Vec::with_capacity(miss_arr.len());
+    for m in miss_arr {
+        let s = m
+            .as_str()
+            .context("incomplete Card read: non-string entry in `missing`")?;
+        chunk_missing.push(s.to_string());
+    }
+    let complete = value["complete"]
+        .as_bool()
+        .context("incomplete Card read: missing boolean `complete`")?;
+    if complete != chunk_missing.is_empty() {
+        bail!(
+            "incomplete Card read: `complete` ({complete}) disagrees with missing count ({})",
+            chunk_missing.len()
+        );
+    }
+    if rows.len() + chunk_missing.len() != chunk.len() {
+        bail!(
+            "incomplete Card read: {} cards + {} missing != {} requested",
+            rows.len(),
+            chunk_missing.len(),
+            chunk.len()
+        );
+    }
+    // Verify missing entries are a subsequence of chunk (matching src/read.rs order) and pair
+    // every remaining requested address in order with its returned card row.
+    let mut miss_idx = 0usize;
+    let mut found_reqs = Vec::with_capacity(rows.len());
+    for req in chunk {
+        if miss_idx < chunk_missing.len() && chunk_missing[miss_idx] == *req {
+            miss_idx += 1;
+        } else {
+            found_reqs.push(req.clone());
+        }
+    }
+    if miss_idx != chunk_missing.len() || found_reqs.len() != rows.len() {
+        bail!("incomplete Card read: `missing` entries do not match requested chunk addresses");
+    }
+    let current = value["archive_revision"]
+        .as_u64()
+        .context("incomplete Card read: missing archive revision")?;
+    let mut resolved = Vec::with_capacity(rows.len());
+    for (req, row) in found_reqs.into_iter().zip(rows.iter().cloned()) {
+        let Some(row_addr) = row["address"].as_str().filter(|s| !s.is_empty()) else {
+            bail!("incomplete Card read: returned card for `{req}` lacks `address`");
+        };
+        if !is_permanent_handle(&req) && row_addr != req {
+            bail!("incomplete Card read: requested `{req}` but received `{row_addr}`");
+        }
+        resolved.push((req, row));
+    }
+    Ok((resolved, chunk_missing, current))
+}
+
+#[derive(Clone, Debug)]
+pub struct OptionalCardRead {
+    pub cards: Vec<Value>,
+    /// Ordered `(requested_address_or_handle, returned_card)` pairs.
+    pub resolved: Vec<(String, Value)>,
+    pub missing: Vec<String>,
+    pub archive_revision: u64,
 }
 
 /// The text parts of a reply's content, joined by newlines.
@@ -696,5 +860,42 @@ mod reply_line_tests {
         assert!(transport_err.is::<TransportFault>());
         assert!(zt.poisoned, "transport failures must poison Zt");
         assert!(!zt.is_alive());
+    }
+
+    #[test]
+    fn parse_optional_chunk_rejects_short_replies_and_preserves_handle_order() {
+        use super::*;
+        let chunk = vec!["~7#4".to_string(), "K/missing".to_string(), "K/2".to_string()];
+        // H9: short reply (`cards: [], missing: [], complete: false`) must be rejected.
+        let short = json!({ "cards": [], "missing": [], "complete": false, "archive_revision": 5 });
+        assert!(parse_optional_chunk(&chunk, &short).is_err());
+
+        // Valid chunk with handle resolution (`~7#4` -> canonical `1/2`) preserves ordered mapping.
+        let valid = json!({
+            "cards": [
+                { "address": "1/2", "title": "Promoted" },
+                { "address": "K/2", "title": "Second" }
+            ],
+            "missing": ["K/missing"],
+            "complete": false,
+            "archive_revision": 5
+        });
+        let (resolved, missing, rev) = parse_optional_chunk(&chunk, &valid).unwrap();
+        assert_eq!(rev, 5);
+        assert_eq!(missing, vec!["K/missing"]);
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].0, "~7#4");
+        assert_eq!(resolved[0].1["address"], "1/2");
+        assert_eq!(resolved[1].0, "K/2");
+
+        // H9: an ordinary address must match the returned card address exactly; returning a
+        // different card (`Different/9` for `Other/4`) must fail closed.
+        let wrong_card = json!({
+            "cards": [{ "address": "Different/9", "title": "Wrong" }],
+            "missing": [],
+            "complete": true,
+            "archive_revision": 5
+        });
+        assert!(parse_optional_chunk(&["Other/4".to_string()], &wrong_card).is_err());
     }
 }

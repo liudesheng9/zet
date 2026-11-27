@@ -63,8 +63,8 @@ Settings of a folded head are the model's assumptions: they go to that model's s
 
 ## Step 4: verify and report
 
-- `scripts/model-survey.mjs <citationKey>` lists exactly the decided surviving heads, one per model.
-- `scripts/check-model.mjs <head>` for each folded model: every former head is a part; `self_sufficient` should be true. A fault here is fixed in the restructure, by moving cards, never by deleting a Link. A model that rests on another model's card (a borrowed result) may report it; that Link is a cross-model premise and stays.
+- `scripts/model-survey.mjs <citationKey>` lists exactly the decided surviving heads, one per model (including `claim_objects` and `formal_structured` for formal models).
+- `scripts/check-model.mjs <head>` (defaults to `--stage fold`) for each surviving model: every former head is a part and no Fold-blocking fault (`reach_in`, `beyond_level`, `import_target`, `import_cycle`, or non-model `closure`) remains. Settings/Restructure/Import faults (`formal_shape`, `setting_dependency`, `forward`, cross-model `closure`, etc.) are printed as deferred to their responsible stage rather than blocking Stage 1; never delete a Link to silence a check.
 - `list_broken_links` is empty; the tree has the same number of Cards.
 - Record the pass in the project docs with the decision table, tell the user how many models the book holds and why each is its own, say which tree is still unlocked, and hand each Model Card's address to `zt-model-settings`, then to `zt-model-restructure`.
 

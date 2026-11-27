@@ -254,15 +254,23 @@ pub const WRITE_EDIT_PATIENCE_SECONDS: u64 = 180;
 pub fn writes_cards(tool: &str, argv: &[String]) -> bool {
     let mut step = String::new();
     let mut apply = false;
+    let mut plan_only = false;
+    let mut positional: Vec<&str> = Vec::new();
     let mut i = 0;
+    let parse_bool = |val: &str| {
+        let v = val.trim().trim_start_matches('$');
+        !v.eq_ignore_ascii_case("false") && v != "0"
+    };
     while i < argv.len() {
         let a = &argv[i];
-        if let Some(rest) = a.strip_prefix('-').or_else(|| None) {
+        if let Some(rest) = a.strip_prefix('-') {
             if let Some((name, val)) = split_flag_arg(rest) {
                 if name.eq_ignore_ascii_case("Step") {
                     step = val.to_ascii_lowercase();
                 } else if name.eq_ignore_ascii_case("Apply") {
-                    apply = !val.eq_ignore_ascii_case("false") && val != "0";
+                    apply = parse_bool(val);
+                } else if name.eq_ignore_ascii_case("PlanOnly") {
+                    plan_only = parse_bool(val);
                 }
             } else if rest.eq_ignore_ascii_case("Step") {
                 if let Some(val) = argv.get(i + 1) {
@@ -271,15 +279,34 @@ pub fn writes_cards(tool: &str, argv: &[String]) -> bool {
                 }
             } else if rest.eq_ignore_ascii_case("Apply") {
                 apply = true;
+            } else if rest.eq_ignore_ascii_case("PlanOnly") {
+                plan_only = true;
+            } else if matches!(
+                rest.to_ascii_lowercase().as_str(),
+                "staging" | "work" | "out" | "citationkey" | "occurrences" | "cards" | "round"
+                    | "token" | "model" | "models" | "file" | "job" | "source"
+            ) {
+                i += 1;
             }
+        } else {
+            positional.push(a.as_str());
         }
         i += 1;
+    }
+    if step.is_empty() && let Some(&first_pos) = positional.first() {
+        step = first_pos.to_ascii_lowercase();
     }
     if matches!(
         tool.to_ascii_lowercase().as_str(),
         "call" | "open-call" | "organize-apply" | "figures" | "group-finish" | "link-finish" | "term-sync" | "evidence-link"
     ) {
         return true;
+    }
+    if tool.eq_ignore_ascii_case("term-link") && step == "relink" {
+        return !plan_only;
+    }
+    if tool.eq_ignore_ascii_case("model-explain") {
+        return matches!(step.as_str(), "apply" | "finish");
     }
     if tool.eq_ignore_ascii_case("skeleton") && step == "apply" && !apply {
         // `skeleton -Step apply` without -Apply is the read-only draft precheck.
@@ -310,15 +337,134 @@ pub fn writes_cards(tool: &str, argv: &[String]) -> bool {
 /// wrote). The design rule is to retry the read set, then report the changing view.
 pub const CHANGING_VIEW_WAITS: [u64; 5] = [5, 10, 20, 40, 60];
 
+/// Declared positional parameter order for EVERY tool that accepts PowerShell-style positional
+/// arguments (`bind_positional`). Used once before boxpin discovery, retry eligibility, and write
+/// classification so all three agree 100% with each command's actual dispatch schema (H2, M1/L1).
+pub fn positional_params(tool: &str) -> Option<&'static [&'static str]> {
+    match tool.to_ascii_lowercase().as_str() {
+        "audit" => Some(&[
+            "CitationKey", "Out", "MaxSentences", "MaxChars", "MaxSteps", "Throttle", "Chunk",
+            "Sample", "OrphanTargets", "SampleSeed", "Baseline", "ConceptReport", "Decisions",
+            "RunReport", "TaskSheet",
+        ]),
+        "bridge" => Some(&[
+            "Step", "Staging", "CitationKey", "Work", "Profile", "MaxSources", "Candidates",
+            "Books", "Job", "ReportId", "Accept", "AcceptEarlier", "Report", "At",
+        ]),
+        "card" => Some(&[
+            "Step", "Work", "Book", "Staging", "Groups", "PerJob", "Sample", "Seed", "Rules",
+            "MaxCards", "Notes", "MaxJobs", "Job", "File", "Cards",
+        ]),
+        "cited" => Some(&["Step", "Staging", "Heading", "Source", "Draft", "Token"]),
+        "cited-cards" => Some(&["Step", "Staging", "PerJob", "Tokens", "Draft", "Token"]),
+        "concepts" => Some(&["Step", "Staging", "Work", "File", "MaxTopics", "MaxRestatements"]),
+        "coverage" => Some(&["Out", "Group", "Draft"]),
+        "event" => Some(&["Step", "Staging", "Work", "Job", "GroupsPerJob"]),
+        "figures" => Some(&[
+            "CitationKey", "FileId", "Staging", "Source", "MinFigureBytes", "Report", "Batch",
+            "FiguresFile", "Step", "Job",
+        ]),
+        "finalize" => Some(&[
+            "Step", "Out", "Report", "FixWork", "Layer", "Changes", "Coverage", "Scope",
+            "Decisions", "Applied", "Skeleton",
+        ]),
+        "finding" => Some(&["Step", "Staging", "Work", "Job", "GroupsPerJob", "MaxCandidates"]),
+        "hub" => Some(&["Step", "Work", "File", "Limits", "Trees", "PerJob"]),
+        "join" => Some(&["Step", "Work", "File", "Similar", "MaxPairs", "MaxOperations"]),
+        "math" => Some(&[
+            "Step", "Staging", "Out", "UnitsPerJob", "Supply", "MainResults", "CoreBudget",
+            "MaxSymbols", "Job", "IndexChars",
+        ]),
+        "model-explain" => Some(&["Step", "Model", "Work"]),
+        "organize-apply" => Some(&["Work"]),
+        "organize-survey" => Some(&["Staging", "Work", "Notes", "Similar", "CrossLinks", "Small", "Topics"]),
+        "pilot" => Some(&["Step", "Staging", "Work", "File", "Project", "RunReport", "Audit", "Cards", "Sample"]),
+        "prepare" => Some(&[
+            "Source", "Out", "CitationKey", "BibTeX", "BookTitle", "StartHeading", "EndHeading",
+            "SkipHeadings", "MaxChars", "MaxUnits", "GroupBy", "MinUnitChars", "FileId",
+            "MinFigureBytes", "MaxEventCandidates", "NoteMaxChars", "Instructions", "Variant",
+            "RunOptions", "Book", "MaxAttempts", "DshRunCap", "Extend",
+        ]),
+        "prepare-link" => Some(&["Staging", "TitleChars"]),
+        "publish" => Some(&["Step", "Work", "Register", "Hub", "File"]),
+        "register" => Some(&["Step", "Work", "Review", "Readings"]),
+        "resolve" => Some(&["Step", "Work", "File"]),
+        "restate" => Some(&[
+            "Step", "Staging", "Work", "Cards", "File", "OperationPrefix", "Merges", "MaxCandidates",
+        ]),
+        "skeleton" => Some(&["Step", "Staging", "Work", "Audit", "Thesis", "Decisions"]),
+        "snapshot-topics" => Some(&["Out", "TitleChars"]),
+        "terms" => Some(&[
+            "Step", "Staging", "MaxTerms", "MaxCandidates", "ExploreChars", "OperationPrefix", "Token",
+        ]),
+        "term-cards" => Some(&[
+            "Step", "Staging", "PerJob", "MathPerJob", "MaxStepsPerCard", "MaxProse", "Jobs",
+            "Token", "Tokens",
+        ]),
+        "term-link" => Some(&[
+            "Step", "Staging", "CitationKey", "Occurrences", "Cards", "Round", "Token",
+        ]),
+        "term-pilot" => Some(&[
+            "Step", "Staging", "Work", "Book", "Copy", "File", "RunReport", "SecondPlan",
+            "ClaudeUsage", "Project", "Decision",
+        ]),
+        "topic-home" => Some(&[
+            "Step", "Work", "Report", "File", "OperationPrefix", "MaxItems", "MaxCarriers",
+        ]),
+        _ => None,
+    }
+}
+
+/// Binds positional arguments according to `tool`'s schema when known, returning the bound argv
+/// (or a clone of `argv` unchanged if the tool has no positional schema or has extra tokens that
+/// the tool's own parser should report).
+pub fn bind_tool_args(tool: &str, argv: &[String]) -> Vec<String> {
+    if let Some(params) = positional_params(tool)
+        && let Ok(bound) = bind_positional(argv, params)
+    {
+        return bound;
+    }
+    argv.to_vec()
+}
+
+/// Extracts the effective `-Step` value using the same `:`/`=`, positional, and last-wins rules
+/// as `Args::parse` (M1/L1).
+fn effective_step(tool: &str, argv: &[String]) -> String {
+    let bound = bind_tool_args(tool, argv);
+    let mut step = String::new();
+    let mut i = 0;
+    while i < bound.len() {
+        let a = &bound[i];
+        if let Some(rest) = a.strip_prefix('-')
+            && rest.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        {
+            if let Some((name, val)) = split_flag_arg(rest) {
+                if name.eq_ignore_ascii_case("Step") {
+                    step = val.to_ascii_lowercase();
+                }
+            } else if rest.eq_ignore_ascii_case("Step") {
+                if let Some(val) = bound.get(i + 1) {
+                    step = val.to_ascii_lowercase();
+                    i += 1;
+                }
+            } else if matches!(
+                rest.to_ascii_lowercase().as_str(),
+                "staging" | "work" | "out" | "citationkey" | "occurrences" | "cards" | "round"
+                    | "token" | "model" | "models" | "file" | "job" | "source" | "book" | "groups"
+                    | "perjob" | "sample" | "seed" | "rules" | "maxcards" | "notes" | "maxjobs"
+            ) {
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    step
+}
+
 /// The steps that only read the archive and then write their own staging file, so a rerun repeats
 /// the whole read set and nothing else (no ledger claim, no Card write).
 pub fn rereads_on_changing_view(tool: &str, argv: &[String]) -> bool {
-    let step = argv
-        .iter()
-        .position(|a| a.eq_ignore_ascii_case("-Step"))
-        .and_then(|at| argv.get(at + 1))
-        .map(|s| s.to_ascii_lowercase())
-        .unwrap_or_default();
+    let step = effective_step(tool, argv);
     match tool.to_ascii_lowercase().as_str() {
         // `prepare-link` reads the archive and writes only its staging plan files.
         "audit" | "organize-survey" | "prepare-link" => true,
@@ -332,7 +478,9 @@ pub fn rereads_on_changing_view(tool: &str, argv: &[String]) -> bool {
 /// A refusal of a read set whose archive revision changed while it was read.
 pub fn is_changing_view(error: &anyhow::Error) -> bool {
     let text = format!("{error:#}");
-    text.contains("changing view") || text.contains("changing read view")
+    text.contains("changing view")
+        || text.contains("changing read view")
+        || text.contains("the archive changed while")
 }
 
 /// Runs `step` and reruns it after each wait of `waits` while it fails with a changing view.
@@ -376,7 +524,7 @@ pub fn bind_positional(argv: &[String], params: &[&str]) -> Result<Vec<String>> 
     while i < argv.len() {
         let arg = &argv[i];
         if is_name(arg) {
-            let (name, inline) = match arg[1..].split_once(':') {
+            let (name, inline) = match split_flag_arg(&arg[1..]) {
                 Some((name, _)) => (name.to_ascii_lowercase(), true),
                 None => (arg[1..].to_ascii_lowercase(), false),
             };
@@ -438,6 +586,17 @@ mod tests {
             assert!(!writes_cards("model", &argv(&["-Step", step])), "{step}");
         }
         assert_eq!(WRITE_EDIT_PATIENCE_SECONDS, 180);
+
+        // Post-digest Wave 1 tools: positional & named steps, plus -PlanOnly:$false.
+        assert!(writes_cards("term-link", &argv(&["-Step", "relink", "-CitationKey", "K"])));
+        assert!(writes_cards("term-link", &argv(&["relink", "-CitationKey", "K"])));
+        assert!(!writes_cards("term-link", &argv(&["-Step", "relink", "-CitationKey", "K", "-PlanOnly"])));
+        assert!(writes_cards("term-link", &argv(&["-Step", "relink", "-CitationKey", "K", "-PlanOnly:$false"])));
+        assert!(!writes_cards("model-explain", &argv(&["-Step", "plan", "-Model", "K/1|a"])));
+        assert!(!writes_cards("model-explain", &argv(&["plan", "-Model", "K/1|a"])));
+        assert!(writes_cards("model-explain", &argv(&["-Step", "apply", "-Model", "K/1|a"])));
+        assert!(writes_cards("model-explain", &argv(&["apply", "-Model", "K/1|a"])));
+        assert!(writes_cards("model-explain", &argv(&["finish", "-Model", "K/1|a"])));
     }
 
     #[test]
@@ -474,6 +633,16 @@ mod tests {
         // A step that claims a ledger unit is never rerun.
         assert!(!rereads_on_changing_view("group-start", &argv(&["-Out", "D:\\o"])));
         assert!(!rereads_on_changing_view("ledger", &argv(&["claim"])));
+
+        // M1/L1: `-Step=plan`, `-Step:plan`, positional `plan`, and last-wins repeated `-Step`
+        // must match `Args::parse` dispatch exactly.
+        assert!(rereads_on_changing_view("term-link", &argv(&["-Step=plan", "-Staging=D:\\s"])));
+        assert!(rereads_on_changing_view("term-link", &argv(&["-Step:plan", "-Staging:D:\\s"])));
+        assert!(rereads_on_changing_view("term-link", &argv(&["plan", "D:\\s"])));
+        assert!(!rereads_on_changing_view("term-link", &argv(&["-Step", "plan", "-Step", "apply", "-Staging", "D:\\s"])));
+        assert!(rereads_on_changing_view("term-link", &argv(&["-Step", "apply", "-Step=plan", "-Staging", "D:\\s"])));
+        assert!(rereads_on_changing_view("card", &argv(&["check", "D:\\w"])));
+        assert!(!rereads_on_changing_view("card", &argv(&["-Step", "plan", "-Step", "apply", "-Work", "D:\\w"])));
     }
 
     #[test]

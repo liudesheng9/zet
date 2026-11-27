@@ -554,6 +554,40 @@ fn criterion_rules(address: &str, body: &str, faults: &mut Faults) {
     }
 }
 
+/// Split a Markdown table row into trimmed cells without splitting on `|` inside `[[...]]` Links
+/// or escaped Markdown `\|`.
+fn split_table_cells(line: &str) -> Vec<&str> {
+    let inner = line.trim().trim_matches('|');
+    let bytes = inner.as_bytes();
+    let mut cells = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut in_link = false;
+    while i < bytes.len() {
+        if !in_link && bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
+            i += 2;
+            continue;
+        }
+        if !in_link && i + 1 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'[' {
+            in_link = true;
+            i += 2;
+            continue;
+        }
+        if in_link && i + 1 < bytes.len() && bytes[i] == b']' && bytes[i + 1] == b']' {
+            in_link = false;
+            i += 2;
+            continue;
+        }
+        if !in_link && bytes[i] == b'|' {
+            cells.push(inner[start..i].trim());
+            start = i + 1;
+        }
+        i += 1;
+    }
+    cells.push(inner[start..].trim());
+    cells
+}
+
 /// FM3 for `结果`.
 fn result_rules(address: &str, body: &str, faults: &mut Faults) {
     let missing = ["陈述", "为什么", "依据"]
@@ -570,6 +604,17 @@ fn result_rules(address: &str, body: &str, faults: &mut Faults) {
                 "a result part lacks the sections: {}",
                 missing.join("、")
             ),
+        );
+    }
+    if let Some(why) = section(body, "为什么")
+        && why.trim().is_empty()
+    {
+        faults.add(
+            address,
+            "FM3",
+            "empty_intuition",
+            "",
+            "the 为什么 section is empty: state in one to three sentences why the claim holds",
         );
     }
     if let Some(stmt) = section(body, "陈述") {
@@ -692,6 +737,7 @@ fn argument_rules(address: &str, body: &str, faults: &mut Faults) {
 /// FM5 for `符号表与读法`.
 fn notation_rules(address: &str, body: &str, faults: &mut Faults) {
     let mut valid_symbol_rows = 0usize;
+    let mut missing_first_use = 0usize;
     let mut in_terms = false;
     for line in body.lines() {
         let t = line.trim();
@@ -703,7 +749,7 @@ fn notation_rules(address: &str, body: &str, faults: &mut Faults) {
             in_terms = false;
         }
         if !in_terms && t.starts_with('|') {
-            let cells: Vec<&str> = t.trim_matches('|').split('|').map(str::trim).collect();
+            let cells = split_table_cells(t);
             if cells.len() >= 2
                 && !cells.iter().all(|c| c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' '))
                 && !matches!(
@@ -713,19 +759,45 @@ fn notation_rules(address: &str, body: &str, faults: &mut Faults) {
                 && !cells[0].is_empty()
                 && !cells[1].is_empty()
             {
-                valid_symbol_rows += 1;
+                // A completed symbol row (meaning != "待写") must carry an ORDINARY Card Link [[target]]
+                // (not a Term link [[label@target]]) in the 3rd column (首次出现); the creation-time
+                // placeholder row (`| $x$ | 待写 | 本模型 |`) stays admissible until filled.
+                let is_placeholder = cells[1] == "待写";
+                let has_first = cells.get(2).is_some_and(|c| {
+                    !c.is_empty()
+                        && *c != "—"
+                        && *c != "-"
+                        && (is_placeholder
+                            || link_occurrences(c)
+                                .into_iter()
+                                .any(|occ| occ.form == LinkForm::Ordinary))
+                });
+                if has_first {
+                    valid_symbol_rows += 1;
+                } else {
+                    missing_first_use += 1;
+                }
             }
         }
     }
     let has_symbols = valid_symbol_rows > 0 && !notation_symbols(body).is_empty();
     let has_borrow = !borrowed_notation_targets(body).is_empty();
     if !has_symbols && !has_borrow {
+        let msg = if missing_first_use > 0 {
+            "symbol table rows in 符号表与读法 must include the 3rd column (首次出现 Card Link): | 符号 | 含义 | 首次出现 |"
+        } else {
+            "a 符号表与读法 card must define symbol table rows (| 符号 | 含义 | 首次出现 | with non-empty symbol, meaning, and first-use link) or bind imported symbols via 沿用 [[…]] 的全部符号"
+        };
+        faults.add(address, "FM5", "no_symbols", "", msg);
+    } else if missing_first_use > 0 {
         faults.add(
             address,
             "FM5",
-            "no_symbols",
-            "",
-            "a 符号表与读法 card must define symbol table rows (| 符号 | 含义 | 首次出现 | with non-empty symbol and meaning) or bind imported symbols via 沿用 [[…]] 的全部符号",
+            "missing_first_use",
+            &format!("rows:{missing_first_use}"),
+            &format!(
+                "{missing_first_use} symbol row(s) in 符号表与读法 lack a 首次出现 column (| 符号 | 含义 | 首次出现 |)"
+            ),
         );
     }
     let term_rows = crate::text::term_table(body);
@@ -738,7 +810,10 @@ fn notation_rules(address: &str, body: &str, faults: &mut Faults) {
             s.lines().any(|l| {
                 let t = l.trim();
                 !t.starts_with('|')
-                    && (t.contains("沿用") || t.contains("无额外统一用语") || t.contains("无专用术语"))
+                    && (t.contains("沿用")
+                        || t.contains("无额外统一用语")
+                        || t.contains("无特殊用语约定")
+                        || t.contains("无专用术语"))
             })
         });
     if !has_term_rows && !has_borrow && !explicit_none {
@@ -774,24 +849,63 @@ fn calibration_rules(address: &str, body: &str, faults: &mut Faults) {
     let table = section(body, "参数与出处").unwrap_or_default();
     let mut data_rows = 0usize;
     let mut missing_prov = 0usize;
+    // Detect column indices from the header row when present; default to standard 6-col layout:
+    // | 参数 (0) | 含义 (1) | 取值 (2) | 单位/频率 (3) | 来源类型 (4) | 目标或出处 (5) |
+    let mut value_col: Option<usize> = Some(2);
+    let mut unit_col: Option<usize> = Some(3);
+    let mut prov_col: Option<usize> = Some(4);
+    let mut target_col: Option<usize> = Some(5);
+    let mut saw_header = false;
     for line in table.lines() {
         let t = line.trim();
         if !t.starts_with('|') {
             continue;
         }
-        let cells: Vec<&str> = t.trim_matches('|').split('|').map(str::trim).collect();
+        let cells = split_table_cells(t);
         if cells.is_empty()
             || cells.iter().all(|c| c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' '))
-            || matches!(cells[0], "参数" | "符号" | "Parameter" | "Symbol")
         {
             continue;
         }
+        if !saw_header && matches!(cells[0], "参数" | "符号" | "Parameter" | "Symbol") {
+            saw_header = true;
+            value_col = cells
+                .iter()
+                .position(|c| c.contains("取值") || c.eq_ignore_ascii_case("value"));
+            unit_col = cells
+                .iter()
+                .position(|c| c.contains("单位") || c.contains("频率") || c.eq_ignore_ascii_case("unit"));
+            prov_col = cells.iter().position(|c| {
+                c.contains("来源类型")
+                    || c.contains("来源类别")
+                    || c.eq_ignore_ascii_case("provenance")
+                    || *c == "来源"
+            });
+            target_col = cells.iter().position(|c| {
+                !c.contains("来源类型")
+                    && !c.contains("来源类别")
+                    && !c.eq_ignore_ascii_case("provenance")
+                    && *c != "来源"
+                    && (c.contains("目标")
+                        || c.contains("出处")
+                        || c.contains("来源")
+                        || c.eq_ignore_ascii_case("target")
+                        || c.eq_ignore_ascii_case("source"))
+            });
+            continue;
+        }
         data_rows += 1;
-        // Standard 6-column table: | 参数 | 含义 | 取值 | 单位/频率 | 来源类型 | 目标或出处 |
-        let value_ok = cells.get(2).is_some_and(|c| !c.is_empty() && *c != "—");
-        let target_ok = cells.last().is_some_and(|c| !c.is_empty() && *c != "—");
-        let populated = cells.iter().filter(|c| !c.is_empty()).count();
-        if populated < 4 || !value_ok || !target_ok || !PROVENANCE_CUE.is_match(t) {
+        let non_empty = |idx: Option<usize>| -> bool {
+            idx.and_then(|i| cells.get(i))
+                .is_some_and(|c| !c.is_empty() && *c != "—" && *c != "-")
+        };
+        let value_ok = non_empty(value_col);
+        let unit_ok = unit_col.is_none() || non_empty(unit_col);
+        let prov_ok = prov_col
+            .and_then(|i| cells.get(i))
+            .is_some_and(|c| PROVENANCE_CUE.is_match(c));
+        let target_ok = non_empty(target_col);
+        if cells.len() < 4 || !value_ok || !unit_ok || !prov_ok || !target_ok {
             missing_prov += 1;
         }
     }
@@ -810,7 +924,7 @@ fn calibration_rules(address: &str, body: &str, faults: &mut Faults) {
             "missing_provenance",
             &format!("rows:{missing_prov}"),
             &format!(
-                "{missing_prov} calibration row(s) lack populated value, source/target, or provenance (assigned / external-estimate / moment-matched)"
+                "{missing_prov} calibration row(s) lack populated value, unit, target/source, or provenance (assigned / external-estimate / moment-matched) in the 来源类型 column"
             ),
         );
     }
@@ -1074,5 +1188,29 @@ mod tests {
 
         let heading_only_exp = "产出下降。\n\n**实验设定**\n- 依赖 [[K/1|a]]。\n\n**数值结果**\n产出下降 1%。\n\n**边界**\n限定情形。";
         assert!(run(formal_part("数值实验：缺标注", heading_only_exp)).join("\n").contains("FM6"));
+
+        // Astra P5 review regressions:
+        // 1) FM3 rejects an empty **为什么** section.
+        let empty_why = "定理 1。\n\n**陈述**\n- 出处与力度：定理 1；力度：iff。\n- 条件与作用域：依赖 [[K/1|a|b]]。\n\n**为什么**\n\n**依据**\n- 外部证明：见原文引证 [4]。";
+        assert!(run(formal_part("结果：定理 1 空直觉", empty_why)).join("\n").contains("为什么"));
+
+        // 2) FM5 accepts constructor's `无特殊用语约定。` and rejects 2-column symbol rows lacking 首次出现.
+        let ctor_not = "**怎样读卡片上的记号**\n说明。\n\n| 符号 | 含义 | 首次出现 |\n| --- | --- | --- |\n| $\\nu$ | 份额 | [[K/1|a]] |\n\n**统一用语**\n\n无特殊用语约定。";
+        assert_eq!(run(formal_part("符号表与读法", ctor_not)), Vec::<String>::new());
+        let two_col_not = "| 符号 | 含义 |\n| --- | --- |\n| $\\nu$ | 份额 |\n\n**统一用语**\n\n无特殊用语约定。";
+        assert!(run(formal_part("符号表与读法", two_col_not)).join("\n").contains("FM5"));
+
+        // 3) FM6 handles `|` inside `[[addr]]` Links (287 bp -> 300 bp calibration), escaped `\|`,
+        //    reordered `目标或来源` column before `来源类型`, and rejects provenance in the wrong column.
+        let linked_cal = "**起点**\n- 依赖 [[K/1|a]]。\n\n**参数与出处**\n| 参数 | 含义 | 取值 | 单位/频率 | 来源类型 | 目标或出处 |\n| --- | --- | --- | --- | --- | --- |\n| $\\nu$ | 便利收益\\|基准 | 300 bp | 年化 | external-estimate | 对应实证 [[K/4|a|1|a]]（287 bp） |";
+        assert_eq!(run(formal_part("校准：稳态识别", linked_cal)), Vec::<String>::new());
+        let wrong_col_cal = "**起点**\n- 依赖 [[K/1|a]]。\n\n**参数与出处**\n| 参数 | 含义 | 取值 | 单位/频率 | 目标或来源 | 来源类型 |\n| --- | --- | --- | --- | --- | --- |\n| $\\nu$ | 份额 | 0.3 | 年化 | assigned 原文 §4 | 未知 |";
+        assert!(run(formal_part("校准：错列", wrong_col_cal)).join("\n").contains("FM6"));
+
+        // 4) FM5 rejects a filled symbol row with `待写` OR a Term link `[[label@addr]]` in column 3.
+        let unlinked_first_not = "**怎样读卡片上的记号**\n说明。\n\n| 符号 | 含义 | 首次出现 |\n| --- | --- | --- |\n| $x$ | wealth | 待写 |\n\n**统一用语**\n\n无特殊用语约定。";
+        assert!(run(formal_part("符号表与读法", unlinked_first_not)).join("\n").contains("FM5"));
+        let term_link_first_not = "**怎样读卡片上的记号**\n说明。\n\n| 符号 | 含义 | 首次出现 |\n| --- | --- | --- |\n| $x$ | wealth | [[财富@K/1|a]] |\n\n**统一用语**\n\n无特殊用语约定。";
+        assert!(run(formal_part("符号表与读法", term_link_first_not)).join("\n").contains("FM5"));
     }
 }

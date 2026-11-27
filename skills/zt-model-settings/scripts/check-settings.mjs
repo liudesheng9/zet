@@ -40,30 +40,60 @@ import { fileURLToPath } from 'node:url'
 
 const SETTING = /^(设定|假设|假定|本章设定|本阶段的设定)/
 const SETTING_EXT = /^(设定|假设|假定|本章设定|本阶段的设定|定义|判据|均衡定义|解概念)/
+// Proposal §5.1: Benchmark restrictions (基准) and claim/assumption Boundaries (边界) are also legal inside the setting tree.
+const SETTING_TREE_ALLOWED = /^(设定|假设|假定|本章设定|本阶段的设定|定义|判据|均衡定义|解概念|基准|边界)/
 const CRITERION = /^(判据|均衡定义|解概念)/
 const DEFINITION = /^定义/
 const NOTATION = /^符号/
 const HEADER = /^\*\*(本章设定|本阶段的设定|设定|假设|假定|记号|符号|符号表)\*\*/
 const LIST = /^\s*(?:[-*](?=\s)|\d+[.、])\s*/
 const DEFINES = /(?:^|[\s。；，：:、(（])记(?:号[:：])?\s*\$([^$]+)\$/g
+// Unified assumption label grammar (matched ASCII/full-width parens, dotted/hyphenated IDs, primes, bare letters, Chinese numerals).
+const ASSUMP_CORE = String.raw`(?:[A-Za-z0-9]+(?:[.\-][A-Za-z0-9]+)*[′']*|[一二三四五六七八九十]+)`
+const ASSUMP_LABEL_SRC = `(?:（(${ASSUMP_CORE})）|\\((${ASSUMP_CORE})\\)|(${ASSUMP_CORE}))`
+const ASSUMP_TITLE_RE = new RegExp(`^(?:假设|假定)(?:\\s*${ASSUMP_LABEL_SRC})?[：:]`)
+const ASSUMP_NAME_RE = new RegExp(`^(?:假设|假定)\\s*${ASSUMP_LABEL_SRC}(?=[：:\\s]|$)`)
+const ASSUMP_CITE_RE = new RegExp(`(?:假设|假定)\\s*${ASSUMP_LABEL_SRC}(?![A-Za-z0-9′'一二三四五六七八九十）)]|[.\\-][A-Za-z0-9])`, 'g')
 
 const isSetting = (c) => SETTING.test(c.facet || '') || SETTING.test(c.title || '')
 const isCriterion = (c) => CRITERION.test(c.facet || '') || CRITERION.test(c.title || '')
 const isDefinition = (c) => DEFINITION.test(c.facet || '') || DEFINITION.test(c.title || '')
 const isSettingMember = (c) => SETTING_EXT.test(c.facet || '') || SETTING_EXT.test(c.title || '')
+const isSettingTreeAllowed = (c) => SETTING_TREE_ALLOWED.test(c.facet || '') || SETTING_TREE_ALLOWED.test(c.title || '')
 const isNotation = (c) => NOTATION.test(c.facet || '') || NOTATION.test(c.title || '')
 const symbolOf = (tex) => tex.split(/:=|=|\\equiv|\\coloneqq/)[0].replace(/\s+/g, '')
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+/** Split a Markdown table row without splitting on `|` inside `[[...]]` Links or escaped `\|`. */
+function splitTableCells(line) {
+  const inner = line.trim().replace(/^\|/, '').replace(/\|$/, '')
+  const cells = []
+  let start = 0
+  let inLink = false
+  for (let i = 0; i < inner.length; i++) {
+    if (!inLink && inner[i] === '\\' && inner[i + 1] === '|') { i++; continue }
+    if (!inLink && inner[i] === '[' && inner[i + 1] === '[') { inLink = true; i++; continue }
+    if (inLink && inner[i] === ']' && inner[i + 1] === ']') { inLink = false; i++; continue }
+    if (!inLink && inner[i] === '|') { cells.push(inner.slice(start, i).trim()); start = i + 1 }
+  }
+  cells.push(inner.slice(start).trim())
+  return cells
+}
+
 /** The rows of the notation card's tables: each row's symbols (its first cell, split at 、 , ； and cut at
- * = > < \in) and the card its 首次出现 cell links, if any. */
+ * = > < \in) and the card its 首次出现 (3rd) cell links, if any. */
 export function notationRows(body) {
   const rows = []
+  let inTerms = false
   for (const line of (body || '').split('\n')) {
-    const cell = line.match(/^\|\s*([^|]+?)\s*\|/)
-    if (!cell || /符号|术语|---/.test(cell[1])) continue
+    const t = line.trim()
+    if (t.includes('统一用语') || t.includes('术语表')) { inTerms = true; continue }
+    if (inTerms && /^\*\*[^*]+\*\*/.test(t)) inTerms = false
+    if (inTerms || !t.startsWith('|')) continue
+    const cells = splitTableCells(t)
+    if (!cells.length || /符号|术语|---/.test(cells[0])) continue
     const symbols = []
-    for (const tex of [...cell[1].matchAll(/\$([^$]+)\$/g)].map((x) => x[1])) {
+    for (const tex of [...cells[0].matchAll(/\$([^$]+)\$/g)].map((x) => x[1])) {
       for (const part of splitTop(tex)) {
         // Spaces go, except the one that ends a command before a letter (\bar Z, \theta Z).
         const sym = part.replace(/\\[ ,;:!]/g, '').split(/=|>|<|\\in\b|\\le\b|\\ge\b|\\equiv/)[0].trim()
@@ -71,8 +101,10 @@ export function notationRows(body) {
         if (sym && !symbols.includes(sym)) symbols.push(sym)
       }
     }
-    const link = line.slice(cell[0].length).match(/\[\[(?:[^\]@]*@)?([^\]]+)\]\]/)
-    if (symbols.length) rows.push({ symbols, link: link ? link[1] : null })
+    // Read first-use link strictly from the 3rd column (首次出现), ordinary Card link only (no @ Term links).
+    const firstCell = cells.length >= 3 ? cells[2] : ''
+    const link = firstCell.match(/\[\[([^\]@]+)\]\]/)
+    if (symbols.length) rows.push({ symbols, link: link ? link[1].trim() : null, hasThirdCol: cells.length >= 3 })
   }
   return rows
 }
@@ -146,12 +178,31 @@ const symbolTokens = (sym) => {
   const open = t.indexOf('(')
   return open > 0 ? t.slice(0, open) : t
 }
-/** The text of a card after its **起点** list (the whole body when it has none). */
+const HEADING_LINE_RE = /^\s*\*\*([^*]+)\*\*/
+function startEndIdx(lines, startIdx) {
+  const nextHeading = lines.findIndex((l, idx) => idx > startIdx && (HEADING_LINE_RE.test(l) || /^\s*来源[：:]/.test(l)))
+  if (nextHeading >= 0) return nextHeading
+  // Malformed card lacking a following heading: stop after the **起点** list or opening line.
+  let k = startIdx + 1
+  while (k < lines.length && (LIST.test(lines[k]) || (!lines[k].trim() && k + 1 < lines.length && LIST.test(lines[k + 1])) || /^\s{2,}\S/.test(lines[k]))) k++
+  if (k === startIdx + 1 && k < lines.length && lines[k].trim()) k++
+  return k
+}
+/** The text of a card outside its **起点** section (including any lines before **起点** and all
+ * sections after **起点** up to the end of the body). */
+function outsideStart(body) {
+  const lines = (body || '').replace(/\r/g, '').split('\n')
+  const startIdx = lines.findIndex((l) => /^\s*\*\*起点\*\*/.test(l))
+  if (startIdx < 0) return body || ''
+  const endIdx = startEndIdx(lines, startIdx)
+  return [...lines.slice(0, startIdx), ...lines.slice(endIdx)].join('\n')
+}
+/** The text of a card after its **起点** section (the whole body when it has none). */
 function afterStart(body) {
-  const lines = (body || '').split('\n')
-  let k = lines.findIndex((l) => /^\*\*起点\*\*\s*$/.test(l)) + 1
-  if (k > 0) while (k < lines.length && (LIST.test(lines[k]) || (!lines[k].trim() && k + 1 < lines.length && LIST.test(lines[k + 1])) || /^\s{2,}\S/.test(lines[k]))) k++
-  return lines.slice(k).join('\n')
+  const lines = (body || '').replace(/\r/g, '').split('\n')
+  const startIdx = lines.findIndex((l) => /^\s*\*\*起点\*\*/.test(l))
+  if (startIdx < 0) return body || ''
+  return lines.slice(startEndIdx(lines, startIdx)).join('\n')
 }
 /** For each token, whether it sits under a decoration (the Z of \bar Z is not Z). A symbol in a sub- or
  * superscript is used there (R^{K_s}, \nabla_{\theta}). */
@@ -195,20 +246,51 @@ export function audit(m, cards, parents = new Map()) {
   const row = (a) => ({ ...order.find((o) => o.address === a), ...(cards.get(a) || {}) })
   const all = order.map((o) => row(o.address))
 
+  const isFormalV2 = m.level === 'formal' && !m.form
   const borrowed = (c) => c.line === 'shared'
   const notes = all.filter((c) => (inPart(c.address) || (borrowed(c) && c.import)) && isNotation(c))
   // One line binds a whole block's symbols (owner decision 3, #205).
-  const binds = all.some((c) => inPart(c.address) && /沿用\s*\[\[[^\]]+\]\]\s*的全部符号/.test(c.body || ''))
-  const missing = notes.length || binds ? [] : [{ fix: `the setting part of ${S} has no notation card (facet 符号表与读法): add one as its first Side successor, import one (**引入**), or write 沿用 [[…]] 的全部符号` }]
-  // Follow 1-hop `沿用 [[...]]` borrowed notation bindings when present in `cards` (Astra #16 / M4).
+  // For Level 2 formal models, the binding lives on <head>|a|a (a Notation card) or an imported Notation card, matching Rust formal_shape.
+  const binds = isFormalV2
+    ? notes.some((c) => /沿用\s*\[\[[^\]]+\]\]\s*的全部符号/.test(c.body || ''))
+    : all.some((c) => inPart(c.address) && /沿用\s*\[\[[^\]]+\]\]\s*的全部符号/.test(c.body || ''))
+  // Targeted Stage 2 deferral (matching check-model --stage settings): if a pending cross-model closure
+  // specifically targets a Notation card, defer `missing` to Stage 4 instead of blocking Stage 2.
+  const pendingNotationImport = (m.build?.closure || []).some((f) => {
+    const c = f && f.card
+    return Boolean(c && c.type === 'model' && (c.models || []).length && (c.home_role === 'notation' || /^符号/.test(c.facet || '')))
+  })
+  const missingRaw = notes.length || binds ? [] : [{ fix: `the setting part of ${S} has no notation card (facet 符号表与读法): add one at ${S}|a (or import one via **引入**), optionally writing 沿用 [[<lender notation card>]] 的全部符号 inside ${S}|a` }]
+  const missing = pendingNotationImport ? [] : missingRaw
+  const deferredMissing = pendingNotationImport ? missingRaw : []
+  // Follow 1-hop `沿用 [[...]]` borrowed notation bindings (ordinary links only, matching Rust borrowed_notation_targets).
   const borrowedBodies = []
-  for (const c of all.filter((x) => inPart(x.address))) {
+  const wrongNotationTargets = []
+  const borrowSources = isFormalV2 ? notes.filter((c) => inPart(c.address)) : all.filter((x) => inPart(x.address))
+  for (const c of borrowSources) {
     for (const line of (c.body || '').split('\n')) {
       for (const clause of line.split(/[。；;]/)) {
         const at = clause.indexOf('沿用')
         if (at < 0 || !clause.slice(at).includes('符号')) continue
-        for (const m2 of clause.slice(at).matchAll(/\[\[(?:[^\]@]*@)?([^\]]+)\]\]/g)) {
-          const t = cards.get(m2[1])
+        for (const m2 of clause.slice(at).matchAll(/\[\[([^\]@]+)\]\]/g)) {
+          const targetAddr = m2[1].trim()
+          const t = cards.get(targetAddr)
+          if (isFormalV2 && (!t || !isNotation(t))) {
+            wrongNotationTargets.push({
+              card: c.address,
+              what: 'notation_target',
+              fix: `${c.address} binds 沿用 [[${targetAddr}]] 的全部符号, but ${targetAddr} (${t ? (t.facet || t.title || 'unknown') : 'missing'}) is not a 符号表与读法 card: link the lender's notation card (<lender_head>|a|a) directly`,
+            })
+            continue
+          }
+          if (t && !isNotation(t) && !/^\|\s*符号\s*\|/m.test(t.body || '')) {
+            wrongNotationTargets.push({
+              card: c.address,
+              what: 'notation_target',
+              fix: `${c.address} binds 沿用 [[${targetAddr}]] 的全部符号, but ${targetAddr} (${t.facet || t.title || 'unknown'}) is not a 符号表与读法 card: link the lender's notation card (<lender_head>|a|a) directly`,
+            })
+            continue
+          }
           if (t?.body && !borrowedBodies.includes(t.body)) borrowedBodies.push(t.body)
         }
       }
@@ -230,8 +312,8 @@ export function audit(m, cards, parents = new Map()) {
   }
 
   const inside = all
-    .filter((c) => inPart(c.address) && c.address !== S && !isSettingMember(c) && !isNotation(c))
-    .map((c) => ({ card: c.address, facet: c.facet, fix: `${c.address} (${c.facet}) is not a setting: move it out of the setting part, after its latest premise (check-network names the chapter); a setting states the assumption only` }))
+    .filter((c) => inPart(c.address) && c.address !== S && !isSettingTreeAllowed(c) && !isNotation(c))
+    .map((c) => ({ card: c.address, facet: c.facet, fix: `${c.address} (${c.facet}) is not a setting-tree role: move it out of the setting part, after its latest premise (check-network names the chapter)` }))
 
   const stated = []
   const uses = []
@@ -302,7 +384,11 @@ export function audit(m, cards, parents = new Map()) {
   const own_ = (c) => !borrowed(c) && !(isNotation(c) && notes.includes(c))
   const covered = new Set(syms.flatMap((x) => baseSymbols(x)))
   const uncovered = []
-  if (notes.length || borrowedBodies.length) {
+  if (isFormalV2 && Array.isArray(m.build.symbol_uncovered)) {
+    for (const f of m.build.symbol_uncovered) {
+      uncovered.push({ card: f.address, symbols: f.symbol ? [f.symbol] : [], fix: f.fix })
+    }
+  } else if (notes.length || borrowedBodies.length) {
     for (const c of settings) {
       const lack = [...new Set(formulas(c.body).flatMap(baseSymbols))].filter((x) => !covered.has(x))
       if (lack.length) uncovered.push({ card: c.address, symbols: lack, fix: `${c.address} uses ${lack.map((x) => '$' + x + '$').join(' ')}, which the notation card does not list: add a row for each (its meaning and the card that defines it), or write the symbol as the notation card does` })
@@ -317,25 +403,29 @@ export function audit(m, cards, parents = new Map()) {
     for (const sym of r.symbols) {
       const meet = reading.find((c) => usesSymbol(c.body, sym, allSyms))
       if (!meet) { unused.push({ symbol: sym, fix: `the notation card lists $${sym}$, which no card of the model uses: drop the row, or write the symbol as the cards do` }); continue }
-      if (r.link && r.link !== meet.address) first.push({ symbol: sym, listed: r.link, reads: meet.address, fix: `the notation card says $${sym}$ is first met in ${r.link}, but a reader meets it first in ${meet.address}: define it there and point the row to it` })
+      if (isFormalV2 && !r.link) {
+        first.push({ symbol: sym, listed: null, reads: meet.address, fix: `the notation row for $${sym}$ lacks a 首次出现 Card Link in column 3: point it to [[${meet.address}]]` })
+      } else if (r.link && r.link !== meet.address) {
+        first.push({ symbol: sym, listed: r.link, reads: meet.address, fix: `the notation card says $${sym}$ is first met in ${r.link}, but a reader meets it first in ${meet.address}: define it there and point the row to it` })
+      }
     }
   }
 
   // Card format: **起点**, then **设定** (an assumption: **假设**), then an optional **说明**; the content
   // only; premises only in **起点**; tables of symbols and terms only in the notation card.
   const isAssumption = (c) => /^(假设|假定)/.test(c.facet || '') || /^(假设|假定)/.test(c.title || '')
-  const sectionsOf = (body) => (body || '').split('\n').map((l) => l.match(/^\*\*([^*]+)\*\*\s*$/)).filter(Boolean).map((x) => x[1])
+  const sectionsOf = (body) => (body || '').split('\n').map((l) => l.match(/^\s*\*\*([^*]+)\*\*/)).filter(Boolean).map((x) => x[1].trim())
   const sectionText = (body, name) => {
-    const m2 = (body || '').split(/^\*\*([^*]+)\*\*\s*$/m)
+    const m2 = (body || '').split(/^\s*\*\*([^*]+)\*\*/m)
     const i = m2.indexOf(name)
     return i > 0 ? m2[i + 1] : ''
   }
-  const format = []
+  const format = [...wrongNotationTargets]
   const kindOf = (c) => {
     if (isAssumption(c)) return '假设'
     if (isCriterion(c)) {
-      const m = (c.facet || c.title || '').match(CRITERION)
-      return m ? m[1] : '判据'
+      const m2 = (c.facet || c.title || '').match(CRITERION)
+      return m2 ? m2[1] : '判据'
     }
     if (isDefinition(c)) return '定义'
     return '设定'
@@ -343,24 +433,26 @@ export function audit(m, cards, parents = new Map()) {
   const titleOk = (c, kind) => {
     const t = c.title || ''
     if (kind === '设定') return /^设定[：:]/.test(t)
-    if (kind === '假设') {
-      // Accepts `假设 1：`, `假设 1.2：`, `假设 B：`, `假设 A1：`, `假设：`, `假设 (B)：`, `假设（A1.2）：`, and `假设 1′：`.
-      return /^(?:假设|假定)(?:\s*(?:[（(][A-Za-z0-9.\-′']+[）)]|[A-Za-z0-9][A-Za-z0-9.\-′']*))?[：:]/.test(t)
-    }
+    if (kind === '假设') return ASSUMP_TITLE_RE.test(t)
     if (kind === '定义') return /^定义[：:]/.test(t)
-    return CRITERION.test(t)
+    return /^(?:判据|均衡定义|解概念)[：:]/.test(t)
   }
   const allowedTails = new Set(['', '直觉', '说明', '直觉,说明', '作用域', '作用域,说明', '作用域,直觉', '作用域,直觉,说明'])
+  const criterionTails = new Set(['作用域', '作用域,说明', '作用域,直觉', '作用域,直觉,说明'])
   for (const c of settings) {
     const kind = kindOf(c)
     const bad = (what, fix) => format.push({ card: c.address, what, fix: `${c.address} (${c.facet}): ${fix}` })
     if (!titleOk(c, kind)) bad('title', kind === '设定' ? 'the title opens with 设定：' : kind === '假设' ? 'the title opens with 假设 <name>： (or 假设 (B)： / 假设：)' : `the title opens with ${kind}：`)
     const sec = sectionsOf(c.body)
-    // After the content: optional **作用域**, optional **直觉**, then optional **说明**.
+    // After the content: Criterion cards require **作用域** (matching FM2); other setting-tree cards allow optional **作用域**/**直觉**/**说明**.
     const tail = sec.slice(2).join(',')
-    const okTail = allowedTails.has(tail)
-    if (sec[0] !== '起点' || sec[1] !== kind || !okTail) bad('section', `the sections are **起点**, **${kind}**, then optional **作用域**/**直觉**/**说明** (now ${sec.map((x) => '**' + x + '**').join(', ') || 'none'})`)
-    if (/依赖\s*\[\[/.test(afterStart(c.body))) bad('depends', 'a 依赖 line outside **起点**: move the premise into **起点**')
+    const okTail = isCriterion(c) ? criterionTails.has(tail) : allowedTails.has(tail)
+    if (sec[0] !== '起点' || sec[1] !== kind || !okTail) {
+      bad('section', isCriterion(c)
+        ? `a criterion card requires **起点**, **${kind}**, **作用域**, then optional **直觉**/**说明** (now ${sec.map((x) => '**' + x + '**').join(', ') || 'none'})`
+        : `the sections are **起点**, **${kind}**, then optional **作用域**/**直觉**/**说明** (now ${sec.map((x) => '**' + x + '**').join(', ') || 'none'})`)
+    }
+    if (/依赖\s*\[\[/.test(outsideStart(c.body))) bad('depends', 'a 依赖 line outside **起点**: move the premise into **起点**')
     if (/^\|\s*(符号|术语)\s*\|/m.test(c.body || '')) bad('table', 'a symbol or term table: its rows belong in the notation card')
   }
 
@@ -376,8 +468,8 @@ export function audit(m, cards, parents = new Map()) {
   // Two assumptions with different names are different statements, however parallel (a weakening).
   const nameOf = (c) => {
     if (!isAssumption(c)) return null
-    const m = (c.title || '').match(/^(?:假设|假定)\s*(?:[（(]([A-Za-z0-9.\-′']+)[）)]|([A-Za-z0-9][A-Za-z0-9.\-′']*))/)
-    return m ? (m[1] || m[2] || null) : null
+    const m2 = (c.title || '').match(ASSUMP_NAME_RE)
+    return m2 ? (m2[1] || m2[2] || m2[3] || null) : null
   }
   const apart = (a, b) => nameOf(a) && nameOf(b) && nameOf(a) !== nameOf(b)
   const repeat = []
@@ -389,7 +481,7 @@ export function audit(m, cards, parents = new Map()) {
     for (const s of mine) said.push([c.address, s])
   }
 
-  // Assumptions are named the same way everywhere: a card that names 假设 N or 假设 (B) links its card.
+  // Assumptions are named the same way everywhere: a card that names 假设 N, 假设 1.2, 假设 B, or 假设 (B) links its card.
   const named = new Map()
   for (const c of settings.filter(isAssumption)) {
     const n = nameOf(c)
@@ -400,8 +492,8 @@ export function audit(m, cards, parents = new Map()) {
     const seen = new Set()
     for (const line of (c.body || '').split('\n')) {
       const bare = line.replace(/\[\[[^\]]+\]\]/g, '')
-      for (const x of bare.matchAll(/(?:假设|假定)\s*(?:[（(]([A-Za-z0-9′']+)[）)]|([A-Za-z]?\d+[A-Za-z′']*))/g)) {
-        const key = x[1] || x[2]
+      for (const x of bare.matchAll(ASSUMP_CITE_RE)) {
+        const key = x[1] || x[2] || x[3]
         const at = named.get(key)
         if (!at || at.includes(c.address) || seen.has(key)) continue
         if (at.some((a) => line.includes(`@${a}]]`) || line.includes(`[[${a}]]`))) continue
@@ -412,23 +504,23 @@ export function audit(m, cards, parents = new Map()) {
   }
 
   // Balance (advice): a setting with more than ten statements is split; a one-statement setting
-  // without a display formula joins the setting it builds on (an assumption stays its own card);
+  // without a display formula joins the setting it builds on (assumptions, definitions, and criteria stay their own card);
   // a setting with more than seven branches groups them in blocks.
   const balance = []
   for (const c of settings) {
     // A card not yet in the format counts its whole text after **起点**, without tables.
-    const text = sectionText(c.body, isAssumption(c) ? '假设' : '设定') || afterStart(c.body).split('\n').filter((l) => !/^\|/.test(l)).join('\n')
+    const text = sectionText(c.body, kindOf(c)) || afterStart(c.body).split('\n').filter((l) => !/^\|/.test(l)).join('\n')
     const items = text.split('\n').filter((l) => LIST.test(l) && l.replace(LIST, '').trim())
     const count = items.length || text.split('\n').filter((l) => !/^\s*\$\$/.test(l)).join('').split('。').filter((s) => s.trim()).length
     if (count > 10) balance.push({ card: c.address, what: 'heavy', fix: `${c.address} states ${count} things: split it into settings that each set up one piece` })
-    else if (c.address !== S && !isAssumption(c) && count <= 1 && !/\$\$/.test(c.body || '')) balance.push({ card: c.address, what: 'light', fix: `${c.address} states one thing: consider joining it to the setting it builds on` })
+    else if (c.address !== S && !isAssumption(c) && !isDefinition(c) && !isCriterion(c) && count <= 1 && !/\$\$/.test(c.body || '')) balance.push({ card: c.address, what: 'light', fix: `${c.address} states one thing: consider joining it to the setting it builds on` })
     const kids = settings.filter((d) => parents.get(d.address) === c.address)
     if (kids.length > 7) balance.push({ card: c.address, what: 'wide', fix: `${c.address} has ${kids.length} settings filed under it: group them in blocks` })
   }
 
   const ok = !missing.length && !outside.length && !inside.length && !stated.length && !notation.length && !start.length && !misfiled.length && !order2.length &&
     !place.length && !uncovered.length && !unused.length && !first.length && !format.length && !repeat.length && !cite.length
-  return { setting: S, notation_card: notes[0]?.address || null, outside, inside, stated, notation, missing, start, misfiled, order: order2, place, uncovered, unused, first, format, repeat, cite, balance, uses, introduces, ok }
+  return { setting: S, notation_card: notes[0]?.address || null, outside, inside, stated, notation, missing, deferred_missing: deferredMissing, start, misfiled, order: order2, place, uncovered, unused, first, format, repeat, cite, balance, uses, introduces, ok }
 }
 
 // --- level 3: the data tree and the specification ladder (docs/empirical-models-proposal.md §9.2) -------------
@@ -508,9 +600,18 @@ export function auditEmpirical(m, cards) {
   const orderFaults = tree.flatMap((o) => [...body(o.address).matchAll(/依赖\s*\[\[([^\]@]+?)\]\]/g)].map((x) => x[1])
     .filter((p) => dataTree.has(p) && at.get(p) > at.get(o.address))
     .map((p) => ({ card: o.address, premise: p, fix: `${o.address} rests on ${p}, which a reader meets later: reorder the data card's Side branches so ${p} comes first` })))
-  const roles = ['empirical_shape', 'estimate_unbound', 'spec_unbound', 'test_unbound'].flatMap((k) => (m.build[k] || []).map((f) => ({ card: f.address, kind: k, fix: f.fix })))
+  const isStage3Shape = (f) => f && (f.lacks === '估计' || /估计/.test(f.lacks || '') || /zero.*estimate|no.*估计|lacks.*估计/i.test(f.fix || ''))
+  const roles = [
+    ...(m.build.empirical_shape || []).filter((f) => !isStage3Shape(f)).map((f) => ({ card: f.address, kind: 'empirical_shape', fix: f.fix })),
+    ...(m.build.spec_unbound || []).map((f) => ({ card: f.address, kind: 'spec_unbound', fix: f.fix })),
+  ]
+  // Stage 3 evidence-spine faults (estimate_unbound, test_unbound, and missing-estimate shape) are reported without blocking Stage 2 Settings.
+  const deferredRoles = [
+    ...(m.build.empirical_shape || []).filter(isStage3Shape).map((f) => ({ card: f.address, kind: 'empirical_shape', fix: f.fix })),
+    ...['estimate_unbound', 'test_unbound'].flatMap((k) => (m.build[k] || []).map((f) => ({ card: f.address, kind: k, fix: f.fix }))),
+  ]
   const ok = !place.length && !uncovered.length && !unused.length && !variantChange.length && !specInChapter.length && !equation.length && !assumption.length && !start.length && !orderFaults.length && !roles.length
-  return { level: 'empirical', data: data?.address || null, variables: table?.address || null, place, uncovered, unused, variant_change: variantChange, spec_in_chapter: specInChapter, equation, assumption, start, order: orderFaults, roles, ok }
+  return { level: 'empirical', data: data?.address || null, variables: table?.address || null, place, uncovered, unused, variant_change: variantChange, spec_in_chapter: specInChapter, equation, assumption, start, order: orderFaults, roles, deferred_roles: deferredRoles, ok }
 }
 
 async function main() {
@@ -530,15 +631,16 @@ async function main() {
   }
   const parents = new Map(tree(head.split('/')[0]).map((c) => [c.address, c.parent]))
   const cardMap = new Map(cards(order).map((c) => [c.address, c]))
-  // Fetch any 1-hop `沿用 [[...]]` borrowed notation targets outside `build.order` (Astra M4).
+  // Fetch any 1-hop `沿用 [[...]]` borrowed notation targets outside `build.order` (ordinary links only, matching Rust).
   const extraAddrs = new Set()
   for (const c of cardMap.values()) {
     for (const line of (c.body || '').split('\n')) {
       for (const clause of line.split(/[。；;]/)) {
         const at = clause.indexOf('沿用')
         if (at < 0 || !clause.slice(at).includes('符号')) continue
-        for (const m2 of clause.slice(at).matchAll(/\[\[(?:[^\]@]*@)?([^\]]+)\]\]/g)) {
-          if (!cardMap.has(m2[1])) extraAddrs.add(m2[1])
+        for (const m2 of clause.slice(at).matchAll(/\[\[([^\]@]+)\]\]/g)) {
+          const targetAddr = m2[1].trim()
+          if (!cardMap.has(targetAddr)) extraAddrs.add(targetAddr)
         }
       }
     }

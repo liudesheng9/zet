@@ -4,7 +4,7 @@ Owner: Xingtong Chen
 
 | Field | Value |
 |---|---|
-| **Status** | **Approved — Final Proposal** (`F1(a)`–`F8(a)` approved by Xingtong Chen on 2026-11-26; ready for `P0`/`P1` implementation; no code, `CONTEXT.md`, job-map row, or live archive modified yet) |
+| **Status** | **Implemented on `main` (sole L2 formal design)** — `F1(a)`–`F8(a)` approved by Xingtong Chen on 2026-11-26 and implemented across `zt`, `zt-check`, `zt-digest`, GUI board badges, and `zt-post-digest` (`390da3cb` + post-digest completion). **Superseding implementation note:** the codebase adopted `level == Formal && form.is_none()` unconditionally as the sole Level 2 formal economic model design (excluding mathematical units carrying `form`), superseding the earlier `schema: "formal-v2"` version-marker rollout gate in §§11–12; optional `zt-theory-dialogue` remains separately qualified per `F7`. |
 | **Date** | 2026-11-26 |
 | **Repo baseline** | `main` at `cac3dabd` (`zt` 0.69.1, `zt-check` 0.22.1, `zt-digest` 0.64.7, `zt-econ-digest` 6.12.13) |
 | **Archive & box evidence** | Scholar Archive (`archive_uuid` `16f6c458-09c3-4ef5-ab2e-e3741db0bf50`, 542 canonical Works with present Markdown; 25 classic & modern theory works inspected, 5 built as specimen plans) and live ZET archive (`D:/zt/zt.sqlite3`: 230 formal heads total, 166 economics formal heads outside `thompson1914calculus`, 4,542 filed economics formal parts) |

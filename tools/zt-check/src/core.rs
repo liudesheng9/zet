@@ -5,13 +5,13 @@
 //! zt service evaluate one definition of Card legality.
 
 use crate::text::{
-    TitleContext, TitleRow, Terms, bigrams, book_place, broken_display, culture, culture_cmp,
-    culture_starts_with, entry_section, from_utf16_form, is_high_stand_in, is_low_stand_in, key,
-    leads_to, length, link_occurrences, literature_tree, measure, open_math, passive, plain, prop,
-    prose_lines, ps_eq, ps_in, ps_int, ps_string, read_terms, similarity, split_sentences,
-    strings, structure_lines, term_table, text, truthy, utf16_form, LinkForm, BOLD, CJK, CODE,
-    DOCUMENT_LINE, HEADING, INLINE_MATH, LINK, LINK_TARGET, PLACEHOLDERS, REASON_STRIP,
-    SOURCE_LINE, SPACE, SPACES, WORD, pattern,
+    TitleContext, TitleRow, Terms, bare_latex_in_prose, bigrams, book_place, broken_display,
+    culture, culture_cmp, culture_starts_with, entry_section, from_utf16_form, inline_tag_in_math,
+    is_high_stand_in, is_low_stand_in, key, leads_to, length, link_occurrences, literature_tree,
+    measure, open_math, passive, plain, prop, prose_lines, ps_eq, ps_in, ps_int, ps_string,
+    read_terms, similarity, split_sentences, strings, structure_lines, term_table, text, truthy,
+    utf16_form, LinkForm, BOLD, CJK, CODE, DOCUMENT_LINE, HEADING, INLINE_MATH, LINK, LINK_TARGET,
+    PLACEHOLDERS, REASON_STRIP, SOURCE_LINE, SPACE, SPACES, WORD, pattern,
 };
 use regex::Regex;
 use serde_json::Value;
@@ -722,7 +722,54 @@ impl Check {
                 "the body breaks a display formula: close each $$ block, keep single $ out of it, and keep every line inside it from reading as Markdown (no blank line, no line that starts with `- `, `+ `, `* `, `>`, `# ` or `1. `; write a leading minus as -x); a \\tag holds plain text, with any script in $…$ (\\tag{6-9$^{\\prime}$}); a backspace or form feed means a JSON escape ate the backslash of \\bar or \\frac",
             );
         }
+        for tag in inline_tag_in_math(&authored_body) {
+            faults.add(
+                address,
+                formula_rule,
+                "inline_tag",
+                &format!("body:inline_tag:{tag}"),
+                &format!("inline formula uses {tag} (KaTeX allows \\tag only in $$...$$ display blocks; move the equation to $$...$$ or write the number as plain text)"),
+            );
+        }
+        for token in bare_latex_in_prose(&authored_body) {
+            faults.add(
+                address,
+                formula_rule,
+                "bare_latex",
+                &format!("body:bare_latex:{token}"),
+                &format!("the body contains bare LaTeX `{token}` outside $...$ (wrap math expressions in $...$ or $$...$$)"),
+            );
+        }
         let facet = text(prop(card, "facet"));
+        if !facet.is_empty() {
+            if open_math(&facet) {
+                faults.add(
+                    address,
+                    formula_rule,
+                    "open_formula",
+                    &format!("facet:{facet}"),
+                    &format!("the facet leaves an inline formula open (an odd number of $): {facet}"),
+                );
+            }
+            for tag in inline_tag_in_math(&facet) {
+                faults.add(
+                    address,
+                    formula_rule,
+                    "inline_tag",
+                    &format!("facet:inline_tag:{tag}"),
+                    &format!("the facet's inline formula uses {tag} (KaTeX allows \\tag only in $$...$$ display blocks): {facet}"),
+                );
+            }
+            for token in bare_latex_in_prose(&facet) {
+                faults.add(
+                    address,
+                    formula_rule,
+                    "bare_latex",
+                    &format!("facet:bare_latex:{token}"),
+                    &format!("the facet contains bare LaTeX `{token}` outside $...$ (wrap math expressions in $...$): {facet}"),
+                );
+            }
+        }
         // A root, an anchor's section index, a hub's navigation list, and a register part's term
         // rows are not claims; the standalone rules read the authored prose that states one
         // (D126's Literature prose excludes a locator, and an index line is a locator). A Term
@@ -775,6 +822,24 @@ impl Check {
                     "open_formula",
                     &format!("title:{title}"),
                     &format!("the title leaves an inline formula open (an odd number of $): {title}"),
+                );
+            }
+            for tag in inline_tag_in_math(&title) {
+                faults.add(
+                    address,
+                    formula_rule,
+                    "inline_tag",
+                    &format!("title:inline_tag:{tag}"),
+                    &format!("the title's inline formula uses {tag} (KaTeX allows \\tag only in $$...$$ display blocks): {title}"),
+                );
+            }
+            for token in bare_latex_in_prose(&title) {
+                faults.add(
+                    address,
+                    formula_rule,
+                    "bare_latex",
+                    &format!("title:bare_latex:{token}"),
+                    &format!("the title contains bare LaTeX `{token}` outside $...$ (wrap math expressions in $...$): {title}"),
                 );
             }
             // A title names its content, so a bare local number is the same fault there.
@@ -3319,6 +3384,93 @@ mod tests {
         let lines = term_lines(&[term_entry("均衡", body)]);
         assert!(of_rule(&lines, "T10").iter().any(|l| l.contains("breaks a display formula")), "{lines:#?}");
         assert!(of_rule(&lines, "R22").is_empty(), "one predicate family, one label: {lines:#?}");
+    }
+
+    #[test]
+    fn inline_tag_and_bare_latex_are_r22_and_t10_across_body_title_and_facet_with_ratchet() {
+        // 1. Body, title, and facet faults under R22.
+        let card = json!({
+            "address": "K/5|a",
+            "type": "model",
+            "facet": r"推导：\lambda > 0",
+            "title": r"均衡中 q_{ijt} 随 \pi\in(0,1) 上升",
+            "body": "步骤：$r_t = g_t + \\rho \\tag {2}$。\n结论：\\frac{1}{2} 成立。\n\n来源：[[K]] §5"
+        });
+        let report = Check::new(Limits::default(), false, "").report(std::slice::from_ref(&card));
+        let r22: Vec<&Diagnostic> = report.iter().filter(|d| d.rule == "R22").collect();
+        assert!(r22.iter().any(|d| d.fault == "inline_tag" && d.key == r"body:inline_tag:\tag {2}"), "{r22:#?}");
+        assert!(r22.iter().any(|d| d.fault == "bare_latex" && d.key == r"body:bare_latex:\frac"), "{r22:#?}");
+        assert!(r22.iter().any(|d| d.fault == "bare_latex" && d.key == "title:bare_latex:q_{ijt}"), "{r22:#?}");
+        assert!(r22.iter().any(|d| d.fault == "bare_latex" && d.key == r"title:bare_latex:\pi"), "{r22:#?}");
+        assert!(r22.iter().any(|d| d.fault == "bare_latex" && d.key == r"facet:bare_latex:\lambda"), "{r22:#?}");
+
+        // 2. Open formula in facet is also R22.
+        let open_facet = json!({
+            "address": "K/5|b",
+            "type": "model",
+            "facet": "推导：$x > 0",
+            "title": "均衡存在",
+            "body": "正文。\n\n来源：[[K]] §5"
+        });
+        let r22_open: Vec<Diagnostic> = Check::new(Limits::default(), false, "")
+            .report(&[open_facet])
+            .into_iter()
+            .filter(|d| d.rule == "R22")
+            .collect();
+        assert!(r22_open.iter().any(|d| d.fault == "open_formula" && d.key.starts_with("facet:")), "{r22_open:#?}");
+
+        // 3. Term Card reports under T10 only (no duplicate R22).
+        let term_body = "术语：均衡\n不用：平衡\n类别：概念\n首次定义：§1.1\n\n## 释义\n\n当 \\lambda > 0 时成立。\n\n来源：[[K]] §1\n";
+        let term_rep = Check::new(Limits::default(), false, "").report(&[term_entry("均衡", term_body)]);
+        assert!(term_rep.iter().any(|d| d.rule == "T10" && d.fault == "bare_latex"), "{term_rep:#?}");
+        assert!(!term_rep.iter().any(|d| d.rule == "R22"), "no duplicate R22 on Term Card: {term_rep:#?}");
+
+        // 4. Legacy ratchet: unrelated prose edit stays editable (legacy advice), while a second
+        // occurrence or moving the token from title to body blocks.
+        let policies = crate::policy::PolicySet::new();
+        let check = Check::new(Limits::default(), false, "").with_policies(policies);
+        let old = json!({
+            "address": "K/6",
+            "title": "模型结论",
+            "body": "原句含 \\lambda 参数。\n\n来源：[[K]] §6"
+        });
+        let unrelated_edit = json!({
+            "address": "K/6",
+            "title": "模型结论",
+            "body": "原句含 \\lambda 参数。新增一句正常说明。\n\n来源：[[K]] §6"
+        });
+        let old_rep = check.report(std::slice::from_ref(&old));
+        let new_rep = check.report(std::slice::from_ref(&unrelated_edit));
+        let ratcheted = crate::policy::ratchet(&old_rep, new_rep, |_| true);
+        let r22_blockers: Vec<&Diagnostic> = ratcheted.diagnostics.iter().filter(|d| d.rule == "R22" && d.blocking()).collect();
+        assert!(r22_blockers.is_empty(), "unrelated prose edit must keep legacy bare_latex editable: {ratcheted:#?}");
+
+        let added_second = json!({
+            "address": "K/6",
+            "title": "模型结论",
+            "body": "原句含 \\lambda 参数。又添一个 \\lambda。\n\n来源：[[K]] §6"
+        });
+        let second_rep = check.report(std::slice::from_ref(&added_second));
+        let ratcheted2 = crate::policy::ratchet(&old_rep, second_rep, |_| true);
+        let r22_blockers2: Vec<&Diagnostic> = ratcheted2.diagnostics.iter().filter(|d| d.rule == "R22" && d.blocking()).collect();
+        assert_eq!(r22_blockers2.len(), 1, "a second bare_latex occurrence must block: {ratcheted2:#?}");
+
+        // Moving the same token from title to body changes the field key and blocks.
+        let old_title = json!({
+            "address": "K/6",
+            "title": r"含 \lambda 的结论",
+            "body": "正文。\n\n来源：[[K]] §6"
+        });
+        let moved_to_body = json!({
+            "address": "K/6",
+            "title": "结论",
+            "body": "正文含 \\lambda。\n\n来源：[[K]] §6"
+        });
+        let old_t_rep = check.report(std::slice::from_ref(&old_title));
+        let moved_rep = check.report(std::slice::from_ref(&moved_to_body));
+        let ratcheted3 = crate::policy::ratchet(&old_t_rep, moved_rep, |_| true);
+        let r22_blockers3: Vec<&Diagnostic> = ratcheted3.diagnostics.iter().filter(|d| d.rule == "R22" && d.blocking()).collect();
+        assert_eq!(r22_blockers3.len(), 1, "moving bare_latex from title to body must block: {ratcheted3:#?}");
     }
 
     // R2: a book title in 《…》 counts as one name, and the Literature Card's document line is a locator; a

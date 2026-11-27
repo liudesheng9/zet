@@ -547,6 +547,25 @@ struct Action {
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
+    Ok(cli_inner(argv, false, None, None)?.0)
+}
+
+/// Runs one `model` compiler step in-process with `silent_out = true`, an optional pre-opened `Zt`,
+/// and an optional pre-validated `state.json` snapshot (eliminating TOCTOU state re-reads, H7/H-new).
+pub(crate) fn run_silent_with_zt_and_state(
+    argv: &[String],
+    pre_zt: Option<Zt>,
+    preloaded_state: Option<Value>,
+) -> Result<(i32, Value)> {
+    cli_inner(argv, true, pre_zt, preloaded_state)
+}
+
+fn cli_inner(
+    argv: &[String],
+    silent_out: bool,
+    pre_zt: Option<Zt>,
+    preloaded_state: Option<Value>,
+) -> Result<(i32, Value)> {
     let a = Args::parse(
         argv,
         &[
@@ -585,7 +604,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         if w.is_empty() {
             bail!("Cannot bind argument to parameter 'Work' because it is an empty string.");
         }
-        w
+        let wp = absolutize_work(&w);
+        wp
     };
     let batches_file = a.str("BatchesFile");
     let renew_units = a.str("RenewUnits");
@@ -633,25 +653,30 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     // `close` and `report` write Model Cards (`refresh_shared`, `complete_structures`), so they
     // preflight too whenever `-Staging` names a book.
     if has_batches {
-        return run_batches(p, &docs, &explain_args, &limits, &scripts.helper, &batches_file, &renew_units);
+        let code = run_batches(p, &docs, &explain_args, &limits, &scripts.helper, &batches_file, &renew_units)?;
+        return Ok((code, json!({})));
     }
     let zt = if matches!(
         p.step.as_str(),
         "brief" | "apply" | "derive" | "review" | "split" | "close" | "report" | "resume" | "explain" | "explain-apply"
     ) {
         let key = crate::lockcheck::key_from_staging(&p.staging);
-        let mut client = crate::zt::start()?;
+        let mut client = match pre_zt {
+            Some(client) => client,
+            None => crate::zt::start()?,
+        };
         if !key.is_empty()
             && let Some(refusal) = crate::lockcheck::preflight(&mut client, "model", &p.step, &key)?
         {
-            return crate::lockcheck::stop("model", &refusal);
+            return Ok((crate::lockcheck::stop("model", &refusal)?, refusal));
         }
         Some(client)
     } else {
         None
     };
-    let mut c = new_compiler(p, docs, explain_args, limits, scripts.helper, zt, false)?;
-    c.run_step()
+    let mut c = new_compiler_with_state(p, docs, explain_args, limits, scripts.helper, zt, silent_out, preloaded_state)?;
+    let code = c.run_step()?;
+    Ok((code, c.last_out.unwrap_or_else(|| json!({}))))
 }
 
 fn new_compiler(
@@ -663,12 +688,26 @@ fn new_compiler(
     zt: Option<Zt>,
     silent_out: bool,
 ) -> Result<Compiler> {
+    new_compiler_with_state(p, docs, explain_args, limits, helper, zt, silent_out, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn new_compiler_with_state(
+    p: Params,
+    docs: Docs,
+    explain_args: String,
+    limits: String,
+    helper: String,
+    zt: Option<Zt>,
+    silent_out: bool,
+    preloaded_state: Option<Value>,
+) -> Result<Compiler> {
     std::fs::create_dir_all(&p.work)?;
     let state_file = ps::join(&p.work, "state.json");
-    let state = if ps::exists(&state_file) {
-        util::read_json(&state_file)?
-    } else {
-        json!({ "order": [], "models": {}, "jobs": {}, "rereview": [], "reviews": [], "seq": 0 })
+    let state = match preloaded_state {
+        Some(st) => st,
+        None if ps::exists(&state_file) => util::read_json(&state_file)?,
+        None => json!({ "order": [], "models": {}, "jobs": {}, "rereview": [], "reviews": [], "seq": 0 }),
     };
     Ok(Compiler {
         helper,
@@ -688,6 +727,17 @@ fn new_compiler(
         silent_out,
         last_out: None,
     })
+}
+
+fn absolutize_work(raw: &str) -> String {
+    let wp = std::path::Path::new(raw);
+    if wp.is_absolute() {
+        raw.to_string()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(wp).to_string_lossy().into_owned())
+            .unwrap_or_else(|_| raw.to_string())
+    }
 }
 
 fn norm_fs_key(path: &str) -> String {
@@ -738,10 +788,11 @@ fn validate_batches_manifest(
     );
     for (idx, item) in items.iter().enumerate() {
         let obj = item.as_object().with_context(|| format!("-BatchesFile entry {idx} must be an object"))?;
-        let work = obj.get("work").and_then(Value::as_str).map(str::trim).unwrap_or("").to_string();
-        if work.is_empty() {
+        let raw_work = obj.get("work").and_then(Value::as_str).map(str::trim).unwrap_or("");
+        if raw_work.is_empty() {
             bail!("-BatchesFile entry {idx} is missing a non-empty `work` path");
         }
+        let work = absolutize_work(raw_work);
         let wkey = norm_work_key(&work);
         if !seen_works.insert(wkey.clone()) {
             bail!("-BatchesFile lists duplicate `work` folder `{work}`");
@@ -1169,6 +1220,131 @@ fn plus(old: &Value, more: impl IntoIterator<Item = Value>) -> Value {
 
 fn strings(v: &Value) -> Vec<String> {
     pipe(v).into_iter().map(s).collect()
+}
+
+/// Check one rendered `plan.json` text field with the exact shared `zt_check::text` R22 helpers.
+fn check_math_field(faults: &mut Vec<String>, label: &str, value: &str) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if zt_check::text::open_math(trimmed) {
+        faults.push(format!("{label}: leaves an inline formula open (odd number of $)"));
+    }
+    for tag in zt_check::text::inline_tag_in_math(trimmed) {
+        faults.push(format!(
+            "{label}: inline formula uses {tag} (\\tag is allowed only in $$...$$ display blocks)"
+        ));
+    }
+    for tok in zt_check::text::bare_latex_in_prose(trimmed) {
+        faults.push(format!(
+            "{label}: contains bare LaTeX '{tok}' outside $...$; wrap math expressions in $...$"
+        ));
+    }
+}
+
+/// Validate every `plan.json` field that the model compiler renders verbatim into Cards, using the
+/// shared `zt_check::text` helpers so architect validation enforces the same math rules as R22.
+pub(crate) fn plan_math_faults(plan: &Value) -> Vec<String> {
+    let mut faults = Vec::new();
+    for field in ["title", "card", "estimand"] {
+        check_math_field(&mut faults, &format!("plan.{field}"), &s(&plan[field]));
+    }
+    for (i, div) in list(&plan["divisions"]).iter().enumerate() {
+        check_math_field(&mut faults, &format!("plan.divisions[{i}].name"), &s(&div["name"]));
+    }
+    for (i, tag) in pipe(&plan["family_tags"]).iter().enumerate() {
+        check_math_field(&mut faults, &format!("plan.family_tags[{i}]"), &s(tag));
+    }
+    let part_ids: HashSet<String> = list(&plan["parts"])
+        .iter()
+        .map(|p| ps::key(&s(&p["id"])))
+        .filter(|id| !id.is_empty())
+        .collect();
+    for (i, row) in list(&plan["symbols"]).iter().enumerate() {
+        let cells = pipe(row);
+        for col in [0usize, 1usize] {
+            if let Some(cell) = cells.get(col) {
+                check_math_field(&mut faults, &format!("plan.symbols[{i}][{col}]"), &s(cell));
+            }
+        }
+        if let Some(cell) = cells.get(2) {
+            let val = s(cell);
+            if !val.trim().is_empty() && !part_ids.contains(&ps::key(val.trim())) {
+                check_math_field(&mut faults, &format!("plan.symbols[{i}][2]"), &val);
+            }
+        }
+    }
+    for (i, row) in list(&plan["terms"]).iter().enumerate() {
+        for (col, cell) in pipe(row).iter().enumerate() {
+            check_math_field(&mut faults, &format!("plan.terms[{i}][{col}]"), &s(cell));
+        }
+    }
+    for (i, row) in list(&plan["variables"]).iter().enumerate() {
+        let cells = pipe(row);
+        for col in 0..4usize {
+            if let Some(cell) = cells.get(col) {
+                check_math_field(&mut faults, &format!("plan.variables[{i}][{col}]"), &s(cell));
+            }
+        }
+    }
+    for (idx, part) in list(&plan["parts"]).iter().enumerate() {
+        let raw_id = s(&part["id"]);
+        let id = if raw_id.is_empty() { format!("#{}", idx + 1) } else { raw_id };
+        for field in ["title", "facet", "use", "scope", "from", "to", "why", "regressor", "source_label"] {
+            check_math_field(&mut faults, &format!("part {id}.{field}"), &s(&part[field]));
+        }
+        for (j, rest) in list(&part["rests"]).iter().enumerate() {
+            let cells = pipe(rest);
+            if let Some(why) = cells.get(1) {
+                check_math_field(&mut faults, &format!("part {id}.rests[{j}][1]"), &s(why));
+            }
+        }
+        if part["change"].is_object() {
+            check_math_field(&mut faults, &format!("part {id}.change.text"), &s(&part["change"]["text"]));
+        }
+        if part["terms"].is_object() {
+            for key in ["outcome", "regressor", "fe", "controls", "sample", "estimator", "se"] {
+                match &part["terms"][key] {
+                    Value::Array(items) => {
+                        for (k, item) in items.iter().enumerate() {
+                            check_math_field(&mut faults, &format!("part {id}.terms.{key}[{k}]"), &s(item));
+                        }
+                    }
+                    other => {
+                        check_math_field(&mut faults, &format!("part {id}.terms.{key}"), &s(other));
+                    }
+                }
+            }
+        }
+        for (j, just) in list(&part["justifications"]).iter().enumerate() {
+            check_math_field(
+                &mut faults,
+                &format!("part {id}.justifications[{j}].extra_assumptions"),
+                &s(&just["extra_assumptions"]),
+            );
+            let loc = s(&just["location"]).to_lowercase();
+            let jref = s(&just["ref"]);
+            let is_local_part_id = loc == "local" && !jref.starts_with("inline:") && !jref.starts_with('§');
+            if !is_local_part_id {
+                check_math_field(&mut faults, &format!("part {id}.justifications[{j}].ref"), &jref);
+            }
+        }
+        let eq = s(&part["equation"]);
+        let eq_trim = eq.trim();
+        if !eq_trim.is_empty() {
+            if eq_trim.contains("$$") {
+                faults.push(format!(
+                    "part {id}.equation: omit $$ delimiters (the compiler wraps empirical equation in $$ ... $$)"
+                ));
+            } else if zt_check::text::broken_display(&format!("$$ {eq_trim} $$")) {
+                faults.push(format!(
+                    "part {id}.equation: produces a broken display formula when wrapped in $$ ... $$"
+                ));
+            }
+        }
+    }
+    faults
 }
 
 /// True when a Derivation part's `to` field actually states a mathematical expression rather than
@@ -1944,6 +2120,7 @@ impl Compiler {
         // §3.7: the architect designs the explanations of every chain of Derivation parts, so a
         // missing design is a plan fault and never a gap the writer fills alone.
         faults.extend(Self::plan_explain_faults(plan));
+        faults.extend(plan_math_faults(plan));
         for m in list(&plan["merge"]) {
             if !ids.contains(&s(&m["into"])) && !members.contains(&s(&m["into"])) {
                 faults.push(format!("merge into '{}' is not a part", s(&m["into"])));
@@ -2228,7 +2405,7 @@ impl Compiler {
                 titles.insert(&s(&p["address"]), s(&p["title"]));
             }
             let body = |a: &str| bodies.get(a).cloned().unwrap_or_default();
-            let own = Self::own_derivations(&st);
+            let own = Self::own_derivations(&st)?;
             // A part whose 思路 is not where the current chain puts it is unfinished too: the
             // writer's answer rewrites the position line from the chain (R301).
             let misplaced: Vec<String> = Self::misplaced(&st, &own, &body);
@@ -2375,10 +2552,17 @@ impl Compiler {
         if derives(part) {
             let mut start: Vec<String> = links.iter().map(|l| format!("- {l}")).collect();
             if let Some(prev) = previous.filter(|p| derives(p)) {
-                start.insert(0, format!("- 依赖上一步 [[{}]] 的结果：{}。", self.resolve(&prev["id"], model)?, s(&prev["to"])));
+                start.insert(
+                    0,
+                    format!(
+                        "- 依赖上一步 [[{}]] 的结果：{}。",
+                        self.resolve(&prev["id"], model)?,
+                        text::inline(&s(&prev["to"]))
+                    ),
+                );
             }
             if truthy(&part["from"]) {
-                start.push(format!("- 从 {} 出发。", s(&part["from"])));
+                start.push(format!("- 从 {} 出发。", text::inline(&s(&part["from"]))));
             }
             let chains = Self::plan_chains(plan);
             let position = chains.get(&s(&part["id"])).map(|(k, n, tos)| text::chain_line(*k, *n, tos)).unwrap_or_default();
@@ -2622,7 +2806,7 @@ impl Compiler {
         }
         if derives(part) {
             let steps = if truthy(&part["steps"]) { format!("，约 {} 步", s(&part["steps"])) } else { String::new() };
-            line(&mut b, &format!("- 推导：从起点写到结果 {}{steps}。骨架里已写好起点和结果。", s(&part["to"])));
+            line(&mut b, &format!("- 推导：从起点写到结果 {}{steps}。骨架里已写好起点和结果。", text::inline(&s(&part["to"]))));
             line(&mut b, "- 解释：写思路、步骤下的说明和解读（见“讲清推导”）。思路的位置行原样保留。");
             // A chain member starts from the result of the part before it (main line or Side `after`).
             let before = if truthy(&part["after"]) {
@@ -2633,10 +2817,10 @@ impl Compiler {
                 if k > 0 { self.plan_part(model, &main[(k - 1) as usize])? } else { None }
             };
             if let Some(before) = before.filter(|b| derives(b) && truthy(&b["to"])) {
-                line(&mut b, &format!("- 起点：上一步 [[{}]] 的结果 {}", self.resolve(&before["id"], model)?, s(&before["to"])));
+                line(&mut b, &format!("- 起点：上一步 [[{}]] 的结果 {}", self.resolve(&before["id"], model)?, text::inline(&s(&before["to"]))));
             }
             if truthy(&part["from"]) {
-                line(&mut b, &format!("- 从 {} 出发。", s(&part["from"])));
+                line(&mut b, &format!("- 从 {} 出发。", text::inline(&s(&part["from"]))));
             }
         }
         let formal_model = super::formal::is_formal_model(&plan, truthy(&self.m(model)["math_unit"]));
@@ -3975,7 +4159,8 @@ impl Compiler {
             let prev_address = self.id_address(model, &prev_id);
             // The position line of 思路 comes from Update-ChainLines once every new part exists.
             let start = if derive {
-                format!("**思路**\n待写\n\n**起点**\n- 依赖上一步 [[{prev_address}]] 的结果：{from}。\n\n**步骤**\n待写\n\n**结果**\n{to}\n\n**解读**\n待写")
+                let inline_from = text::inline(&from);
+                format!("**思路**\n待写\n\n**起点**\n- 依赖上一步 [[{prev_address}]] 的结果：{inline_from}。\n\n**步骤**\n待写\n\n**结果**\n{to}\n\n**解读**\n待写")
             } else if is_argument {
                 format!("目标：待写（接着 [[{prev_address}]] 确立后续结论）。\n\n**依据**\n- 依赖上一步 [[{prev_address}]]。\n\n**论证**\n待写\n\n**结论**\n待写")
             } else {
@@ -4118,14 +4303,14 @@ impl Compiler {
         let own_address = self.id_address(model, id);
         let reason_text = if truthy(reason) { format!("（{}）", s(reason)) } else { String::new() };
         let mut text = format!("## 拆分：[[{own_address}]] 拆成 {count} 张{reason_text}\n\n");
-        let upto = if derive && !cuts.is_empty() { s(&cuts[0]) } else { "你选的中间结论".into() };
+        let upto = if derive && !cuts.is_empty() { text::inline(&s(&cuts[0])) } else { "你选的中间结论".into() };
         text += &format!("- [[{own_address}]]：只写到 {upto}。{}\n", if derive { "它的解读已清空：按新的结果重写。" } else { "" });
         if derive {
             text += "- 每张推导分卡写自己的思路、说明和解读。思路的位置行由脚本写好，原样保留。\n";
         }
         for n in &new {
             let a = self.m(model)["added"][n].clone();
-            let to = if truthy(&a["to"]) { s(&a["to"]) } else { "你选的中间结论".into() };
+            let to = if truthy(&a["to"]) { text::inline(&s(&a["to"])) } else { "你选的中间结论".into() };
             text += &format!("- [[{}]]：{}，从上一张的结果写到 {to}。标题可改成本卡的结论。\n", self.id_address(model, n), s(&a["title"]));
         }
         let mut ids = vec![id.to_string()];
@@ -4581,6 +4766,7 @@ impl Compiler {
                 let empirical_model = super::empirical::is_empirical(&plan);
                 if !(ps::eq(&s(&plan["status"]), "skip") && !plan["status"].is_null()) {
                     faults.extend(Self::plan_explain_faults(&plan));
+                    faults.extend(plan_math_faults(&plan));
                     if formal_model {
                         match self.inventory_result(&model) {
                             Ok(Some(inv)) => faults.extend(super::formal::plan_faults(&plan, Some(&inv), staging)),
@@ -5147,7 +5333,7 @@ impl Compiler {
                 "todo": todo,
                 "derivations": {
                     "total": total,
-                    "explained": Self::explained_of(&st).len(),
+                    "explained": Self::explained_of(&st)?.len(),
                     "chains": chains.iter().filter(|c| c["length"].as_f64().is_some_and(|l| l >= 2.0)).count(),
                     "longest": longest,
                 },
@@ -5175,7 +5361,7 @@ impl Compiler {
                     "parts":reports.last().map(|r| list(&r["parts"]).len()).unwrap_or(0),
                     "todo":todo.len(),
                     "derivations":total,
-                    "explained":Self::explained_of(&st).len(),
+                    "explained":Self::explained_of(&st)?.len(),
                     "style":style,
                     "build_faults":count(&build["closure"])+count(&build["forward"])+count(&build["unanchored"])+count(&build["beyond_level"])+formal_faults
                 }),
@@ -5471,13 +5657,9 @@ impl Compiler {
 
     // --- explain --------------------------------------------------------------------------------
 
-    /// `Get-OwnDerivations`: the model's own Derivation parts, in build order.
-    fn own_derivations(st: &Value) -> Vec<String> {
-        list(&st["build"]["order"])
-            .into_iter()
-            .filter(|o| truthy(&o["derivation"]) && !ps::eq(&s(&o["line"]), "shared"))
-            .map(|o| s(&o["address"]))
-            .collect()
+    /// `Get-OwnDerivations`: the model's own filed Derivation parts, in build order (M7).
+    fn own_derivations(st: &Value) -> Result<Vec<String>> {
+        own_derivations_strict(st)
     }
 
     /// The own Derivation parts whose 思路 does not start with the chain position line the
@@ -5495,9 +5677,12 @@ impl Compiler {
     }
 
     /// `Get-Explained`.
-    fn explained_of(st: &Value) -> Vec<String> {
+    fn explained_of(st: &Value) -> Result<Vec<String>> {
         let bodies = Self::bodies_of(st);
-        Self::own_derivations(st).into_iter().filter(|a| text::explained(&bodies.get(a).cloned().unwrap_or_default())).collect()
+        Ok(Self::own_derivations(st)?
+            .into_iter()
+            .filter(|a| text::explained(&bodies.get(a).cloned().unwrap_or_default()))
+            .collect())
     }
 
     /// `Get-ExplainCheckCommand`: the SELF-CHECK line of an explain job file.
@@ -5563,7 +5748,7 @@ impl Compiler {
             }
             let card = cards.get(a).cloned().unwrap_or(Value::Null);
             let body = s(&card["body"]);
-            if !ps::eq(body.trim(), s(&j["bodies"][a]).trim()) {
+            if body.trim() != s(&j["bodies"][a]).trim() {
                 r.refused.push(format!("{a}: the part changed after its job"));
                 continue;
             }
@@ -5572,7 +5757,7 @@ impl Compiler {
                 continue;
             }
             let new = text::add_explanation(&body, &s(&e["idea"]), &e["notes"], &s(&e["meaning"]), &s(&j["positions"][a]));
-            if !ps::eq(&text::core(&new), &text::core(&body)) {
+            if text::core(&new) != text::core(&body) {
                 r.refused.push(format!("{a}: inserting the explanation would change 起点, a step, or 结果"));
                 continue;
             }
@@ -5705,7 +5890,11 @@ impl Compiler {
         if job.is_empty() || !self.state["explain"]["jobs"].as_object().is_some_and(|j| j.contains_key(&job)) {
             bail!("explain-check needs -Job <an explain job id>");
         }
-        let file = if self.p.file.is_empty() { s(&self.state["explain"]["jobs"][&job]["out"]) } else { self.p.file.clone() };
+        let file = if self.p.file.is_empty() {
+            resolve_explain_out_path(&self.p.work, &s(&self.state["explain"]["jobs"][&job]["out"]))?
+        } else {
+            self.p.file.clone()
+        };
         let r = self.test_explain_job(&job, &file)?;
         let mut lines = Vec::new();
         for (a, f) in r.faults.iter() {
@@ -5744,7 +5933,8 @@ impl Compiler {
                 continue;
             }
             let model = s(&j["model"]);
-            let r = self.test_explain_job(&id, &s(&j["out"]))?;
+            let out_file = resolve_explain_out_path(&self.p.work, &s(&j["out"]))?;
+            let r = self.test_explain_job(&id, &out_file)?;
             kept.extend(r.kept.iter().cloned());
             for t in &r.blocked {
                 blocked.push((model.clone(), t.clone()));
@@ -5825,8 +6015,8 @@ impl Compiler {
         let mut reports = Vec::new();
         for model in strings(&Value::Array(pipe(&self.state["explain"]["models"]).into_iter().cloned().collect())) {
             let st = self.model_of(&json!(model))?;
-            let own = Self::own_derivations(&st);
-            let explained = Self::explained_of(&st);
+            let own = Self::own_derivations(&st)?;
+            let explained = Self::explained_of(&st)?;
             let missing: Vec<String> = own.iter().filter(|a| !ps::is_in(a, &explained)).cloned().collect();
             let pick = |field: &str| -> Vec<Value> { pipe(&self.state["explain"][field][&model]).into_iter().filter(|v| truthy(v)).cloned().collect() };
             reports.push(json!({
@@ -5840,6 +6030,104 @@ impl Compiler {
         }
         self.out_last(&json!({ "models": reports }))
     }
+}
+
+/// `Get-OwnDerivations`: the model's own filed Derivation parts, in build order (M7).
+/// Shared by `step_explain`, `explained_of`, `step_explain_report`, and `model_explain` so
+/// planning, apply, and recheck agree on one strict predicate: requires `build.order` and `parts`
+/// arrays, explicit boolean `filed` on every part (`filed == true` to qualify), explicit boolean
+/// `derivation` (`derivation == true`), and an explicit non-empty non-shared `line`.
+pub(crate) fn own_derivations_strict(st: &Value) -> Result<Vec<String>> {
+    let order = st
+        .get("build")
+        .and_then(|b| b.get("order"))
+        .and_then(Value::as_array)
+        .context("get_model answer lacks `build.order` array")?;
+    let parts = st
+        .get("parts")
+        .and_then(Value::as_array)
+        .context("get_model answer lacks `parts` array")?;
+    let mut filed_parts: HashSet<String> = HashSet::new();
+    for (idx, p) in parts.iter().enumerate() {
+        let Some(obj) = p.as_object() else {
+            bail!("get_model answer parts[{idx}] must be a JSON object");
+        };
+        let Some(addr) = obj.get("address").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
+            bail!("get_model answer parts[{idx}] lacks non-empty string `address`");
+        };
+        let Some(filed) = obj.get("filed").and_then(Value::as_bool) else {
+            bail!("get_model answer parts[{idx}] (`{addr}`) lacks boolean `filed`");
+        };
+        if filed {
+            filed_parts.insert(addr.to_string());
+        }
+    }
+    let mut out = Vec::new();
+    for (idx, o) in order.iter().enumerate() {
+        let Some(obj) = o.as_object() else {
+            bail!("get_model answer build.order[{idx}] must be a JSON object");
+        };
+        let Some(addr) = obj.get("address").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
+            bail!("get_model answer build.order[{idx}] lacks non-empty string `address`");
+        };
+        let deriv = match obj.get("derivation") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => {
+                bail!("get_model answer build.order[{idx}] (`{addr}`) has non-boolean `derivation`");
+            }
+        };
+        let Some(line) = obj.get("line").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
+            bail!("get_model answer build.order[{idx}] (`{addr}`) lacks non-empty string `line`");
+        };
+        if deriv && !line.eq_ignore_ascii_case("shared") && filed_parts.contains(addr) {
+            out.push(addr.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// Resolves a saved explain job's `out` path without depending on the resume process's working
+/// directory (M3): absolute paths pass through, unambiguous `out/<file>` relative paths resolve
+/// inside `work`, and ambiguous relative paths (e.g. `..` traversal or a cwd-relative prefix
+/// like `old-work/out/explain-1.json`) are refused before apply.
+pub(crate) fn resolve_explain_out_path(work: &str, raw_out: &str) -> Result<String> {
+    let trimmed = raw_out.trim();
+    if trimmed.is_empty() {
+        bail!("saved explain job has empty `out` path");
+    }
+    let p = std::path::Path::new(trimmed);
+    if p.is_absolute() {
+        return Ok(trimmed.to_string());
+    }
+    let mut comps = Vec::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::Normal(seg) => comps.push(seg.to_string_lossy().into_owned()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                bail!(
+                    "saved explain job `out` path `{trimmed}` escapes work directory `{work}`; refusing ambiguous relative path"
+                );
+            }
+        }
+    }
+    if comps.len() == 2 && comps[0].eq_ignore_ascii_case("out") {
+        let work_path = std::path::Path::new(work);
+        let base = if work_path.is_absolute() {
+            work_path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(work_path))
+                .unwrap_or_else(|_| work_path.to_path_buf())
+        };
+        return Ok(base.join("out").join(&comps[1]).to_string_lossy().into_owned());
+    }
+    bail!(
+        "saved explain job `out` path `{trimmed}` is relative and depends on launch working directory; refusing ambiguous resume against work directory `{work}` (re-run plan or make `out` absolute)"
+    )
 }
 
 /// The Derivation chains of a model: the runs of zt's `build.chains` (main and shared lines), and
@@ -6897,5 +7185,142 @@ mod tests {
         let soft_err = anyhow::anyhow!("bad plan syntax");
         assert!(c.handle_apply_result("K/1|a", Err(soft_err)).unwrap().is_empty());
         assert_eq!(c.m("K/1|a")["status"], "failed");
+    }
+
+    #[test]
+    fn derivation_skeleton_inlines_previous_to_and_from_without_raw_display_or_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        let staging = dir.path().join("staging");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(work.join("state.json"), serde_json::to_string(&json!({
+            "order": ["K/1|a"],
+            "models": {"K/1|a": {"ids": {"D1": "K/1|a|a|1", "D2": "K/1|a|a|2"}, "status": "planned"}},
+            "jobs": {},
+            "rereview": [],
+            "reviews": [],
+            "pending_reviews": [],
+            "seq": 0
+        })).unwrap()).unwrap();
+
+        let p = test_params("apply", work.to_str().unwrap(), staging.to_str().unwrap());
+        let c = super::new_compiler(p, test_docs(), "-MaxExplainSentences 2".into(), "--max-steps 5".into(), "h".into(), None, true).unwrap();
+        let prev = json!({
+            "id": "D1", "line": "side", "of": "R1", "derive": true, "facet": "推导：第一步",
+            "to": r"$$\phi_1 = \frac{\lambda_H}{\lambda_H + 2\lambda_L} \tag {10}$$"
+        });
+        let curr = json!({
+            "id": "D2", "line": "side", "after": "D1", "derive": true, "facet": "推导：第二步",
+            "from": r"$$x = y \tag*{2}$$",
+            "to": r"$$\phi_2 = 1 - \phi_1 \tag {11}$$"
+        });
+        let plan = json!({ "model": "K/1|a", "level": "formal", "parts": [prev.clone(), curr.clone()] });
+        let body = c.skeleton(&curr, &plan, "K/1|a", Some(&prev), false).unwrap();
+        let start_section = super::text::get_section(&body, "起点").expect("起点 section");
+        assert!(!start_section.contains("$$"), "起点 must not embed raw $$ inline: {start_section}");
+        assert!(!start_section.contains("\\tag"), "起点 must not embed \\tag inline: {start_section}");
+        assert!(start_section.contains(r"$\phi_1 = \frac{\lambda_H}{\lambda_H + 2\lambda_L} \quad (10)$"), "{start_section}");
+        assert!(start_section.contains(r"- 从 $x = y \quad 2$ 出发。"), "{start_section}");
+        // Result section preserves display math and its original \tag verbatim.
+        let result_section = super::text::get_section(&body, "结果").expect("结果 section");
+        assert!(result_section.contains(r"$$\phi_2 = 1 - \phi_1 \tag {11}$$"), "{result_section}");
+    }
+
+    #[test]
+    fn plan_math_faults_catches_bare_latex_and_inline_tags_on_rendered_plan_fields() {
+        let bad = json!({
+            "model": "K/1|a",
+            "level": "formal",
+            "title": r"当 \pi\in(0,1) 时的均衡",
+            "card": r"问题：求解 \lambda > 0 的最优解。",
+            "estimand": r"估计 \beta_{it} 对产出的影响",
+            "divisions": [{"name": r"第一部分 \alpha 设定", "start": "S0"}],
+            "symbols": [[r"\nu", "稳态份额", "S0"], ["$x$", r"产出 q_{ijt}", "S0"]],
+            "variables": [["$y_{it}$", r"当 \gamma > 0 时", "对数", "数据", "S0"]],
+            "parts": [
+                {
+                    "id": "R1",
+                    "line": "side",
+                    "of": "C1",
+                    "facet": r"结果：\theta 阈值",
+                    "title": r"结果：条件 $x = 1 \tag {2}$ 成立",
+                    "scope": r"仅在 \rho > 0 下",
+                    "rests": [["S0", r"用到 \sigma_i^{2}"]],
+                    "justifications": [{"force": "heuristic", "location": "local", "ref": "D1", "extra_assumptions": r"\mu 连续"}]
+                },
+                {
+                    "id": "D1",
+                    "line": "side",
+                    "of": "R1",
+                    "derive": true,
+                    "facet": "推导：求解",
+                    "title": "推导：一步求解",
+                    "from": r"条件 \delta = 0",
+                    "to": r"\lambda = 1"
+                },
+                {
+                    "id": "S0",
+                    "line": "main",
+                    "facet": "规格：基准",
+                    "title": "规格：基准",
+                    "equation": r"y_{it} = \beta x_{it} + \varepsilon_{it} \tag{7}",
+                    "terms": {
+                        "outcome": r"产出 y_{it}",
+                        "regressor": "$x_{it}$",
+                        "fe": [r"固定效应 \alpha_i", "年份"],
+                        "se": "稳健"
+                    },
+                    "change": {"kind": "controls", "text": r"加入 \tau_{t}"}
+                }
+            ]
+        });
+        let faults = super::plan_math_faults(&bad).join("\n");
+        for expected in [
+            "plan.title",
+            "plan.card",
+            "plan.estimand",
+            "plan.divisions[0].name",
+            "plan.symbols[0][0]",
+            "plan.symbols[1][1]",
+            "plan.variables[0][1]",
+            "part R1.facet",
+            "part R1.title",
+            "part R1.scope",
+            "part R1.rests[0][1]",
+            "part R1.justifications[0].extra_assumptions",
+            "part D1.from",
+            "part D1.to",
+            "part S0.terms.outcome",
+            "part S0.terms.fe[0]",
+            "part S0.change.text",
+        ] {
+            assert!(faults.contains(expected), "missing fault for `{expected}` in:\n{faults}");
+        }
+        // Valid empirical bare TeX `equation` with `\tag{7}` must NOT be flagged!
+        assert!(!faults.contains("part S0.equation"), "valid empirical equation must pass:\n{faults}");
+
+        // Double-wrapped empirical `equation` (`$$...$$`) IS caught as broken display.
+        let double_eq = json!({
+            "model": "K/2|a",
+            "level": "empirical",
+            "parts": [{"id": "S0", "facet": "规格：基准", "title": "规格", "equation": "$$y = x$$"}]
+        });
+        let df = super::plan_math_faults(&double_eq).join("\n");
+        assert!(df.contains("part S0.equation"), "double-wrapped equation must be flagged:\n{df}");
+
+        // Readable Unicode `to` (`P ≤ L`) and properly wrapped TeX pass cleanly.
+        let clean = json!({
+            "model": "K/1|a",
+            "level": "formal",
+            "title": r"当 $\pi\in(0,1)$ 时的均衡",
+            "card": r"问题：求解 $\lambda > 0$ 的最优解。",
+            "symbols": [[r"$\nu$", "稳态份额", "S0"]],
+            "parts": [
+                {"id": "D1", "facet": "推导：求解", "title": "推导：求解", "derive": true, "to": "P ≤ L"},
+                {"id": "D2", "facet": "推导：再求", "title": "推导：再求", "derive": true, "to": r"$$P \le L \tag {10}$$"}
+            ]
+        });
+        assert_eq!(super::plan_math_faults(&clean), Vec::<String>::new());
     }
 }

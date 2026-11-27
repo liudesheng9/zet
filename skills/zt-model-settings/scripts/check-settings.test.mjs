@@ -397,3 +397,117 @@ test('Astra M4: dotted assumption labels (假设 1.2) and 1-hop 沿用 notation 
   assert.deepEqual(r.notation, [], JSON.stringify(r.notation))
   assert.deepEqual(r.uncovered, [], JSON.stringify(r.uncovered))
 })
+
+test('Astra P5 fixes: prose 依赖 inside 起点, 假设 1.2 citation, setting-tree 基准/边界, Criterion 作用域, and wrong 沿用 target', () => {
+  const H = 'K/8|a'
+  const S = H + '|a'
+  const o = (address, facet, line = 'side', extra = {}) => ({ address, facet, line, ...extra })
+  const m = {
+    level: 'formal', head: { address: H },
+    build: {
+      setting: S,
+      order: [
+        o(S, '设定', 'main'),
+        o(S + '|a', '符号表与读法'),
+        o(S + '|b', '假设 1.2：单调性'),
+        o(S + '|c', '判据：竞争均衡'),
+        o(S + '|d', '基准：无摩擦基准'),
+        o(S + '|e', '边界：正则性边界'),
+        o(S + '|1', '第 1 章：主结果', 'main'),
+      ],
+    },
+    relations: [
+      { from: S + '|b', to: S, kind: 'rests-on' },
+      { from: S + '|c', to: S, kind: 'rests-on' },
+    ],
+  }
+  const cards = new Map([
+    [S, { title: '设定：基础环境', body: '**起点**\n原始设定。\n\n**设定**\n产出为 $y$。\n\n**说明**\n无。' }],
+    [S + '|a', { title: '符号表与读法', body: '| 符号 | 含义 | 首次出现 |\n| --- | --- | --- |\n| $y$ | 产出 | [[' + S + ']] |' }],
+    [S + '|b', { title: '假设 1.2：单调性', body: '**起点**\n依赖 [[' + S + ']] 的基础环境。\n\n**假设**\n效用对 $y$ 递增。\n\n**说明**\n无。' }],
+    [S + '|c', { title: '判据：竞争均衡', body: '**起点**\n- 依赖 [[' + S + ']]。\n\n**判据**\n市场出清。\n\n**作用域**\n基准两国情形。\n\n**说明**\n见第 1 章。' }],
+    [S + '|d', { title: '基准：无摩擦基准', body: '**基准**\n零摩擦。' }],
+    [S + '|e', { title: '边界：正则性边界', body: '**边界**\n仅限于光滑效用。' }],
+    [S + '|1', { title: '第 1 章：主结果', body: '在假设 1.2 下成立。' }],
+  ])
+  const r = audit(m, cards)
+  assert.deepEqual(r.inside, [], 'setting-tree 基准 and 边界 are allowed')
+  assert.deepEqual(r.format, [], 'plain prose 依赖 inside **起点** and Criterion with **作用域** pass')
+  assert.deepEqual(r.cite.map((x) => x.name), ['假设 1.2'], 'bare 假设 1.2 citation is caught')
+
+  // Criterion missing **作用域** fails format (matching FM2)
+  const badCrit = new Map(cards)
+  badCrit.set(S + '|c', { title: '判据：竞争均衡', body: '**起点**\n- 依赖 [[' + S + ']]。\n\n**判据**\n市场出清。' })
+  assert.ok(audit(m, badCrit).format.some((f) => f.card === S + '|c' && f.what === 'section'))
+
+  // Wrong-role 沿用 target (pointing to a Setting card instead of a Notation card) is flagged
+  const badBorrow = new Map(cards)
+  badBorrow.set(S + '|a', { title: '符号表与读法', body: '沿用 [[K/1|a|a]] 的全部符号。' })
+  badBorrow.set('K/1|a|a', { facet: '设定', title: '设定：他模型环境', body: '**起点**\n原始设定。\n\n**设定**\n| 符号 | 含义 |\n| --- | --- |\n| $y$ | 产出 |' })
+  assert.ok(audit(m, badBorrow).format.some((f) => f.what === 'notation_target'))
+
+  // Round 2 Astra regressions:
+  // 1) Bare citations `假设 B:`, `假设 B.`, and Chinese numeral `假设一 成立` are all caught
+  const mCite = {
+    ...m,
+    build: {
+      ...m.build,
+      order: [...m.build.order, o(S + '|f', '假设 B：单调性'), o(S + '|g', '假设一：完备性')],
+    },
+    relations: [...m.relations, { from: S + '|f', to: S, kind: 'rests-on' }, { from: S + '|g', to: S, kind: 'rests-on' }],
+  }
+  const cCite = new Map(cards)
+  cCite.set(S + '|f', { title: '假设 B：单调性', body: '**起点**\n- 依赖 [[' + S + ']]。\n\n**假设**\n单调。' })
+  cCite.set(S + '|g', { title: '假设一：完备性', body: '**起点**\n- 依赖 [[' + S + ']]。\n\n**假设**\n市场完备。' })
+  cCite.set(S + '|1', { title: '第 1 章：主结果', body: '由假设 B: 结论一；见假设 B. 且在假设一 成立时成立。' })
+  const rCite = audit(mCite, cCite)
+  assert.deepEqual(rCite.cite.map((x) => x.name).sort(), ['假设 B', '假设 一'].map((x) => x.replace(' ', ' ')).map((x) => x === '假设 一' ? '假设 一' : x))
+
+  // 2) Symbol row lacking an ordinary 3rd-column 首次出现 Link (plain text OR Term link [[label@addr]]) is caught in `first`
+  const cNoFirst = new Map(cards)
+  cNoFirst.set(S + '|a', { title: '符号表与读法', body: '| 符号 | 含义 | 首次出现 |\n| --- | --- | --- |\n| $y$ | 参见 [[' + S + ']] | [[产出@' + S + ']] |' })
+  assert.ok(audit(m, cNoFirst).first.some((f) => f.symbol === 'y' && f.listed === null))
+
+  // 3) Pending Notation import in build.closure defers `missing` in Stage 2 (matching check-model --stage settings)
+  const mPendingNot = {
+    ...m,
+    build: {
+      setting: S,
+      order: [o(S, '设定', 'main'), o(S + '|1', '第 1 章：主结果', 'main')],
+      closure: [{ from: S, to: 'K/1|a|a|a', card: { type: 'model', facet: '符号表与读法', home_role: 'notation', models: ['K/1|a'] } }],
+    },
+    relations: [],
+  }
+  const cPendingNot = new Map([
+    [S, { title: '设定：基础环境', body: '**起点**\n原始设定。\n\n**设定**\n产出为 $y$。\n\n**说明**\n无。' }],
+    [S + '|1', { title: '第 1 章：主结果', body: '结论。' }],
+  ])
+  const rPend = audit(mPendingNot, cPendingNot)
+  assert.deepEqual(rPend.missing, [])
+  assert.equal(rPend.deferred_missing.length, 1)
+  assert.equal(rPend.ok, true)
+})
+
+test('empirical Stage 2 audit defers Stage 3 evidence-spine faults (estimate_unbound, test_unbound, missing-estimate shape)', async () => {
+  const { auditEmpirical } = await import('./check-settings.mjs')
+  const H = 'K/6|a'
+  const o = (address, role, line = 'side') => ({ address, role, line, facet: role, title: role })
+  const m = {
+    level: 'empirical', head: { address: H },
+    build: {
+      order: [o(H + '|a', 'data', 'main'), o(H + '|a|a', 'variables'), o(H + '|a|1', 'spec', 'main')],
+      variable_uncovered: [],
+      empirical_shape: [{ address: H, lacks: '估计', fix: 'holds zero 估计 parts' }],
+      spec_unbound: [],
+      estimate_unbound: [{ address: H + '|a|2|a', fix: 'Stage 3 estimate' }],
+      test_unbound: [{ address: H + '|a|2|a|a', fix: 'Stage 3 test' }],
+    },
+  }
+  const cards = new Map([
+    [H + '|a|a', { body: '| 变量 | 含义 |\n| --- | --- |\n| $y$ | 结果 |' }],
+    [H + '|a|1', { body: '**估计式**\n$$y = 1$$' }],
+  ])
+  const r = auditEmpirical(m, cards)
+  assert.equal(r.ok, true)
+  assert.equal(r.deferred_roles.length, 3)
+})

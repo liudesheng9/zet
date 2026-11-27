@@ -60,8 +60,8 @@ pub(crate) fn unlinked(body: &str) -> String {
     TERM_MACRO.replace_all(body, "$1").into_owned()
 }
 
-/// The declared steps, in command order (design 13.1).
-pub const STEPS: [&str; 2] = ["plan", "apply"];
+/// The declared steps, in command order (design 13.1, plus live-box `relink`).
+pub const STEPS: [&str; 3] = ["plan", "apply", "relink"];
 
 /// The work folder under `-Staging`.
 const WORK: &str = "term-link";
@@ -103,6 +103,8 @@ pub(crate) struct Params {
     pub(crate) round: Option<i64>,
     pub(crate) token: Option<i64>,
     pub(crate) apply: bool,
+    /// Only for `-Step relink`: run one plan without applying edits.
+    pub(crate) plan_only: bool,
 }
 
 impl Params {
@@ -125,12 +127,18 @@ impl Params {
 const NAMES: [&str; 7] = ["Step", "Staging", "CitationKey", "Occurrences", "Cards", "Round", "Token"];
 
 pub(crate) fn params(argv: &[String]) -> Result<Params> {
-    let a = Args::parse(&util::bind_positional(argv, &NAMES)?, &NAMES, &["Apply"])?;
+    let a = Args::parse(&util::bind_positional(argv, &NAMES)?, &NAMES, &["Apply", "PlanOnly"])?;
     let step = a.choice("Step", &STEPS)?;
-    let staging = common::mandatory(&a, "Staging")?;
-    if staging.trim().is_empty() {
-        bail!("Cannot bind argument to parameter 'Staging' because it is an empty string.");
-    }
+    let plan_only = a.flag("PlanOnly");
+    let staging = if step == "relink" {
+        a.str("Staging").trim().to_string()
+    } else {
+        let s = common::mandatory(&a, "Staging")?;
+        if s.trim().is_empty() {
+            bail!("Cannot bind argument to parameter 'Staging' because it is an empty string.");
+        }
+        s
+    };
     let citation_key = if a.has("CitationKey") {
         let key = a.required("CitationKey")?.trim().to_string();
         if key.is_empty() {
@@ -146,6 +154,9 @@ pub(crate) fn params(argv: &[String]) -> Result<Params> {
         other => bail!("-Occurrences must be first or all, not `{other}`"),
     };
     let cards = card_addresses(&a.str("Cards"))?;
+    if a.has("Cards") && cards.is_empty() {
+        bail!("-Cards was supplied with no Card address (refusing to expand an empty subset to the whole book)");
+    }
     let token = if a.has("Token") {
         Some(
             a.required("Token")?
@@ -159,12 +170,6 @@ pub(crate) fn params(argv: &[String]) -> Result<Params> {
         None
     };
     let apply = a.flag("Apply");
-    if (step == "apply") != apply {
-        bail!("term-link apply requires -Apply; no other step accepts it");
-    }
-    if token.is_some() && step == "plan" {
-        bail!("term-link plan is not a claimed step; remove -Token");
-    }
     let round = if a.has("Round") {
         Some(
             a.required("Round")?
@@ -177,6 +182,27 @@ pub(crate) fn params(argv: &[String]) -> Result<Params> {
     } else {
         None
     };
+    if step == "relink" {
+        if citation_key.is_none() && staging.is_empty() {
+            bail!("term-link relink requires -CitationKey <key>");
+        }
+        if apply {
+            bail!("term-link relink does not take -Apply (it applies automatically unless -PlanOnly)");
+        }
+        if token.is_some() || round.is_some() {
+            bail!("term-link relink is a standalone live pass; remove -Token and -Round");
+        }
+    } else {
+        if plan_only {
+            bail!("-PlanOnly applies to term-link relink only");
+        }
+        if (step == "apply") != apply {
+            bail!("term-link apply requires -Apply; no other step accepts it");
+        }
+        if token.is_some() && step == "plan" {
+            bail!("term-link plan is not a claimed step; remove -Token");
+        }
+    }
     Ok(Params {
         step,
         staging,
@@ -186,6 +212,7 @@ pub(crate) fn params(argv: &[String]) -> Result<Params> {
         round,
         token,
         apply,
+        plan_only,
     })
 }
 
@@ -209,17 +236,249 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let p = params(argv)?;
     match p.step.as_str() {
         "plan" => plan(&p),
+        "relink" => relink(&p),
         _ => apply::run(&p),
     }
+}
+
+/// Default round ceiling for `term-link -Step relink` (parity with `term-relink.ps1`).
+pub const RELINK_MAX_ROUNDS: usize = 3;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PlanCounts {
+    pub(crate) cards_changed: u64,
+    pub(crate) links_added: u64,
+    pub(crate) links_repaired: u64,
+    pub(crate) cards_refused: u64,
+    pub(crate) complete: bool,
+}
+
+impl PlanCounts {
+    fn from_summary(summary: &Value) -> Self {
+        let cards_refused = summary["cards_refused"].as_u64().unwrap_or(0);
+        let complete = summary["complete"]
+            .as_bool()
+            .unwrap_or(cards_refused == 0);
+        Self {
+            cards_changed: summary["cards_changed"].as_u64().unwrap_or(0),
+            links_added: summary["links_added"].as_u64().unwrap_or(0),
+            links_repaired: summary["links_repaired"].as_u64().unwrap_or(0),
+            cards_refused,
+            complete,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RelinkOutcome {
+    pub(crate) exit: i32,
+    pub(crate) stopped_by_apply: bool,
+    pub(crate) summary: Value,
+}
+
+/// Runs `plan` + `apply` until a plan changes nothing (at most `max_rounds` applies).
+/// Aggregates the actual settled counts returned by `run_apply`, and fails with exit 1
+/// in apply mode when the final plan is incomplete (`complete == false` / `cards_refused > 0`).
+pub(crate) fn converge_relink<C>(
+    ctx: &mut C,
+    book: &str,
+    plan_only: bool,
+    max_rounds: usize,
+    mut run_plan: impl FnMut(&mut C) -> Result<PlanCounts>,
+    mut run_apply: impl FnMut(&mut C) -> Result<(i32, PlanCounts)>,
+) -> Result<RelinkOutcome> {
+    let mut cards_changed = 0u64;
+    let mut links_added = 0u64;
+    let mut links_repaired = 0u64;
+    let mut cards_refused = 0u64;
+    let mut complete = true;
+    let mut rounds = 0usize;
+    let mut applied = false;
+
+    for round in 0.. {
+        let planned = run_plan(ctx)?;
+        cards_refused = planned.cards_refused;
+        complete = planned.complete && cards_refused == 0;
+        if planned.cards_changed == 0 {
+            break;
+        }
+        if plan_only {
+            cards_changed = planned.cards_changed;
+            links_added = planned.links_added;
+            links_repaired = planned.links_repaired;
+            break;
+        }
+        if round == max_rounds {
+            bail!(
+                "{max_rounds} rounds left {} Card(s) still changing",
+                planned.cards_changed
+            );
+        }
+        let (code, settled) = run_apply(ctx)?;
+        if code != 0 {
+            return Ok(RelinkOutcome {
+                exit: code,
+                stopped_by_apply: true,
+                summary: json!({
+                    "ok": false,
+                    "complete": false,
+                    "book": book,
+                    "cards_changed": cards_changed,
+                    "links_added": links_added,
+                    "links_repaired": links_repaired,
+                    "cards_refused": cards_refused,
+                    "rounds": rounds,
+                    "applied": applied,
+                }),
+            });
+        }
+        cards_changed += settled.cards_changed;
+        links_added += settled.links_added;
+        links_repaired += settled.links_repaired;
+        rounds = round + 1;
+        applied = true;
+    }
+
+    let ok = plan_only || complete;
+    let exit = if ok { 0 } else { 1 };
+    Ok(RelinkOutcome {
+        exit,
+        stopped_by_apply: false,
+        summary: json!({
+            "ok": ok,
+            "complete": complete,
+            "book": book,
+            "cards_changed": cards_changed,
+            "links_added": links_added,
+            "links_repaired": links_repaired,
+            "cards_refused": cards_refused,
+            "rounds": rounds,
+            "applied": applied,
+        }),
+    })
+}
+
+/// Runs a single-process relink pass using an existing `Zt` client over the book (or a `-Cards` subset).
+/// When `source_manifest` is supplied (from `-Staging`), preserves its `run_contract` archive binding.
+pub(crate) fn relink_with_zt(
+    zt: &mut crate::zt::Zt,
+    key: &str,
+    source_manifest: Option<&Value>,
+    occurrences: Policy,
+    cards: &[String],
+    plan_only: bool,
+    max_rounds: usize,
+) -> Result<RelinkOutcome> {
+    let temp = tempfile::TempDir::new().context("failed to create temporary term-relink folder")?;
+    let staging = temp.path().to_string_lossy().into_owned();
+    let mut manifest = json!({ "citation_key": key });
+    if let Some(src) = source_manifest
+        && let Some(rc) = src.get("run_contract")
+    {
+        // Preserve run_contract verbatim (even if null/malformed) so build_plan fails closed on it.
+        manifest["run_contract"] = rc.clone();
+    }
+    util::write_text(
+        temp.path().join("manifest.json"),
+        &serde_json::to_string(&manifest)?,
+    )?;
+    let plan_p = Params {
+        step: "plan".to_string(),
+        staging: staging.clone(),
+        citation_key: Some(key.to_string()),
+        occurrences,
+        cards: cards.to_vec(),
+        round: None,
+        token: None,
+        apply: false,
+        plan_only: false,
+    };
+    let apply_p = Params {
+        step: "apply".to_string(),
+        apply: true,
+        ..plan_p.clone()
+    };
+    let result = converge_relink(
+        zt,
+        key,
+        plan_only,
+        max_rounds,
+        |zt| {
+            let summary = util::retry_changing_view(
+                true,
+                &util::CHANGING_VIEW_WAITS,
+                |seconds| std::thread::sleep(std::time::Duration::from_secs(seconds)),
+                || plan_with(zt, &plan_p, true),
+            )?;
+            Ok(PlanCounts::from_summary(&summary))
+        },
+        |zt| {
+            let (code, summary) = apply::run_with(zt, &apply_p, true)?;
+            Ok((code, PlanCounts::from_summary(&summary)))
+        },
+    );
+    let keep_for_recovery = match &result {
+        Ok(outcome) => outcome.exit != 0,
+        Err(_) => true,
+    };
+    if keep_for_recovery {
+        let kept = temp.keep();
+        util::emit_err(&format!(
+            "zt-digest term-link: retained relink recovery folder {}",
+            kept.display()
+        ));
+    }
+    result
+}
+
+fn relink(p: &Params) -> Result<i32> {
+    let (key, source_manifest) = if !p.staging.is_empty() {
+        let manifest = common::manifest(&p.staging)?;
+        let key = book_key(&manifest, p)?;
+        (key, Some(manifest))
+    } else {
+        let key = p
+            .citation_key
+            .clone()
+            .context("term-link relink requires -CitationKey <key>")?;
+        (key, None)
+    };
+    let mut zt = crate::zt::start()?;
+    let outcome = relink_with_zt(
+        &mut zt,
+        &key,
+        source_manifest.as_ref(),
+        p.occurrences,
+        &p.cards,
+        p.plan_only,
+        RELINK_MAX_ROUNDS,
+    )?;
+    if !outcome.stopped_by_apply {
+        util::print_line(&util::compact(&outcome.summary))?;
+    }
+    Ok(outcome.exit)
 }
 
 // --- the archive reads ---------------------------------------------------------------------------
 
 fn plan(p: &Params) -> Result<i32> {
+    let mut zt = crate::zt::start()?;
+    let _ = plan_with(&mut zt, p, false)?;
+    Ok(0)
+}
+
+pub(crate) fn apply_with(
+    zt: &mut crate::zt::Zt,
+    p: &Params,
+    quiet_on_ok: bool,
+) -> Result<(i32, Value)> {
+    apply::run_with(zt, p, quiet_on_ok)
+}
+
+pub(crate) fn plan_with(zt: &mut crate::zt::Zt, p: &Params, quiet: bool) -> Result<Value> {
     let staging = p.staging.as_str();
     let manifest = common::manifest(staging)?;
     let key = book_key(&manifest, p)?;
-    let mut zt = crate::zt::start()?;
     // The tree is read once for its titles and once for the bodies of its members, and once more
     // for the computed Term structure. `get_tree` is deliberately not used: it parses every body
     // strictly and would refuse the whole tree on one malformed macro, while this pass must name
@@ -243,7 +502,7 @@ fn plan(p: &Params) -> Result<i32> {
     if std::path::Path::new(&ps::join(staging, "ledger.sqlite3")).is_file()
         && let Some(pass) = p.pass()?
     {
-        let prepared = crate::ledger::Prepared::read(staging, &mut zt)?;
+        let prepared = crate::ledger::Prepared::read(staging, zt)?;
         units = crate::ledger::term_link_register(&prepared, &built.plan, &pass)?["units"].clone();
     }
     built.summary["unit"] = units["unit"].clone();
@@ -258,8 +517,10 @@ fn plan(p: &Params) -> Result<i32> {
             fault["message"].as_str().unwrap_or_default()
         ));
     }
-    util::print_line(&canon::canonical_json(&built.summary))?;
-    Ok(0)
+    if !quiet {
+        util::print_line(&canon::canonical_json(&built.summary))?;
+    }
+    Ok(built.summary)
 }
 
 /// One Literature tree in the agent Workspace, read as this book. The checks run before the Term
@@ -456,7 +717,7 @@ pub(crate) fn build_plan(
         .context("the title read carries no archive revision")?;
     if body_revision != titles_revision {
         bail!(
-            "the archive changed while reading the bodies (revision {titles_revision} then {body_revision}); run -Step plan again"
+            "changing view: the archive changed while reading the bodies (revision {titles_revision} then {body_revision}); run -Step plan again"
         );
     }
     let terms_revision = terms["archive_revision"]
@@ -464,7 +725,7 @@ pub(crate) fn build_plan(
         .context("the Term-structure read carries no archive revision")?;
     if titles_revision != terms_revision {
         bail!(
-            "the archive changed while planning (revision {titles_revision} then {terms_revision}); run -Step plan again"
+            "changing view: the archive changed while planning (revision {titles_revision} then {terms_revision}); run -Step plan again"
         );
     }
     if pstr(terms, "tree") != key {
@@ -480,15 +741,47 @@ pub(crate) fn build_plan(
     {
         bail!("the Term-structure read carries no archive identity; the plan cannot bind it");
     }
-    if let Some(contract) = manifest.get("run_contract").filter(|value| value.is_object())
-        && let Some(expected) = contract["archive_identity"]["id"].as_str()
-        && !expected.is_empty()
-        && Some(expected) != identity["id"].as_str()
-    {
-        bail!(
-            "the staging run belongs to archive `{expected}` but the service reads `{}`; point the service at the run's archive",
-            identity["id"].as_str().unwrap_or_default()
-        );
+    if let Some(rc_val) = manifest.get("run_contract") {
+        let Some(contract) = rc_val.as_object() else {
+            bail!("manifest run_contract must be a JSON object");
+        };
+        let Some(ck) = contract
+            .get("citation_key")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        else {
+            bail!("manifest run_contract lacks a non-empty string citation_key");
+        };
+        if ck != key {
+            bail!(
+                "manifest run_contract.citation_key `{ck}` does not match book `{key}`"
+            );
+        }
+        let Some(expected_identity) = contract.get("archive_identity").and_then(Value::as_object) else {
+            bail!(
+                "manifest run_contract lacks a valid archive_identity object; refusing to bind an unverified archive"
+            );
+        };
+        let expected_id = expected_identity
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let expected_path = expected_identity
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let live_id = identity["id"].as_str().unwrap_or("");
+        let live_path = identity["path"].as_str().unwrap_or("");
+        if expected_id.is_empty() || expected_path.is_empty() {
+            bail!(
+                "the staging run_contract.archive_identity lacks id or path; refusing to bind an incomplete archive identity"
+            );
+        }
+        if expected_id != live_id || !zt_check::mcp::boxpin::same(expected_path, live_path) {
+            bail!(
+                "the staging run belongs to archive `{expected_id}` ({expected_path}) but the service reads `{live_id}` ({live_path}); point the service at the run's archive"
+            );
+        }
     }
     let by_address: BTreeMap<String, &Value> = cards
         .iter()
@@ -1098,6 +1391,7 @@ mod tests {
             round: None,
             token: None,
             apply: step == "apply",
+            plan_only: false,
         }
     }
 
@@ -1574,11 +1868,43 @@ mod tests {
             build_plan(&manifest(), &titles, 6, &cards, &terms, &p).is_err(),
             "a body read from another revision is refused"
         );
-        // A run prepared against another archive identity.
+        // A run prepared against another archive identity (different id OR same id at different path).
         let mut other = manifest();
         other["run_contract"] =
-            json!({"archive_identity": {"id": "b".repeat(32), "path": "\\\\?\\D:\\other"}});
+            json!({"citation_key": "K", "archive_identity": {"id": "b".repeat(32), "path": "\\\\?\\D:\\other"}});
         assert!(build_plan(&other, &titles, 5, &cards, &terms, &p).is_err());
+
+        let mut copied_box = manifest();
+        copied_box["run_contract"] =
+            json!({"citation_key": "K", "archive_identity": {"id": "a".repeat(32), "path": "D:\\copied-box"}});
+        let err = build_plan(&copied_box, &titles, 5, &cards, &terms, &p).unwrap_err();
+        assert!(format!("{err:#}").contains("archive"), "{err:#}");
+
+        let mut same_norm_path = manifest();
+        let live_path = terms["archive_identity"]["path"].as_str().unwrap();
+        same_norm_path["run_contract"] =
+            json!({"citation_key": "K", "archive_identity": {"id": terms["archive_identity"]["id"], "path": format!("{}/", live_path.replace('\\', "/"))}});
+        assert!(build_plan(&same_norm_path, &titles, 5, &cards, &terms, &p).is_ok());
+
+        // H1: malformed run_contract ({}, archive_identity: null, omitted citation_key, or mismatched citation_key) must fail closed.
+        let mut empty_rc = manifest();
+        empty_rc["run_contract"] = json!({});
+        assert!(build_plan(&empty_rc, &titles, 5, &cards, &terms, &p).is_err());
+        let mut null_id_rc = manifest();
+        null_id_rc["run_contract"] = json!({"citation_key": "K", "archive_identity": null});
+        assert!(build_plan(&null_id_rc, &titles, 5, &cards, &terms, &p).is_err());
+        let mut omitted_ck_rc = manifest();
+        omitted_ck_rc["run_contract"] = json!({"archive_identity": terms["archive_identity"]});
+        let omitted_err = build_plan(&omitted_ck_rc, &titles, 5, &cards, &terms, &p).unwrap_err();
+        assert!(format!("{omitted_err:#}").contains("citation_key"), "{omitted_err:#}");
+        let mut wrong_ck_rc = manifest();
+        wrong_ck_rc["run_contract"] = json!({"citation_key": "OtherBook", "archive_identity": terms["archive_identity"]});
+        assert!(build_plan(&wrong_ck_rc, &titles, 5, &cards, &terms, &p).is_err());
+
+        // M1: build_plan revision mismatch error must match util::is_changing_view.
+        let rev_err = build_plan(&manifest(), &titles, 6, &cards, &terms, &p).unwrap_err();
+        assert!(util::is_changing_view(&rev_err), "{rev_err:#}");
+
         let mut without = terms.clone();
         without["archive_identity"] = Value::Null;
         assert!(planned(&titles, &cards, &without, &p).is_err());
@@ -1618,5 +1944,120 @@ mod tests {
             error.to_string().contains("repeats a term"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn relink_params_validate_live_and_plan_only_modes() {
+        let argv = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let ok = params(&argv(&["-Step", "relink", "-CitationKey", "K", "-PlanOnly"])).unwrap();
+        assert_eq!(ok.step, "relink");
+        assert_eq!(ok.citation_key.as_deref(), Some("K"));
+        assert!(ok.plan_only);
+        assert!(ok.staging.is_empty());
+
+        assert!(params(&argv(&["-Step", "relink"])).is_err());
+        assert!(params(&argv(&["-Step", "relink", "-CitationKey", "K", "-Apply"])).is_err());
+        assert!(params(&argv(&["-Step", "relink", "-CitationKey", "K", "-Token", "1"])).is_err());
+        assert!(params(&argv(&["-Step", "plan", "-Staging", "D:\\s", "-PlanOnly"])).is_err());
+        // Explicitly empty -Cards must be refused instead of expanding to the whole book.
+        assert!(params(&argv(&["-Step", "relink", "-CitationKey", "K", "-Cards", ","])).is_err());
+        assert!(params(&argv(&["-Step", "plan", "-Staging", "D:\\s", "-Cards", ""])).is_err());
+    }
+
+    #[test]
+    fn relink_convergence_stops_at_zero_plan_only_max_rounds_refusals_or_apply_stop() {
+        // Multi-round convergence aggregates settled counts from apply (even if apply revised counts).
+        let mut plans = vec![
+            PlanCounts { cards_changed: 2, links_added: 3, links_repaired: 1, cards_refused: 0, complete: true },
+            PlanCounts { cards_changed: 1, links_added: 1, links_repaired: 0, cards_refused: 0, complete: true },
+            PlanCounts { cards_changed: 0, links_added: 0, links_repaired: 0, cards_refused: 0, complete: true },
+        ]
+        .into_iter();
+        let mut settled = vec![
+            PlanCounts { cards_changed: 1, links_added: 2, links_repaired: 1, cards_refused: 0, complete: true },
+            PlanCounts { cards_changed: 1, links_added: 1, links_repaired: 0, cards_refused: 0, complete: true },
+        ]
+        .into_iter();
+        let mut applies = 0usize;
+        let out = converge_relink(
+            &mut (),
+            "K",
+            false,
+            3,
+            |_| Ok(plans.next().unwrap()),
+            |_| {
+                applies += 1;
+                Ok((0, settled.next().unwrap()))
+            },
+        )
+        .unwrap();
+        assert_eq!(out.exit, 0);
+        assert_eq!(applies, 2);
+        assert_eq!(out.summary["rounds"], 2);
+        assert_eq!(out.summary["cards_changed"], 2);
+        assert_eq!(out.summary["links_added"], 3);
+        assert_eq!(out.summary["applied"], true);
+
+        // Refused cards in final plan fail apply-mode relink with exit 1 and ok: false.
+        let refused = converge_relink(
+            &mut (),
+            "K",
+            false,
+            3,
+            |_| Ok(PlanCounts { cards_changed: 0, links_added: 0, links_repaired: 0, cards_refused: 2, complete: false }),
+            |_| Ok((0, PlanCounts::default())),
+        )
+        .unwrap();
+        assert_eq!(refused.exit, 1);
+        assert_eq!(refused.summary["ok"], false);
+        assert_eq!(refused.summary["complete"], false);
+        assert_eq!(refused.summary["cards_refused"], 2);
+
+        // PlanOnly never calls apply and reports planned counts.
+        let mut applied_any = false;
+        let po = converge_relink(
+            &mut (),
+            "K",
+            true,
+            3,
+            |_| Ok(PlanCounts { cards_changed: 4, links_added: 5, links_repaired: 2, cards_refused: 1, complete: false }),
+            |_| {
+                applied_any = true;
+                Ok((0, PlanCounts::default()))
+            },
+        )
+        .unwrap();
+        assert!(!applied_any);
+        assert_eq!(po.summary["cards_changed"], 4);
+        assert_eq!(po.summary["applied"], false);
+
+        // Non-converging loop fails after 3 rounds.
+        let err = converge_relink(
+            &mut (),
+            "K",
+            false,
+            3,
+            |_| Ok(PlanCounts { cards_changed: 1, links_added: 1, links_repaired: 0, cards_refused: 0, complete: true }),
+            |_| Ok((0, PlanCounts { cards_changed: 1, links_added: 1, links_repaired: 0, cards_refused: 0, complete: true })),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("3 rounds left 1 Card(s) still changing"), "{err:#}");
+
+        // Typed lock stop (exit 2) propagates immediately and suppresses summary printing
+        // even when cards_refused > 0 so apply's typed refusal remains the last JSON line.
+        let locked = converge_relink(
+            &mut (),
+            "K",
+            false,
+            3,
+            |_| Ok(PlanCounts { cards_changed: 1, links_added: 1, links_repaired: 0, cards_refused: 2, complete: false }),
+            |_| Ok((2, PlanCounts::default())),
+        )
+        .unwrap();
+        assert_eq!(locked.exit, 2);
+        assert!(locked.stopped_by_apply);
+        assert_eq!(locked.summary["ok"], false);
+        assert!(!refused.stopped_by_apply);
+        assert!(!out.stopped_by_apply);
     }
 }

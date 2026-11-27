@@ -26,3 +26,5 @@ pub mod check;
 pub mod graph;
 #[cfg(feature = "cli")]
 pub mod mcp;
+#[cfg(feature = "cli")]
+pub mod post_digest;

@@ -42,12 +42,123 @@ fn pin_above(path: &Path) -> Result<Option<Pin>> {
     Ok(None)
 }
 
-/// The one pin above the absolute path arguments and the working folder, or None. Two pins that
-/// name different boxes are an error: the invocation would not know which box it writes.
+/// Whether a flag name carries a filesystem path that can anchor a box pin.
+fn is_path_flag(name: &str) -> bool {
+    matches!(
+        name.trim_start_matches('-').to_ascii_lowercase().as_str(),
+        "staging" | "out" | "work" | "allow" | "log" | "boxpin" | "file" | "source"
+            | "snapshot" | "report" | "json" | "draft" | "charts-json"
+            | "batchesfile" | "unitsfile" | "figuresfile" | "plan" | "audit" | "moves"
+            | "outputs" | "register" | "hub" | "review" | "fixwork" | "decisions"
+            | "runreport" | "conceptreport" | "baseline" | "thesis" | "copy"
+            | "secondplan" | "readings" | "tasksheet" | "instructions" | "runoptions"
+            | "changes" | "applied" | "skeleton" | "coverage" | "scope" | "renewunits"
+    )
+}
+
+/// Whether a flag takes TWO filesystem path values (`--draft-diff <orig> <draft>`).
+fn is_two_path_flag(name: &str) -> bool {
+    name.trim_start_matches('-').eq_ignore_ascii_case("draft-diff")
+}
+
+/// Non-path flags that consume one value argument (citation keys, model addresses, steps, etc.)
+/// so their values are never inspected as paths (H2).
+fn is_non_path_value_flag(name: &str) -> bool {
+    matches!(
+        name.trim_start_matches('-').to_ascii_lowercase().as_str(),
+        "citationkey" | "model" | "models" | "step" | "occurrences" | "cards" | "round"
+            | "token" | "tool" | "book" | "rules" | "setting" | "level" | "tree" | "stage"
+            | "format" | "workspace" | "chapters" | "addresses" | "wait"
+    )
+}
+
+/// Splits `-Name:value` or `-Name=value` at the first `:` or `=` after leading `-`.
+fn split_inline_flag(arg: &str) -> Option<(&str, &str)> {
+    let rest = arg.strip_prefix('-')?;
+    let idx = match (rest.find(':'), rest.find('=')) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => return None,
+    };
+    let name = &rest[..idx];
+    let val = &rest[idx + 1..];
+    if name.is_empty() || val.is_empty() {
+        return None;
+    }
+    Some((name, val))
+}
+
+fn candidate_paths(argv: &[String], cwd: Option<&Path>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let push_val = |out: &mut Vec<PathBuf>, raw: &str, allow_relative: bool| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if absolute(trimmed) {
+            out.push(PathBuf::from(trimmed));
+        } else if allow_relative && let Some(base) = cwd {
+            let joined = base.join(trimmed);
+            out.push(std::fs::canonicalize(&joined).unwrap_or(joined));
+        }
+    };
+    let mut i = 0;
+    while i < argv.len() {
+        let arg = &argv[i];
+        if absolute(arg) {
+            push_val(&mut out, arg, false);
+        } else if let Some((name, val)) = split_inline_flag(arg) {
+            if is_path_flag(name) {
+                push_val(&mut out, val, true);
+            } else if !is_non_path_value_flag(name) {
+                push_val(&mut out, val, false);
+            }
+        } else if arg.starts_with('-') && is_two_path_flag(arg) {
+            let mut consumed = 0;
+            for offset in 1..=2 {
+                if let Some(next) = argv.get(i + offset)
+                    && !next.starts_with('-')
+                {
+                    push_val(&mut out, next, true);
+                    consumed += 1;
+                } else {
+                    break;
+                }
+            }
+            i += consumed;
+        } else if arg.starts_with('-') && is_path_flag(arg) {
+            // Only consume the next token if it is not itself another flag (e.g. `model -Report -Work rel`
+            // uses `-Report` as a switch, so it must NOT swallow `-Work`).
+            if let Some(next) = argv.get(i + 1)
+                && !next.starts_with('-')
+            {
+                push_val(&mut out, next, true);
+                i += 1;
+            }
+        } else if arg.starts_with('-') && is_non_path_value_flag(arg) {
+            // Skip value of non-path flags (e.g. `-CitationKey K`) so a citation key matching a
+            // subdirectory name can never select that subdirectory's box pin (H2).
+            if let Some(next) = argv.get(i + 1)
+                && !next.starts_with('-')
+            {
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    if let Some(base) = cwd {
+        out.push(base.to_path_buf());
+    }
+    out
+}
+
+/// The one pin above the path arguments (absolute, inline `-Flag:path`, or resolved relative
+/// path-flag values) and the working folder, or None. Two pins that name different boxes are
+/// an error: the invocation would not know which box it writes.
 pub fn find(argv: &[String], cwd: Option<&Path>) -> Result<Option<Pin>> {
     let mut found: Option<Pin> = None;
-    let paths = argv.iter().filter(|a| absolute(a)).map(|a| PathBuf::from(a.trim())).chain(cwd.map(Path::to_path_buf));
-    for path in paths {
+    for path in candidate_paths(argv, cwd) {
         if let Some(pin) = pin_above(&path)? {
             match &found {
                 Some(first) if !same(&first.config, &pin.config) => bail!(
@@ -172,5 +283,43 @@ mod tests {
         assert!(find(&argv, None).unwrap().is_some(), "the same box in another spelling is one pin");
         std::fs::write(b.join(PIN), "  \n").unwrap();
         assert!(find(&argv, None).unwrap_err().to_string().contains("names no ZT_CONFIG_DIR"));
+    }
+
+    #[test]
+    fn finds_pin_from_inline_flag_and_relative_staging_path() {
+        let root = scratch("rel-staging");
+        let sub = root.join("stage-sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(PIN), "D:\\copy-box\\config\n").unwrap();
+
+        // Inline `-Staging:D:\...` and `-Staging=D:\...` must be discovered.
+        let argv_colon = vec![format!("-Staging:{}", s(&sub))];
+        assert_eq!(find(&argv_colon, None).unwrap().unwrap().config, "D:\\copy-box\\config");
+        let argv_eq = vec![format!("-Staging={}", s(&sub))];
+        assert_eq!(find(&argv_eq, None).unwrap().unwrap().config, "D:\\copy-box\\config");
+
+        // Relative `-Staging stage-sub` resolved against cwd must be discovered.
+        let argv_rel = vec!["-Step".into(), "relink".into(), "-Staging".into(), "stage-sub".into()];
+        assert_eq!(find(&argv_rel, Some(&root)).unwrap().unwrap().config, "D:\\copy-box\\config");
+
+        // H2: an ordinary non-path argument like `-CitationKey stage-sub` must NOT select
+        // `stage-sub\zt-box.txt` even though a directory of that name exists under cwd.
+        let argv_key = vec!["-Step".into(), "relink".into(), "-CitationKey".into(), "stage-sub".into()];
+        assert_eq!(find(&argv_key, Some(&root)).unwrap(), None);
+        let argv_pos = vec!["relink".into(), "stage-sub".into()];
+        assert_eq!(find(&argv_pos, Some(&root)).unwrap(), None);
+
+        // H2: a switch whose name also exists as a path flag on another tool (e.g. `model -Report -Work rel`)
+        // must NOT swallow `-Work`, and `-RenewUnits` relative paths must be discovered.
+        let argv_switch_before_work = vec!["-Report".into(), "-Work".into(), "stage-sub".into()];
+        assert_eq!(
+            find(&argv_switch_before_work, Some(&root)).unwrap().unwrap().config,
+            "D:\\copy-box\\config"
+        );
+        let argv_renew = vec!["-RenewUnits".into(), "stage-sub\\units.json".into()];
+        assert_eq!(
+            find(&argv_renew, Some(&root)).unwrap().unwrap().config,
+            "D:\\copy-box\\config"
+        );
     }
 }

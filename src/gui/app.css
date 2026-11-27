@@ -1788,7 +1788,11 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
   }
 }
 .card .md .math-display { margin: 0 0 var(--rule); }
-.card h1.title .katex, .node .t .katex, .fslip .katex { font-size: 1em; }
+.card h1.title .katex, .node .t .katex, .fslip .katex,
+.type-stamp .katex, .model-tab .katex, .mb-facet .katex, .mbn-tab .katex,
+.mbk-facet .katex, .mbk-tab .katex, .sd-facet .katex, .zt-link-facet .katex { font-size: 1em; }
+/* Stamps and facet labels use uppercase + letter-spacing; math variables must keep exact case. */
+.katex { text-transform: none; letter-spacing: normal; }
 /* An HTML chart is a sheet pasted onto the card, so the rules do not run through it. */
 .zt-chart { margin: .9em 0; }
 .card .md .zt-chart { margin: 0 -8px var(--rule); }

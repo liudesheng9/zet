@@ -14,7 +14,7 @@ paths:
   - "scripts/gui-bench/**"
   - "scripts/portable-export/**"
 synced: 2af6bdc72e0b
-updated: 2026-11-26
+updated: 2026-11-27
 ---
 
 # GUI
@@ -918,6 +918,7 @@ Gaps: the page has no browsed test harness in the repository. Its two DOM-free m
 - **An over-long Spread name is cut, not refused.** `normalize` truncates `name` to 80 characters by characters and refuses only a `question` over 512; this is what lets a long question name its own Spread. An older binary that lacks the field silently drops every `question` on its next Spread save (rollback risk; see Spreads §5).
 
 ## Change history
+- `2026-11-27` — **zt 0.71.0 — Math rendering fix Layer C (`src/gui.rs`, `src/gui/app.js`, `src/gui/app.css`, `docs/math-rendering-fix-design.md`)**: replaced `protect_table_links` with `protect_table_pipes` in `src/gui.rs`, escaping unescaped `|` inside inline code `` `...` `` (keeping `$` literal), closed `[[...]]`, and closed `$...$`/`$$...$$` (respecting `\$` and avoiding doubling already-escaped `\|` from `empirical::table_cell`), across both leading-`|` and outer-pipe-less GFM tables; added `splitFacetColon` and upgraded `titleNodes` in `src/gui/app.js` (backslash-aware `$...$`/`$$...$$` scanner) and typeset facets via KaTeX across `typeStamp`, `wireMarkdown` (`.zt-link-title, .zt-link-facet`), `modelTabs`, `modelBoard`, `blockBoard`, `bridgeView`, `pullOut`, and Study Desk (automatically inherited by portable exports); added `.katex { text-transform: none; letter-spacing: normal; }` in `src/gui/app.css` so uppercase badges/facets preserve math variable case. Test `gui::render_tests::table_cells_keep_math_pipes_code_pipes_and_outer_pipeless_rows_intact`.
 - `2026-11-27` — zt 0.70.1, owner request: a Connection tree's own Cards are plain like the Cards of any tree (the root alone on the Literature root's stock); they had all worn the root's tint and a red top edge. Test `connection_tree_own_cards_are_plain_like_any_tree`.
 - `2026-11-26` — zt 0.70.0, owner request: free Connection trees (docs/connection-trees-free-proposal.md, Astra rounds 1–2). The tree menu for Connection trees (drawer, desk stack, Map `Tree ▾`) with Export, Lock and Delete tree; Delete tree… for every role, bound to its plan hash; the desk's Connection zone; untitled roots; Mount of several Cards; New Connection tree from a Card or the Table; the projection (`crossings`, Crossings switch, exits); the Literature colour for Connection trees; the open tree re-read after a coordinate-only write; paged station loads; the Topic-side mount marked by its coordinate; the Lock plan's Pinned mounts. Tests `connection_trees_wear_the_literature_colour_and_project_onto_the_tree_read` and `tests/connection_free.rs`.
 - `2026-11-24` — zt 0.69.1, owner decision: no legend box in any Map. The line key (direct, side, Link, Term, "+N filed behind") is removed from Topic and Literature trees too, as it was from Connection trees in 0.69.0; the Term switch's own title explains the dotted Term lines.

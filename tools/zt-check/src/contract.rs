@@ -34,7 +34,10 @@ use serde_json::{Map, Value, json};
 /// 8 (2026-11-08, docs/empirical-models-proposal.md §5.5): the parts of an empirical model (level 3)
 /// take EM1 to EM5, so the same authored text is decided differently than under 7.
 /// 10 (2026-11-26, docs/formal-models-proposal.md §5.5): Level 2 formal models take FM1 to FM6.
-pub const RULE_VERSION: &str = "10";
+/// 11 (2026-11-27, docs/math-rendering-fix-design.md): R22 and T10 also refuse `\tag`/`\tag*`
+/// inside inline math (`text::inline_tag_in_math`) and bare LaTeX outside math delimiters
+/// (`text::bare_latex_in_prose`) across body, title, and facet (plus unclosed `$` in facet).
+pub const RULE_VERSION: &str = "11";
 
 /// The version of the published diagnostic shape: the eight fields of
 /// `core::Diagnostic::to_json` and the `block`/`advise` and `local`/`graph`

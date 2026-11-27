@@ -190,7 +190,7 @@ fn absolutize(raw: &str, cwd: Option<&Path>) -> String {
         .unwrap_or_else(|_| raw.trim().to_string())
 }
 
-fn collect_request_path_args(args: &[String], cwd: Option<&Path>) -> Vec<String> {
+fn collect_request_path_args(bound_args: &[String], cwd: Option<&Path>) -> Vec<String> {
     let mut out = Vec::new();
     let mut batches_files = Vec::new();
     let path_flags = [
@@ -207,20 +207,59 @@ fn collect_request_path_args(args: &[String], cwd: Option<&Path>) -> Vec<String>
         "-Moves",
         "-Outputs",
         "-Source",
+        "-Register",
+        "-Hub",
+        "-Review",
+        "-Draft",
+        "-RenewUnits",
+    ];
+    let non_path_value_flags = [
+        "-Step",
+        "-CitationKey",
+        "-Model",
+        "-Models",
+        "-Occurrences",
+        "-Cards",
+        "-Round",
+        "-Token",
+        "-Tool",
+        "-Book",
+        "-Rules",
+        "-Level",
+        "-Job",
+        "-Need",
+        "-Group",
+        "-Groups",
+        "-PerJob",
+        "-Sample",
+        "-Seed",
+        "-MaxCards",
+        "-MaxJobs",
+        "-MaxSentences",
+        "-MaxChars",
+        "-MaxSteps",
+        "-MaxExplainSentences",
+        "-MaxExplainChars",
+        "-MaxParts",
+        "-Notes",
+        "-Wait",
+        "-TitleChars",
     ];
     let mut i = 0;
-    while i < args.len() {
-        let a = &args[i];
+    while i < bound_args.len() {
+        let a = &bound_args[i];
         let mut matched_flag: Option<String> = None;
         let mut val_opt: Option<String> = None;
+        let mut consumed_next = false;
         for f in path_flags {
             if a.eq_ignore_ascii_case(f) {
                 matched_flag = Some(f.to_string());
-                if let Some(next) = args.get(i + 1)
+                if let Some(next) = bound_args.get(i + 1)
                     && !next.trim().is_empty()
                     && !next.starts_with('-')
                 {
                     val_opt = Some(next.clone());
+                    consumed_next = true;
                 }
                 break;
             }
@@ -241,9 +280,21 @@ fn collect_request_path_args(args: &[String], cwd: Option<&Path>) -> Vec<String>
                 batches_files.push(abs.clone());
             }
             out.push(abs);
-        } else if !a.starts_with('-') {
+            if consumed_next {
+                i += 1;
+            }
+        } else if a.starts_with('-') {
+            // Skip values of non-path flags (e.g. `-Model K/1`, `-CitationKey K`) so card
+            // addresses with slashes are never misinterpreted as relative filesystem paths (H2).
+            if non_path_value_flags.iter().any(|f| a.eq_ignore_ascii_case(f))
+                && bound_args.get(i + 1).is_some()
+            {
+                i += 1;
+            }
+        } else {
+            // Only absolute filesystem paths outside flags can anchor a box pin.
             let p = Path::new(a);
-            if p.is_absolute() || a.contains('\\') || a.contains('/') {
+            if p.is_absolute() {
                 out.push(absolutize(a, cwd));
             }
         }
@@ -269,12 +320,14 @@ fn collect_request_path_args(args: &[String], cwd: Option<&Path>) -> Vec<String>
 /// Read-only per-request boxpin verification. Refuses any request that introduces a box pin
 /// differing from the session's pinned box (or introduces a pin when the session started unpinned).
 pub(crate) fn check_request_boxpin(
+    tool: &str,
     args: &[String],
     cwd: Option<&Path>,
     session_config: Option<&str>,
 ) -> Result<()> {
-    let mut check_args = args.to_vec();
-    check_args.extend(collect_request_path_args(args, cwd));
+    let bound = crate::util::bind_tool_args(tool, args);
+    let mut check_args = bound.clone();
+    check_args.extend(collect_request_path_args(&bound, cwd));
     let pin = zt_check::mcp::boxpin::find(&check_args, cwd)?;
     match (session_config, pin) {
         (None, Some(found)) => bail!(
@@ -323,7 +376,7 @@ fn process_line(
         }
     };
     if let Err(e) = validate_allowed_tool(&req.tool, &req.args)
-        .and_then(|()| check_request_boxpin(&req.args, cwd, session_config))
+        .and_then(|()| check_request_boxpin(&req.tool, &req.args, cwd, session_config))
     {
         return json!({
             "id": req.id,
@@ -503,22 +556,22 @@ mod tests {
 
         // Session unpinned vs request naming pinned relative path
         let rel_args = svec(&["-Out", "run_a"]);
-        assert!(check_request_boxpin(&rel_args, Some(dir.path()), None).is_err());
+        assert!(check_request_boxpin("audit", &rel_args, Some(dir.path()), None).is_err());
 
         // Session pinned to box_a vs request inside box_a
-        assert!(check_request_boxpin(&rel_args, Some(dir.path()), Some("D:\\box-a\\config")).is_ok());
+        assert!(check_request_boxpin("audit", &rel_args, Some(dir.path()), Some("D:\\box-a\\config")).is_ok());
 
         // Session pinned to box_a vs request pointing via -BatchesFile to box_b
         let batches_file = box_a.join("batches.json");
         std::fs::write(&batches_file, serde_json::to_string(&json!([{"work": box_b.to_string_lossy()}])).unwrap()).unwrap();
         let bf_args = svec(&["-Staging", box_a.to_str().unwrap(), "-BatchesFile", batches_file.to_str().unwrap()]);
-        assert!(check_request_boxpin(&bf_args, Some(dir.path()), Some("D:\\box-a\\config")).is_err());
+        assert!(check_request_boxpin("model", &bf_args, Some(dir.path()), Some("D:\\box-a\\config")).is_err());
 
         // Session pinned vs neutral command with no pin conflict
-        assert!(check_request_boxpin(&svec(&["-Workflows"]), Some(&unpinned), Some("D:\\box-a\\config")).is_ok());
+        assert!(check_request_boxpin("version", &svec(&["-Workflows"]), Some(&unpinned), Some("D:\\box-a\\config")).is_ok());
 
         // Multi-byte UTF-8 positional args longer than path flags must never panic
-        assert!(check_request_boxpin(&svec(&["第一章模型推导", "-Workflows"]), Some(&unpinned), Some("D:\\box-a\\config")).is_ok());
+        assert!(check_request_boxpin("version", &svec(&["第一章模型推导", "-Workflows"]), Some(&unpinned), Some("D:\\box-a\\config")).is_ok());
 
         // -BoxPin=C:\... splits on "=" before drive ":"
         assert_eq!(
@@ -527,7 +580,28 @@ mod tests {
         );
         // -Out=D:\... inside an explicit request still checks boxpin
         let out_eq_arg = format!("-Out={}", box_a.display());
-        assert!(check_request_boxpin(&svec(&[out_eq_arg.as_str()]), Some(dir.path()), None).is_err());
+        assert!(check_request_boxpin("audit", &svec(&[out_eq_arg.as_str()]), Some(dir.path()), None).is_err());
+
+        // H2: positional path binding (e.g. `term-link plan run_a`, `organize-apply run_a`)
+        // discovers `run_a/zt-box.txt`, while slash-containing non-path values like `-Models run_a/1`
+        // do NOT trigger a false pin.
+        assert!(check_request_boxpin("term-link", &svec(&["plan", "run_a"]), Some(dir.path()), None).is_err());
+        assert!(check_request_boxpin("organize-apply", &svec(&["run_a"]), Some(dir.path()), None).is_err());
+        assert!(check_request_boxpin("organize-apply", &svec(&["run_a"]), Some(dir.path()), Some("D:\\box-a\\config")).is_ok());
+        assert!(check_request_boxpin("model", &svec(&["-Step", "explain", "-Models", "run_a/1", "-Work", unpinned.to_str().unwrap()]), Some(dir.path()), None).is_ok());
+        let bound_me = crate::util::bind_tool_args("model-explain", &svec(&["plan", "K/1", "run_a"]));
+        assert_eq!(
+            zt_check::mcp::boxpin::find(&bound_me, Some(dir.path())).unwrap().unwrap().config,
+            "D:\\box-a\\config"
+        );
+        let bound_oa = crate::util::bind_tool_args("organize-apply", &svec(&["run_a"]));
+        assert_eq!(
+            zt_check::mcp::boxpin::find(&bound_oa, Some(dir.path())).unwrap().unwrap().config,
+            "D:\\box-a\\config"
+        );
+        // H2: `model -Report -Work run_a` and `-RenewUnits run_a/u.json` must discover `run_a/zt-box.txt`.
+        assert!(check_request_boxpin("model", &svec(&["-Report", "-Work", "run_a"]), Some(dir.path()), None).is_err());
+        assert!(check_request_boxpin("model", &svec(&["-RenewUnits", "run_a/u.json"]), Some(dir.path()), None).is_err());
     }
 
     #[test]

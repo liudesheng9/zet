@@ -24,7 +24,7 @@ static HEADING: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(#{1,6})\s+(.+?)\s*$").unwrap());
 
 static TAG_CMD: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\\tag\{([^}]+)\}").unwrap());
+    LazyLock::new(|| Regex::new(r"\\tag\*?\s*\{((?:[^{}]|\{[^{}]*\})+)\}").unwrap());
 
 static TRAILING_EQ_NUM: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:\\quad|\\qquad|\s)\(([A-Za-z]?\d+(?:[.\-]\d+)*[A-Za-z′']*)\)\s*$").unwrap());
@@ -932,6 +932,9 @@ $$ y = x \\tag{1} $$ and $$ z = 2x \\tag{2} $$
         let mm = card_printed_mismatches_scoped("$$ y = -a x \\tag{1} $$", &inv, &["sections/s01.md".into()]);
         assert!(!mm.is_empty(), "scoped check must catch cross-file restarted (1) mismatch");
         assert!(card_printed_mismatches_scoped("$$ y = a x \\tag{1} $$", &inv, &["sections/s01.md".into()]).is_empty());
+        // Spaced `\tag {1}` (MinerU format) must also be parsed as tag 1.
+        let mm_spaced = card_printed_mismatches_scoped("$$ y = -a x \\tag {1} $$", &inv, &["sections/s01.md".into()]);
+        assert!(!mm_spaced.is_empty(), "spaced \\tag {{1}} must not bypass fidelity check");
 
         // H2: empty files array must produce inventory_invalid rather than silently skipping spans.
         let empty_inv = json!({"schema_version": 1, "files": [], "equations": [], "items": [], "obligations": []});

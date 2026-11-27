@@ -98,7 +98,13 @@ async function main() {
     }
     const question = (m.head.body || '').split('\n').find((l) => l.trim() && !l.startsWith('**')) || ''
     const setting = order.find((o) => o.address === m.build.setting)
-    console.log(`${sh(h).padEnd(8)} ${String(m.level).padEnd(7)} parts ${String(order.length).padStart(3)}  ${m.head.title}`)
+    const objects = (m.build.claim_objects || []).join(', ')
+    const formNote = m.form ? ` form=${m.form}` : ''
+    const formalNote = m.level === 'formal' && !m.form && m.build.formal_structured !== undefined
+      ? ` formal_structured=${m.build.formal_structured}`
+      : ''
+    console.log(`${sh(h).padEnd(8)} ${String(m.level).padEnd(7)} parts ${String(order.length).padStart(3)}${formNote}${formalNote}  ${m.head.title}`)
+    if (objects) console.log(`         objects:  ${objects}`)
     console.log(`         question: ${question.trim().slice(0, 120)}`)
     if (setting && setting.address !== h) console.log(`         setting:  ${setting.title}`)
   }

@@ -818,13 +818,19 @@ pub(crate) fn skeleton(
                 "待写（说明下标、上标与约定记号的读法）。".to_string(),
                 String::new(),
             ];
-            if truthy(&part["borrows_notation"]) {
+            let has_borrow = truthy(&part["borrows_notation"]);
+            if has_borrow {
                 let target = resolve(&s(&part["borrows_notation"]))?;
                 out.push(format!("沿用 [[{target}]] 的全部符号。"));
-            } else {
+            }
+            let sym_rows = list(&plan["symbols"]);
+            if !has_borrow || !sym_rows.is_empty() {
+                if has_borrow {
+                    out.push(String::new());
+                }
                 out.push("| 符号 | 含义 | 首次出现 |".into());
                 out.push("| --- | --- | --- |".into());
-                for row in list(&plan["symbols"]) {
+                for row in sym_rows {
                     let cells = pipe(row);
                     let sym = super::empirical::table_cell(&s(&ps::at(&cells, 0)));
                     let mean = super::empirical::table_cell(&s(&ps::at(&cells, 1)));
@@ -834,7 +840,7 @@ pub(crate) fn skeleton(
                         String::new()
                     };
                     let first = if first_raw.is_empty() {
-                        "本模型".to_string()
+                        "待写".to_string()
                     } else if let Ok(addr) = resolve(&first_raw) {
                         format!("[[{addr}]]")
                     } else {

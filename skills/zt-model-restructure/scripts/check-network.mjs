@@ -39,7 +39,11 @@ export function analyse(m, L) {
   const edges = m.block_edges || []
   const at = new Map(blocks.map((b, i) => [b.id, i]))
   const byId = new Map(blocks.map((b) => [b.id, b]))
-  const facetOf = new Map([...blocks.map((b) => [b.head, b.facet]), ...blocks.flatMap((b) => b.children.map((c) => [c.address, c.facet]))])
+  const facetOf = new Map([
+    ...((m.build && m.build.order) || []).map((o) => [o.address, o.facet]),
+    ...blocks.map((b) => [b.head, b.facet]),
+    ...blocks.flatMap((b) => b.children.map((c) => [c.address, c.facet])),
+  ])
   const name = (id) => {
     const b = byId.get(id)
     if (!b) return id
@@ -61,8 +65,14 @@ export function analyse(m, L) {
       // The latest block among everything this card rests on decides where it can stand.
       const premises = edges.filter((x) => x.kind === 'rests-on' && x.from_block === e.from_block).flatMap((x) => (x.pairs || []).filter((p) => p.from === card).map(() => x.to_block))
       const latest = premises.sort((a, b) => at.get(b) - at.get(a))[0] || e.to_block
-      // A setting (or assumption/definition/criterion) is a primitive: it rests on nothing derived later.
-      if (/^(?:设定|假设|定义|判据|均衡定义|解概念)/.test(facetOf.get(card) || '')) {
+      // Maintained settings/assumptions (and setting-block definitions/criteria) are primitives:
+      // they rest on nothing derived later. A derived Definition or Criterion on a chapter Side can move.
+      const cardFacet = facetOf.get(card) || ''
+      const inSettingBlock = byId.get(e.from_block)?.kind === 'setting'
+      const isMaintainedPrimitive =
+        /^(?:设定|假设|假定)/.test(cardFacet) ||
+        (inSettingBlock && /^(?:定义|判据|均衡定义|解概念)/.test(cardFacet))
+      if (isMaintainedPrimitive) {
         return `${card} is a setting: a setting rests on nothing derived later, so this relation is reversed. If the later card (in ${byId.get(latest).head}, chapter ${name(latest)}) works with the setting's variable or definition, let it rest on ${card} and let the setting only point to it; keep it in the setting part. A derived fact the setting states moves to the card that derives it`
       }
       return `move ${card} after its latest premise: file it under ${byId.get(latest).head} (chapter ${name(latest)}) or later, with every card that rests on it`
@@ -104,21 +114,28 @@ export function analyse(m, L) {
     for (const c of tree.children[id] || []) walk(c, d + 1)
   }
   tree.roots.forEach((r) => walk(r, 0))
-  // Level 2 formal models: check formal Layer 1 faults and Result card required sections (**陈述**/**为什么**/**依据**; Astra M4).
+  // Level 2 formal models: check formal Layer 1 faults (deferring criterion_unbound only when a pending
+  // cross-model Criterion import awaits Stage 4, matching check-model --stage restructure).
   const formal = []
+  const pendingCriterionImport = (m.build?.closure || []).some((f) => {
+    const c = f && f.card
+    return Boolean(c && c.type === 'model' && (c.models || []).length && (c.home_role === 'criterion' || /^(?:判据|均衡定义|解概念)/.test(c.facet || '')))
+  })
   if (m.level === 'formal' && !m.form && m.build) {
     for (const k of ['formal_shape', 'setting_dependency', 'criterion_unbound', 'result_unbound', 'proof_unbound', 'experiment_unbound', 'symbol_uncovered']) {
+      if (k === 'criterion_unbound' && pendingCriterionImport) continue
       for (const f of m.build[k] || []) formal.push({ kind: k, card: f.address, fix: f.fix })
     }
     const partByAddr = new Map((m.parts || []).map((p) => [p.address, p]))
     for (const b of chapters) {
       for (const c of b.children || []) {
         if (!/^结果/.test(c.facet || '')) continue
-        const body = partByAddr.get(c.address)?.body
-        if (!body) continue
+        const part = partByAddr.get(c.address)
+        if (!part || part.body === undefined) continue
+        const body = part.body || ''
         const missing = ['陈述', '为什么', '依据'].filter((sec) => !new RegExp(`^\\*\\*${sec}\\*\\*`, 'm').test(body))
         if (missing.length) {
-          formal.push({ kind: 'result_sections', card: c.address, fix: `${c.address} (${c.facet}) lacks required sections: ${missing.map((s) => '**' + s + '**').join(', ')}` })
+          formal.push({ kind: 'result_sections', card: c.address, fix: `${c.address} (${c.facet}) lacks required sections: ${missing.map((s) => '**' + s + '**').join(', ')} (run zt-check --model ${m.head?.address || '<head>'} --skip-shared for full FM1-FM6)` })
         }
       }
     }

@@ -22,7 +22,7 @@ The order is the owner's (2026-11-10, with illustrate added 2026-11-11). Do not 
 
 1. **The digest is finished.** `D:\zt-digest\<key>\run-report.json` has `completeness.complete: true`, or every gap it lists is understood and written down. A run still running, or a gap that is a missing digest write, stops the sequence.
 2. **The live box only on the user's request.** Otherwise copy the box and run there (own `ZT_CONFIG_DIR`, own `ZT_GUI_PORT`).
-3. **Back up** before each stage that writes: `VACUUM INTO` `D:\zt\backups\zt-before-<key>-<stage>.sqlite3`, then `PRAGMA integrity_check` on the copy. The node one-liner is in `zt-model-illustrate`.
+3. **Back up** before each stage that writes: `zt-digest backup -Out D:\zt\backups\zt-before-<key>-<stage>.sqlite3` (runs `VACUUM INTO` + `PRAGMA integrity_check`; the legacy `node:sqlite` one-liner in `zt-model-illustrate` remains valid).
 4. **Locks are the owner's.** A `card_locked` error stops the stage. Report it and wait. Check the Lock again before each stage: the owner can relock between passes.
 5. **One writer on the book.** Do not run this sequence while a digest, a mode run or another session writes the same book.
 6. **List the models after the fold, not before.** The fold decides how many models the book holds. Read each surviving Model Card's level with `get_model` (`formal`, `concept` or `empirical`).
@@ -31,19 +31,29 @@ The order is the owner's (2026-11-10, with illustrate added 2026-11-11). Do not 
 
 | # | Stage | Skill | Runs on | Applies to | Gate before the next stage |
 |---|---|---|---|---|---|
-| 1 | Fold | `zt-model-fold` | the book (`<key>`) | every Model Card | the decision table (one row per Model Card, reason in one line) is written; `check-model.mjs` clean on each surviving head; `list_broken_links` empty |
-| 2 | Settings | `zt-model-settings` (strict) | each Model Card | formal: the setting tree, notation card (`<head>|a|a`), **起点**/**设定**/**直觉**/**说明**, plus `判据`/`定义`/`假设 (B)`; empirical: the data tree and the specification ladder | `check-settings.mjs <head>` reports no fault |
-| 3 | Restructure | `zt-model-restructure` | each Model Card | formal: the intuition spine (multi-justification `结果`, mixed `推导`/`论证` branches, `基准`/`校准`/`数值实验`, `FM1`–`FM6`, and Layer 1 faults); empirical: the evidence spine | `check-model.mjs`, `check-network.mjs`, `check-premises.mjs` clean; no forward or unanchored fault on the board |
-| 4 | Import + explanations | `zt-model-import` (steps 1–8) | each Model Card | formal: shared settings, results, chapters; empirical: the hypotheses it tests and the theory it estimates | `imports.mjs check` exits 0; `get_model` shows `build.self_sufficient: true`; step 8 `explain.mjs finish` clean |
-| 5 | Evidence dialogue | `zt-evidence-dialogue` | each **empirical** Model Card | empirical only | `dialogue.mjs check` clean; every judged pair written as 对照, 印证 or 反驳 in **对应** |
-| 6 | Literature organize | `zt-literature-organize` | the book (`<key>`) | the whole Literature tree | top line follows the source's top divisions; Term list, then Cited list, at the tail; no crosser left; `list_broken_links` empty |
-| 7 | Illustrate | `zt-model-illustrate` | each **formal** Model Card | formal only (owner, 2026-11-11; placed after Literature organize per `docs/formal-models-proposal.md` §9 so diagrams lock onto final addresses) | `verify.mjs` clean in light and dark; lint 0; every setting card and 定义 part has a full **直觉** |
+| 1 | Fold | `zt-model-fold` | the book (`<key>`) | every Model Card | decision table written (one row per Model Card, reason in one line); `zt-check --model <head> --stage fold` (or `zt-model-fold/scripts/check-model.mjs <head>`) clean on each surviving head; `list_broken_links` empty |
+| 2 | Settings | `zt-model-settings` (strict) | each Model Card | formal: setting tree, `<head>|a|a` (`符号表与读法`), **起点**/**设定**/**直觉**/**说明**, plus `判据`/`定义`/`假设 (B)`/`基准`/`边界`; empirical: data tree and specification ladder | `zt-check --model <head> --settings` (`check-settings.mjs`) clean; `zt-check --model <head> --stage settings` (`zt-model-settings/scripts/check-model.mjs`) clean |
+| 3 | Restructure | `zt-model-restructure` | each Model Card | formal: intuition spine (multi-justification `结果`, mixed `推导`/`论证` branches, `基准`/`校准`/`数值实验`, `FM1`–`FM6`, and Layer 1 faults); empirical: evidence spine | `zt-check --model <head> --stage restructure`, `--network`, `--premises`, and `zt-check --model <head> --skip-shared` clean (coexisting `.mjs` equivalents: `check-model.mjs`, `check-network.mjs`, `check-premises.mjs`; only cross-model `closure` / pending `criterion` import deferred to Stage 4) |
+| 4 | Import + explanations | `zt-model-import` (steps 1–8) | each Model Card | formal: shared settings/results/chapters, `校准 → 估计` (`单卡`); empirical: tested hypotheses (`单卡`) and estimated theories (`整块`) | `imports.mjs check` exits 0; `zt-check --model <head> --stage final` (`check-model.mjs --stage final`) passes (`self_sufficient: true`, strict `formal_structured: true` on L2 formal / `evidence_bound: true` on L3 empirical); `zt-check --model <head> --skip-shared` clean; step 8 `zt-digest model-explain -Step finish -Model <head>` (`explain.mjs finish`) clean (`left: 0`, `refused: 0`, `blocked: 0`) |
+| 5 | Evidence dialogue | `zt-evidence-dialogue` | each **empirical** Model Card | empirical only | `dialogue.mjs check` clean; every judged pair recorded, and every supported (`same: true`) pair written as 对照, 印证 or 反驳 in **对应** |
+| 6 | Literature organize | `zt-literature-organize` | the book (`<key>`) | the whole Literature tree | `zt-check --tree <key> [--snapshot <file>]` (`zt-literature-organize/scripts/check.mjs`) clean: top line follows the source's top divisions; Term list, then Cited list, at the tail; no crosser left; `list_broken_links` empty |
+| 7 | Illustrate | `zt-model-illustrate` | each **formal** Model Card | formal only (owner, 2026-11-11; placed after Literature organize per `docs/formal-models-proposal.md` §9 so diagrams lock onto final addresses) | `zt-check --model <head> --charts` clean + `verify.mjs --model <head>` clean in light and dark (renders verified, lint 0, every owned setting/assumption has figure + **直觉**, every owned 定义 has **直觉**) |
 
-**Concept models.** A concept model takes the fold only. A concept model of four parts or fewer stays as it is (the ebrill decision, 2026-10-31). Stages 2–5 run on a larger concept model only when the user asks.
+**Concept models.** A concept model takes the fold only. A concept model of four parts or fewer stays as it is (the ebrill decision, 2026-10-31). Stages 2–4 run on a larger concept model only when the user asks (Stage 5 is empirical-only, Stage 6 runs on the book, and Stage 7 is formal-only).
 
 **Order inside a stage.** Run stages 2–4 model by model in the order of the book (stage 2 on every model, then stage 3 on every model, and so on). This way an import in stage 4 finds every block of the book already built. Within stage 4, import a model before the models that take blocks from it.
 
-**After every stage that rewrites Cards, relink the Terms**, as each stage's skill says: `pwsh -NoProfile -File E:\zet\scripts\book-digest\term-relink.ps1 -CitationKey <key>`. Run it once more after stage 7, then plan it again: a second plan that still changes a Card is a bug.
+**After every stage that rewrites Cards, relink the Terms**, as each stage's skill says: `zt-digest term-link -Step relink -CitationKey <key>` (or the legacy wrapper `pwsh -NoProfile -File E:\zet\scripts\book-digest\term-relink.ps1 -CitationKey <key>`). Run it once more after stage 7, then verify with `-PlanOnly`: a second plan that still changes a Card is a bug.
+
+**Internalized binary gates (Waves 1 & 2; `docs/post-digest-binary-internalization.md`).** The stage checks and helpers below are internalized directly in `zt-check` and `zt-digest` (all existing `.mjs` scripts coexist):
+- Stage gate (`check-model.mjs`): `zt-check --model <head> --stage fold|settings|restructure|final [--format json]`
+- Settings audit (`check-settings.mjs`): `zt-check --model <head> --settings [--symbols] [--format json]`
+- Network audit (`check-network.mjs`): `zt-check --model <head> --network [--format json]`
+- Premise scan (`check-premises.mjs`): `zt-check --model <head> --premises [--format json]`
+- Draft diff (`check-drafts.mjs`): `zt-check --draft-diff <orig.json> <draft.json> [--chapters a,b,...] [--format json]`
+- Literature tree check (`zt-literature-organize/scripts/check.mjs`): `zt-check --tree <key> [--snapshot <file>] [--format json]`
+- Chart & intuition lint/coverage (`lint.mjs` / `intuition.mjs` / non-render `verify.mjs`): `zt-check --model <head> --charts [--format json]` and `zt-check --charts-json <file> [--format json]`
+- Single-model explanation refresh (`explain.mjs`): `zt-digest model-explain -Step plan|apply|finish -Model <head> [-Work <dir>] [-Force]`
 
 ## Not in this sequence
 
@@ -56,4 +66,4 @@ Write `E:\zet\docs\model-passes\<key>.md`: one section per stage, with the date,
 
 ## Report the plan without running it
 
-When the user asks only for the sequence of a book, run nothing that writes. Read the run report and run `zt-model-fold/scripts/model-survey.mjs <key>`, which is read-only. Then report, for each stage: its skill, the Model Cards it would touch (the survey's candidate groups for stage 1; the levels for stages 2–6), its gate, and what is still open (for example a source section with own estimates but no empirical model).
+When the user asks only for the sequence of a book, run nothing that writes. Read the run report and run `zt-model-fold/scripts/model-survey.mjs <key>`, which is read-only. Then report, for each stage: its skill, the Model Cards it would touch (the survey's candidate groups for stage 1; the levels and eligibility for stages 2–7), its gate, and what is still open (for example a source section with own estimates but no empirical model).

@@ -32,7 +32,7 @@ pattern!(DISPLAY_MATH, r"\$\$[\s\S]*?\$\$");
 pattern!(DISPLAY_CUT, r"^\s*(?:$|[-+*][ \t]|>|#{1,6}[ \t]|1[.)][ \t]|-+\s*$|=+\s*$)");
 // A text-mode argument inside a formula: its own `$…$` pair is valid TeX (`\tag{$5-5^{\prime}$}`).
 pattern!(DISPLAY_TEXT_ARG, r"\\(?:tag|text|mbox|hbox)\s*\{(?:[^{}]|\{[^{}]*\})*\}");
-pattern!(DISPLAY_TAG, r"\\tag\s*\{((?:[^{}]|\{[^{}]*\})*)\}");
+pattern!(DISPLAY_TAG, r"\\tag\*?\s*\{((?:[^{}]|\{[^{}]*\})*)\}");
 pattern!(INLINE_MATH_PAIR, r"\$[^$]*\$");
 pattern!(INLINE_MATH, r"\$[^$\n]+\$");
 pattern!(LINK, r"\[\[[^\]]+\]\]");
@@ -432,7 +432,7 @@ pub(crate) fn prose_lines(body: &str) -> Vec<ProseLine> {
 /// PowerShell double-quoted string loses `$A_I` (an unset variable) and leaves `当且仅当 <A_O$`: on
 /// grossman2002integration trial 8 two titles of group 4 reached the archive that way. The count
 /// is per line because two open table rows add up to an even body.
-pub(crate) fn open_math(text: &str) -> bool {
+pub fn open_math(text: &str) -> bool {
     let probe = FENCED.replace_all(text, "");
     let probe = DISPLAY_MATH.replace_all(&probe, "");
     let probe = CODE.replace_all(&probe, "");
@@ -456,7 +456,7 @@ pub(crate) fn open_math(text: &str) -> bool {
 /// also reads two faults that make KaTeX refuse a formula: a `\tag` argument, which is text mode,
 /// that is not plain text outside its own `$…$` pair; and a backspace or form feed, which a JSON
 /// escape leaves when it eats the backslash of `\bar` or `\frac`.
-pub(crate) fn broken_display(text: &str) -> bool {
+pub fn broken_display(text: &str) -> bool {
     let probe = FENCED.replace_all(text, "");
     let probe = CODE.replace_all(&probe, "");
     if probe.contains(['\u{8}', '\u{c}']) {
@@ -1013,6 +1013,16 @@ pub fn math_ranges(text: &str) -> Vec<Range<usize>> {
     math_ranges_in(text, &code_ranges(text))
 }
 
+fn is_escaped(bytes: &[u8], index: usize) -> bool {
+    let mut backslashes = 0usize;
+    let mut i = index;
+    while i > 0 && bytes[i - 1] == b'\\' {
+        backslashes += 1;
+        i -= 1;
+    }
+    backslashes % 2 == 1
+}
+
 /// [`math_ranges`] over an already-computed code set, so one scan can share its code ranges.
 fn math_ranges_in(text: &str, code: &[Range<usize>]) -> Vec<Range<usize>> {
     let bytes = text.as_bytes();
@@ -1020,7 +1030,7 @@ fn math_ranges_in(text: &str, code: &[Range<usize>]) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] != b'$' || in_code(index) {
+        if bytes[index] != b'$' || in_code(index) || is_escaped(bytes, index) {
             index += 1;
             continue;
         }
@@ -1028,7 +1038,11 @@ fn math_ranges_in(text: &str, code: &[Range<usize>]) -> Vec<Range<usize>> {
             let mut search = index + 2;
             let mut close = None;
             while search + 1 < bytes.len() {
-                if bytes[search] == b'$' && bytes[search + 1] == b'$' && !in_code(search) {
+                if bytes[search] == b'$'
+                    && bytes[search + 1] == b'$'
+                    && !in_code(search)
+                    && !is_escaped(bytes, search)
+                {
                     close = Some(search);
                     break;
                 }
@@ -1046,7 +1060,13 @@ fn math_ranges_in(text: &str, code: &[Range<usize>]) -> Vec<Range<usize>> {
         let mut search = index + 1;
         let mut close = None;
         while search < bytes.len() && bytes[search] != b'\n' {
-            if bytes[search] == b'$' && !in_code(search) {
+            if in_code(search) {
+                break;
+            }
+            if bytes[search] == b'$' && !is_escaped(bytes, search) {
+                if bytes.get(search + 1) == Some(&b'$') {
+                    break;
+                }
                 if search > index + 1 {
                     close = Some(search);
                 }
@@ -1063,6 +1083,385 @@ fn math_ranges_in(text: &str, code: &[Range<usize>]) -> Vec<Range<usize>> {
         }
     }
     ranges
+}
+
+/// Byte ranges of `\(...\)` (inline) and `\[...\]` (display) TeX math spans outside code and
+/// dollar math, matching `src/gui.rs`'s `normalize_math_delimiters`. Each tuple is `(range, is_display)`.
+fn latex_delimiter_ranges_in(
+    text: &str,
+    code: &[Range<usize>],
+    dollar_math: &[Range<usize>],
+) -> Vec<(Range<usize>, bool)> {
+    if !text.contains("\\(") && !text.contains("\\[") {
+        return Vec::new();
+    }
+    let bytes = text.as_bytes();
+    let excluded = |index: usize| {
+        code.iter().any(|r| r.contains(&index)) || dollar_math.iter().any(|r| r.contains(&index))
+    };
+    let mut ranges = Vec::new();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if excluded(i) {
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'\\' && !is_escaped(bytes, i) {
+            let (close_pat, is_display) = match bytes[i + 1] {
+                b'(' => (b"\\)", false),
+                b'[' => (b"\\]", true),
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+            let inner_start = i + 2;
+            let mut search = inner_start;
+            let mut found = None;
+            while search + 1 < bytes.len() {
+                if !is_display && bytes[search] == b'\n' {
+                    break;
+                }
+                if excluded(search) {
+                    break;
+                }
+                if bytes[search] == close_pat[0]
+                    && bytes[search + 1] == close_pat[1]
+                    && !is_escaped(bytes, search)
+                {
+                    found = Some(search + 2);
+                    break;
+                }
+                search += 1;
+            }
+            if let Some(end) = found {
+                ranges.push((i..end, is_display));
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    ranges
+}
+
+/// R22 / T10: return every `\tag{...}` / `\tag*{...}` occurrence found inside an inline math span
+/// (`$...$` or `\(...\)`), outside display blocks (`$$...$$`, `\[...\]`) and Markdown code.
+/// KaTeX allows `\tag` only in display mode.
+pub fn inline_tag_in_math(text: &str) -> Vec<String> {
+    if !text.contains("\\tag") {
+        return Vec::new();
+    }
+    let code = code_ranges(text);
+    let dollar_math = math_ranges_in(text, &code);
+    let latex_math = latex_delimiter_ranges_in(text, &code, &dollar_math);
+    let mut inline_spans: Vec<Range<usize>> = dollar_math
+        .into_iter()
+        .filter(|r| !text[r.clone()].starts_with("$$"))
+        .collect();
+    for (range, is_display) in latex_math {
+        if !is_display {
+            inline_spans.push(range);
+        }
+    }
+    inline_spans.sort_by_key(|r| r.start);
+    let mut out = Vec::new();
+    for span in inline_spans {
+        let slice = &text[span];
+        for m in DISPLAY_TAG.find_iter(slice) {
+            out.push(m.as_str().to_string());
+        }
+    }
+    out
+}
+
+/// Sorted list of unambiguous TeX math control words that should never appear bare in prose
+/// outside `$...$` / `$$...$$` / `\(...\)` / `\[...\]` or Markdown code.
+const TEX_MATH_COMMANDS: &[&str] = &[
+    "Delta",
+    "Gamma",
+    "Lambda",
+    "Leftarrow",
+    "Leftrightarrow",
+    "Omega",
+    "Phi",
+    "Pi",
+    "Psi",
+    "Rightarrow",
+    "Sigma",
+    "Theta",
+    "Upsilon",
+    "Xi",
+    "alpha",
+    "approx",
+    "bar",
+    "begin",
+    "beta",
+    "boldsymbol",
+    "cap",
+    "cdot",
+    "cdots",
+    "chi",
+    "cup",
+    "ddot",
+    "delta",
+    "dfrac",
+    "dot",
+    "dots",
+    "ell",
+    "emptyset",
+    "end",
+    "epsilon",
+    "equiv",
+    "eta",
+    "exists",
+    "forall",
+    "frac",
+    "gamma",
+    "ge",
+    "geq",
+    "hat",
+    "hbar",
+    "iff",
+    "in",
+    "infty",
+    "int",
+    "iota",
+    "kappa",
+    "lambda",
+    "ldots",
+    "le",
+    "left",
+    "leftarrow",
+    "leftrightarrow",
+    "leq",
+    "mapsto",
+    "mathbb",
+    "mathbf",
+    "mathcal",
+    "mathrm",
+    "mp",
+    "mu",
+    "nabla",
+    "neq",
+    "notin",
+    "nu",
+    "omega",
+    "operatorname",
+    "overline",
+    "partial",
+    "phi",
+    "pi",
+    "pm",
+    "prod",
+    "propto",
+    "psi",
+    "rho",
+    "right",
+    "rightarrow",
+    "setminus",
+    "sigma",
+    "sim",
+    "simeq",
+    "sqrt",
+    "subset",
+    "subseteq",
+    "sum",
+    "supset",
+    "supseteq",
+    "tag",
+    "tau",
+    "tfrac",
+    "theta",
+    "tilde",
+    "times",
+    "to",
+    "underline",
+    "upsilon",
+    "varepsilon",
+    "varnothing",
+    "varphi",
+    "varpi",
+    "varrho",
+    "varsigma",
+    "vartheta",
+    "vec",
+    "widehat",
+    "widetilde",
+    "xi",
+    "zeta",
+];
+
+pattern!(
+    BRACED_SCRIPT,
+    r"(?:[A-Za-z0-9]{1,12}|[\)\]\}])(?:_|\^)\{[A-Za-z0-9,+\-\s\\\.=\(\)'′*]+\}"
+);
+pattern!(HTML_COMMENT, r"<!--[\s\S]*?-->");
+
+/// Strip Markdown link destinations `[label](dest)` while preserving visible `label` text.
+fn strip_markdown_link_dests(text: &str) -> String {
+    if !text.contains("](") {
+        return text.to_string();
+    }
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b']' && bytes.get(i + 1) == Some(&b'(') {
+            let mut j = i + 2;
+            let mut depth = 1usize;
+            while j < bytes.len() && bytes[j] != b'\n' {
+                match bytes[j] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            if depth == 0 && j < bytes.len() {
+                out.push(']');
+                out.push(' ');
+                i = j + 1;
+                continue;
+            }
+        }
+        let ch = text[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Remove code blocks/spans, math spans (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`), HTML comments,
+/// ordinary `[[...]]` Links, and Markdown link destinations while preserving visible Term labels
+/// and Markdown link labels.
+pub fn strip_math_and_code(text: &str) -> String {
+    let code = code_ranges(text);
+    let dollar_math = math_ranges_in(text, &code);
+    let latex_math = latex_delimiter_ranges_in(text, &code, &dollar_math);
+    let mut masked: Vec<Range<usize>> = Vec::with_capacity(code.len() + dollar_math.len() + latex_math.len());
+    masked.extend(code);
+    masked.extend(dollar_math);
+    masked.extend(latex_math.into_iter().map(|(r, _)| r));
+    masked.sort_by_key(|r| (r.start, r.end));
+
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    for range in masked {
+        if range.start > cursor {
+            out.push_str(&text[cursor..range.start]);
+        }
+        if range.end > cursor {
+            out.push(' ');
+            cursor = range.end;
+        }
+    }
+    if cursor < text.len() {
+        out.push_str(&text[cursor..]);
+    }
+    let out = HTML_COMMENT.replace_all(&out, " ");
+    let out = strip_term_links(&out);
+    let out = LINK.replace_all(&out, " ");
+    strip_markdown_link_dests(&out)
+}
+
+/// Whether byte offset `at` sits inside a Windows drive path token such as `C:\in\alpha`.
+fn in_windows_drive_path(bytes: &[u8], at: usize) -> bool {
+    let mut i = at;
+    while i > 0 {
+        let b = bytes[i - 1];
+        if b == b':' && i >= 2 && bytes[i - 2].is_ascii_alphabetic() {
+            let before_drive = i.checked_sub(3).map(|k| bytes[k]);
+            return before_drive.is_none_or(|c| !c.is_ascii_alphanumeric());
+        }
+        if b.is_ascii_alphanumeric() || matches!(b, b'\\' | b'_' | b'-' | b'.') {
+            i -= 1;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
+/// R22 / T10: return every bare LaTeX command or braced TeX sub/superscript found in prose
+/// outside math delimiters and Markdown code.
+pub fn bare_latex_in_prose(text: &str) -> Vec<String> {
+    if !text.contains('\\') && !text.contains('{') {
+        return Vec::new();
+    }
+    let prose = strip_math_and_code(text);
+    let bytes = prose.as_bytes();
+    let mut hits: Vec<(usize, usize, String)> = Vec::new();
+
+    // 1. Braced TeX sub/superscripts: `q_{ijt}`, `Cluster_{i,c}`, `2^{17}`, `X_t^{4\setminus i}`.
+    if prose.contains('{') && (prose.contains('_') || prose.contains('^')) {
+        for m in BRACED_SCRIPT.find_iter(&prose) {
+            let mut start = m.start();
+            let end = m.end();
+            let s = m.as_str();
+            if in_windows_drive_path(bytes, start) {
+                continue;
+            }
+            let first = s.as_bytes()[0];
+            if first.is_ascii_alphanumeric() && start > 0 {
+                let prev = bytes[start - 1];
+                if prev.is_ascii_alphanumeric() {
+                    continue;
+                }
+                let is_caret = s.contains("^{");
+                let is_under = s.contains("_{");
+                if (prev == b'_' && is_caret) || (prev == b'^' && is_under) {
+                    let mut k = start - 1;
+                    while k > 0 && bytes[k - 1].is_ascii_alphanumeric() {
+                        k -= 1;
+                    }
+                    if k < start - 1 && (k == 0 || !bytes[k - 1].is_ascii_alphanumeric()) {
+                        start = k;
+                    }
+                } else if prev == b'_' || prev == b'\\' {
+                    continue;
+                }
+            }
+            hits.push((start, end, prose[start..end].to_string()));
+        }
+    }
+
+    // 2. Unambiguous TeX math commands: `\pi`, `\in`, `\frac`, `\bar`, `\mathcal`, ...
+    if prose.contains('\\') {
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] == b'\\' {
+                if is_escaped(bytes, i) || in_windows_drive_path(bytes, i) {
+                    i += 1;
+                    continue;
+                }
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j].is_ascii_alphabetic() {
+                    j += 1;
+                }
+                if j > i + 1 {
+                    let cmd = &prose[i + 1..j];
+                    if TEX_MATH_COMMANDS.binary_search(&cmd).is_ok() {
+                        let covered = hits.iter().any(|(hs, he, _)| *hs <= i && j <= *he);
+                        if !covered {
+                            hits.push((i, j, prose[i..j].to_string()));
+                        }
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    hits.sort_by_key(|(s, e, _)| (*s, *e));
+    hits.into_iter().map(|(_, _, token)| token).collect()
 }
 
 fn scan_code(text: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
@@ -1517,6 +1916,90 @@ mod tests {
         assert_eq!(spans, ["$x/y$", "$$z=1$$"]);
         assert!(math_ranges("没有公式").is_empty());
         assert!(math_ranges("`$c$`").is_empty(), "a code dollar opens no math");
+    }
+
+    #[test]
+    fn math_ranges_respect_escaped_dollars_and_do_not_cross_code() {
+        // ozhan2026monetary dominant-currency notation: `\$` inside math must not close `$...$`.
+        let text = r"主导货币价格 $P^{\$d}_{o,i,t}$ 与货币 \$5 和 $x + y$。";
+        let spans: Vec<&str> = math_ranges(text).into_iter().map(|r| &text[r]).collect();
+        assert_eq!(spans, [r"$P^{\$d}_{o,i,t}$", "$x + y$"]);
+
+        // An even number of backslashes before `$` does NOT escape the closing `$`.
+        let text2 = r"末项 $a \\$ 后文。";
+        let spans2: Vec<&str> = math_ranges(text2).into_iter().map(|r| &text2[r]).collect();
+        assert_eq!(spans2, [r"$a \\$"]);
+
+        // An unclosed `$` before a code span must not pair with a `$` after the code span.
+        let text3 = "价格 $5 与 `code` 与 $x$ 结束";
+        let spans3: Vec<&str> = math_ranges(text3).into_iter().map(|r| &text3[r]).collect();
+        assert_eq!(spans3, ["$x$"]);
+    }
+
+    #[test]
+    fn inline_tag_in_math_flags_inline_tags_and_allows_display_and_code() {
+        assert_eq!(
+            inline_tag_in_math(r"步骤：$r_t = g_t + \rho \tag{2}$。"),
+            vec![r"\tag{2}"]
+        );
+        assert_eq!(
+            inline_tag_in_math(r"全链推出 $\phi_1 = \frac{\lambda_H}{\lambda_H + 2\lambda_L} \tag {10}$。"),
+            vec![r"\tag {10}"]
+        );
+        assert_eq!(
+            inline_tag_in_math(r"带星号标签 $x = 1 \tag*{7}$ 和 \(y = 2 \tag {3}\)。"),
+            vec![r"\tag*{7}", r"\tag {3}"]
+        );
+        // Dominant-currency `\$` inside inline math must not split the span before `\tag`.
+        assert_eq!(
+            inline_tag_in_math(r"价格 $P^{\$d}_{o,i,t} = 1 \tag {4}$。"),
+            vec![r"\tag {4}"]
+        );
+        // Display blocks (`$$...$$` and `\[...\]`) and code spans/fences are allowed.
+        assert!(inline_tag_in_math(r"$$r_t = g_t + \rho \tag {2}$$").is_empty());
+        assert!(inline_tag_in_math(r"$$a = b \tag*{7}$$").is_empty());
+        assert!(inline_tag_in_math(r"\[a = b \tag{3}\]").is_empty());
+        assert!(inline_tag_in_math("代码 `$x \\tag{1}$` 与\n```\n$y \\tag{2}$\n```").is_empty());
+    }
+
+    #[test]
+    fn bare_latex_in_prose_detects_unwrapped_commands_and_scripts_without_false_positives() {
+        assert_eq!(
+            bare_latex_in_prose(r"固定类型 \pi\in(0,1) 与条件 c'(0)<\bar\pi/r。"),
+            vec![r"\pi", r"\in", r"\bar", r"\pi"]
+        );
+        assert_eq!(
+            bare_latex_in_prose(r"当 x\in S 且 a\rightarrow b 时，\frac{1}{2} 成立。"),
+            vec![r"\in", r"\rightarrow", r"\frac"]
+        );
+        let scripts = bare_latex_in_prose(r"产出 q_{ijt} 与 Cluster_{i,c} 及 2^{17} 和 X_t^{4\setminus i}。");
+        assert!(scripts.iter().any(|s| s == "q_{ijt}"), "{scripts:?}");
+        assert!(scripts.iter().any(|s| s == "Cluster_{i,c}"), "{scripts:?}");
+        assert!(scripts.iter().any(|s| s == "2^{17}"), "{scripts:?}");
+        assert!(scripts.iter().any(|s| s.contains("^{4\\setminus i}")), "{scripts:?}");
+
+        // Valid math delimiters ($, $$, \(...\), \[...\]), escaped \$ inside math, code, links,
+        // Windows paths, plain identifiers, and Unicode symbols produce zero hits.
+        for clean in [
+            r"公式 $\pi\in(0,1)$ 与 $$q_{ijt} = \frac{1}{2}$$。",
+            r"主导货币 $P^{\$d}_{o,i,t}$ 后文没有裸公式。",
+            r"LaTeX 定界符 \(\lambda > 0\) 与 \[\sum_i c_i\]。",
+            "代码 `\\lambda` 与 `q_{ijt}`。\n```\n\\alpha + x_{ij}\n```\n~~~\n\\beta\n~~~",
+            r"路径 C:\in\alpha 与双反斜杠 \\alpha。",
+            r"链接 [[key/1|a]]、[[均衡@key/1|a]] 与 [文档](https://example.com/q_{ijt}/\alpha)。",
+            "标识符 file_name.rs、max_sentences 与可读式 P ≤ L。",
+        ] {
+            assert!(
+                bare_latex_in_prose(clean).is_empty(),
+                "expected no bare LaTeX in {clean:?}, got {:?}",
+                bare_latex_in_prose(clean)
+            );
+        }
+        // Bare LaTeX inside the visible label of a Markdown link is still caught.
+        assert_eq!(
+            bare_latex_in_prose(r"见 [\lambda 参数](https://example.com/doc)。"),
+            vec![r"\lambda"]
+        );
     }
 
     #[test]

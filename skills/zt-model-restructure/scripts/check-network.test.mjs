@@ -95,3 +95,25 @@ test("an empirical model's data block is its primitive: it rests on no earlier b
   assert.ok(plain.includes('b3'), JSON.stringify(plain))
   assert.ok(!analyse({ ...m, level: 'empirical' }, L).unanchored.map((u) => u.block).includes('b3'))
 })
+
+test('formal-v2: derived chapter Criterion gets move advice (not setting-primitive), and Calibration/Experiment chapters are not flagged empty', async () => {
+  const L = await loadLayout()
+  const m = fixture()
+  m.level = 'formal'
+  m.blocks[1].lead = '错配越少，效率越高，代价是更多的管理跨度成本。'
+  m.blocks[2].children = [child('K/4|a|a|2|a', '判据：派生均衡定义'), child('K/4|a|a|2|b', '校准：稳态参数')]
+  m.blocks[3].lead = '数值实验比较基准与固定供给体制的脉冲响应。'
+  m.blocks[3].children = [child('K/4|a|a|3|a', '数值实验：外逃冲击')]
+  m.blocks[4].children = [child('K/4|a|a|4|a', '基准：无信号混同工资')]
+  m.block_edges = [
+    { from_block: 'b1', to_block: 'b0', kind: 'rests-on', count: 1, pairs: [] },
+    { from_block: 'b2', to_block: 'b1', kind: 'rests-on', count: 1, pairs: [] },
+    { from_block: 'b2', to_block: 'b3', kind: 'rests-on', count: 1, pairs: [{ from: 'K/4|a|a|2|a', to: 'K/4|a|a|3|a' }] },
+    { from_block: 'b3', to_block: 'b2', kind: 'rests-on', count: 1, pairs: [] },
+    { from_block: 'b4', to_block: 'b3', kind: 'rests-on', count: 1, pairs: [] },
+  ]
+  const r = analyse(m, L)
+  assert.deepEqual(r.empty, [], 'chapters holding 校准, 数值实验, or 基准 are valid result-level chapters')
+  assert.equal(r.moves.length, 1)
+  assert.match(r.moves[0].fix, /move K\/4\|a\|a\|2\|a after its latest premise/, 'chapter-side Criterion can move rather than being told to stay in setting')
+})

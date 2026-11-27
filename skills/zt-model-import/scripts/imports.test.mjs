@@ -111,3 +111,142 @@ test('plan: a tested prediction stays 单卡 when another imported prediction re
     { address: 'K/9|a|b', line: 'shared', import: 'K/9|a|b', role: 'result' }]
   assert.deepEqual(propose(m).changes.filter((c) => c.why === 'upgrade'), [])
 })
+
+test('plan: in a formal model, a 校准 part importing an empirical 估计 stays 单卡 across premise, legacy, and upgrade paths', () => {
+  const cal = H + '|a|2|a'
+  const est = 'K/9|a|1|a'
+  const m = {
+    level: 'formal',
+    head: { address: H, body: '' },
+    build: {
+      order: [
+        { address: H + '|a', line: 'main', facet: '设定', role: 'setting' },
+        { address: cal, line: 'side', facet: '校准：稳态识别', role: 'calibration' },
+        { address: est, line: 'shared', import: est, facet: '估计：瑞士便利收益', home: 'K/9|a', home_level: 'empirical', home_role: 'estimate' },
+        { address: 'K/8|a|1|a', line: 'shared', legacy: true, facet: '估计：旧估计', home: 'K/8|a', home_level: 'empirical', home_role: 'estimate' },
+      ],
+      closure: [
+        { from: cal, to: 'K/6|a|1|a', note: '依赖实证估计', card: { address: 'K/6|a|1|a', title: '估计：287 bp', type: 'model', facet: '估计：基准', models: ['K/6|a'] } },
+        { from: cal, to: 'K/6|a|1|a|a', note: '依赖检验', card: { address: 'K/6|a|1|a|a', title: '检验：稳健性', type: 'model', facet: '检验：稳健性', models: ['K/6|a'] } },
+      ],
+      tolerated: [
+        { part: est, home: 'K/9|a', premise: { address: 'K/9|a|b', models: ['K/9|a'] } },
+        { part: 'K/8|a|1|a', home: 'K/8|a', premise: { address: 'K/8|a|b', models: ['K/8|a'] } },
+      ],
+      false_share: [],
+      import_target: [],
+      import_cycle: [],
+    },
+    imports: [
+      { root: est, title: '估计：瑞士便利收益', mode: 'card', home: 'K/9|a', members: [est], closure: [] },
+      { root: 'K/8|a|1|a', title: '估计：旧估计', mode: 'legacy', home: 'K/8|a', members: ['K/8|a|1|a'], closure: [] },
+    ],
+    relations: [
+      { from: cal, to: est, kind: 'rests-on' },
+      { from: cal, to: 'K/8|a|1|a', kind: 'rests-on' },
+      { from: cal, to: 'K/6|a|1|a', kind: 'rests-on' },
+    ],
+    neighbours: [],
+  }
+  const p = propose(m)
+  // 1) Repeat-plan upgrade: stays 单卡 (no upgrade proposed)
+  assert.deepEqual(p.changes.filter((c) => c.why === 'upgrade'), [])
+  // 2) Legacy conversion: stays 单卡 despite tolerated premise in home model
+  assert.deepEqual(p.changes.filter((c) => c.why === 'legacy').map((c) => [c.root, c.mode]), [['K/8|a|1|a', '单卡']])
+  // 3) Outside premise (Rust-shaped: edge is ONLY in build.closure, NOT in m.relations): stays 单卡!
+  const mRustClosureOnly = { ...m, relations: m.relations.filter((r) => r.to !== 'K/6|a|1|a') }
+  const pRust = propose(mRustClosureOnly)
+  assert.deepEqual(pRust.changes.filter((c) => c.why === 'premise' && c.root === 'K/6|a|1|a').map((c) => c.mode), ['单卡'])
+  // 4) Empirical Hypothesis resting on a formal Setting is NOT protected as 单卡 (upgrades to 整块)
+  const empOnSetting = model({
+    level: 'empirical',
+    relations: [{ from: H + '|a|1', to: 'K/9|a|a', kind: 'rests-on' }],
+  })
+  empOnSetting.build.order = empOnSetting.build.order.map((o) => {
+    if (o.address === H + '|a|1') return { ...o, role: 'hypothesis' }
+    if (o.address === 'K/9|a|a') return { ...o, facet: '设定：基础环境', home_level: 'formal', home_role: 'setting' }
+    return o
+  })
+  assert.deepEqual(propose(empOnSetting).changes.filter((c) => c.why === 'upgrade').map((c) => c.root), ['K/9|a|a'])
+  // 5) When a Setting (non-calibration) also rests on est, upgrade to 整块 IS proposed
+  const mMixed = { ...m, relations: [...m.relations, { from: H + '|a', to: est, kind: 'rests-on' }] }
+  assert.deepEqual(propose(mMixed).changes.filter((c) => c.why === 'upgrade').map((c) => c.root), [est])
+  // 6) When a parent block encloses a protected 单卡 estimate AND another child, the parent 整块 is withheld into manual
+  const mEnclosing = {
+    level: 'formal',
+    head: { address: H, body: '' },
+    build: {
+      order: [
+        { address: H + '|a', line: 'main', facet: '设定', role: 'setting' },
+        { address: cal, line: 'side', facet: '校准：稳态识别', role: 'calibration' },
+      ],
+      closure: [
+        { from: H + '|a', to: 'K/6|a|1', note: '依赖章', card: { address: 'K/6|a|1', title: '第 1 章', type: 'model', facet: '第 1 章', models: ['K/6|a'] } },
+        { from: cal, to: 'K/6|a|1|a', note: '依赖估计', card: { address: 'K/6|a|1|a', title: '估计：287 bp', type: 'model', facet: '估计：基准', home_level: 'empirical', home_role: 'estimate', models: ['K/6|a'] } },
+        { from: H + '|a', to: 'K/6|a|1|b', note: '依赖表', card: { address: 'K/6|a|1|b', title: '表 1', type: 'model', facet: '表 1', models: ['K/6|a'] } },
+      ],
+      tolerated: [],
+      false_share: [],
+      import_target: [],
+      import_cycle: [],
+    },
+    imports: [],
+    relations: [],
+    neighbours: [],
+  }
+  const pEnc = propose(mEnclosing)
+  assert.equal(pEnc.changes.some((c) => c.root === 'K/6|a|1' && c.mode === '整块'), false, 'enclosing 整块 must be withheld on first plan')
+  assert.ok(pEnc.manual.some((x) => x.kind === 'mixed singleton' && x.target === 'K/6|a|1'))
+
+  // 7) Repeat plan after K/6|a|1|a has already been applied as 单卡: enclosing parent 整块 STILL withheld!
+  const mRepeatEnc = {
+    ...mEnclosing,
+    build: {
+      ...mEnclosing.build,
+      order: [
+        ...mEnclosing.build.order,
+        { address: 'K/6|a|1|a', line: 'shared', import: 'K/6|a|1|a', facet: '估计：基准', home: 'K/6|a', home_level: 'empirical', home_role: 'estimate' },
+      ],
+      closure: mEnclosing.build.closure.filter((c) => c.to !== 'K/6|a|1|a'),
+    },
+    imports: [{ root: 'K/6|a|1|a', title: '估计：287 bp', mode: 'card', home: 'K/6|a', members: ['K/6|a|1|a'], closure: [] }],
+    relations: [{ from: cal, to: 'K/6|a|1|a', kind: 'rests-on' }],
+  }
+  const pRep = propose(mRepeatEnc)
+  assert.equal(pRep.changes.some((c) => c.root === 'K/6|a|1' && c.mode === '整块'), false, 'enclosing 整块 must stay withheld on repeat plan')
+  assert.ok(pRep.manual.some((x) => x.kind === 'mixed singleton' && x.target === 'K/6|a|1'))
+
+  // 8) When BOTH parent and estimate are already imported as 单卡, a tolerated premise on parent still withholds 整块 upgrade!
+  const mBothImported = {
+    ...mRepeatEnc,
+    build: {
+      ...mRepeatEnc.build,
+      order: [
+        ...mRepeatEnc.build.order,
+        { address: 'K/6|a|1', line: 'shared', import: 'K/6|a|1', facet: '第 1 章', home: 'K/6|a', home_level: 'empirical', home_role: 'chapter' },
+      ],
+      closure: [],
+      tolerated: [{ part: 'K/6|a|1', home: 'K/6|a', premise: { address: 'K/6|a|a', models: ['K/6|a'] } }],
+    },
+    imports: [
+      ...mRepeatEnc.imports,
+      { root: 'K/6|a|1', title: '第 1 章', mode: 'card', home: 'K/6|a', members: ['K/6|a|1'], closure: [] },
+    ],
+  }
+  const pUpg = propose(mBothImported)
+  assert.equal(pUpg.changes.some((c) => c.root === 'K/6|a|1' && c.mode === '整块'), false, 'parent upgrade to 整块 over protected estimate must be withheld')
+  assert.ok(pUpg.manual.some((x) => x.kind === 'mixed singleton' && x.target === 'K/6|a|1'))
+
+  // 9) When ONLY a parent and its protected child estimate are pending (parent itself would be 单卡, not 整块),
+  //    the parent is NOT falsely withheld: both are proposed as separate 单卡 imports.
+  const mParentOnly = {
+    ...mEnclosing,
+    build: {
+      ...mEnclosing.build,
+      closure: mEnclosing.build.closure.filter((c) => c.to !== 'K/6|a|1|b'),
+    },
+  }
+  const pPO = propose(mParentOnly)
+  assert.deepEqual(pPO.changes.map((c) => [c.root, c.mode]).sort(), [['K/6|a|1', '单卡'], ['K/6|a|1|a', '单卡']])
+  assert.equal(pPO.manual.some((x) => x.kind === 'mixed singleton'), false)
+})

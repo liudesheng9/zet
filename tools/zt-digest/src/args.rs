@@ -25,7 +25,7 @@ impl Args {
                 i += 1;
                 continue;
             }
-            let (name, inline) = match arg[1..].split_once(':') {
+            let (name, inline) = match crate::util::split_flag_arg(&arg[1..]) {
                 Some((name, value)) => (name, Some(value.to_string())),
                 None => (&arg[1..], None),
             };
@@ -139,5 +139,10 @@ mod tests {
         assert!(parse(&["-Apply:$false"]).is_ok_and(|a| !a.flag("Apply")));
         // A negative number is a value, not a name.
         assert!(parse(&["-PerJob", "-1"]).is_ok_and(|a| a.int_or("PerJob", 0).unwrap() == -1));
+        // L1: `-Flag=value` works consistently with `-Flag:value` and preserves Windows drive colons.
+        let eq = parse(&["-Step=plan", "-Work=D:\\w", "-Apply=$false"]).unwrap();
+        assert_eq!(eq.str("Step"), "plan");
+        assert_eq!(eq.str("Work"), "D:\\w");
+        assert!(!eq.flag("Apply"));
     }
 }

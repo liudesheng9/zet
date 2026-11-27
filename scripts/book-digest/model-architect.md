@@ -92,7 +92,7 @@ An earlier build may have left parts. List every part filed under the Model Card
 
 ## plan.json
 
-Write `<DIR>\plan.json` (UTF-8 without BOM). Example:
+Write `<DIR>\plan.json` (UTF-8 without BOM). **Math delimiters (enforced by `validate`):** every TeX command, Greek letter, relation, or braced sub/superscript in any rendered text field (`title`, `card`, `divisions[].name`, `symbols[][0..1]`, `terms[][]`, `part.title`, `facet`, `rests[][1]`, `use`, `from`, `to`, `scope`, `why`, `source_label`, `justifications[].extra_assumptions`) MUST be wrapped in `$...$` (or `$$...$$` for display results such as `to`; e.g. `$\pi\in(0,1)$`, never `\pi\in(0,1)`). Never put `\tag{...}` or `\tag*{...}` inside inline `$...$` — `\tag` belongs only inside display `$$...$$` blocks. Example:
 
 ```json
 {
@@ -101,7 +101,7 @@ Write `<DIR>\plan.json` (UTF-8 without BOM). Example:
   "claim_objects": ["strategic-allocation", "choice-optimum"],
   "family_tags": ["financial-contracting"],
   "title": "融资模型：清算价值决定企业能融到多少",
-  "card": "问题：企业家何时能融到 K-w。原语与判据：两期三方融资博弈与子博弈精炼均衡。主要结果：命题 1 融资条件。",
+  "card": "问题：企业家何时能融到 $K-w$。原语与判据：两期三方融资博弈与子博弈精炼均衡。主要结果：命题 1 融资条件。",
   "symbols": [["$K$", "项目所需投资", "S0"], ["$L$", "资产在时点 1 的清算价值", "S0"], ["$P$", "可承诺还款上限", "S0"]],
   "terms": [["清算", "卖资产", "变卖资产"]],
   "parts": [
@@ -126,8 +126,8 @@ Write `<DIR>\plan.json` (UTF-8 without BOM). Example:
      "from": "(5.5)", "to": "$$P\\le L$$", "steps": 5, "rests": [["CR", "参与约束"], ["A1", "不可验证"]], "src": ["sections/s05.md:176-185"]},
     {"id": "D2", "line": "side", "after": "D1", "derive": true, "facet": "推导：还款上限二", "title": "推导：得到融资条件 (5.10)",
      "to": "$$y_1+fy_2+(1-f)L>K \\quad (5.10)$$", "steps": 6, "src": ["sections/s05.md:186-195"]},
-    {"id": "E1", "line": "side", "of": "R1", "kind": "illustrates", "why": "数值代入命题 1", "facet": "例示：L=6 时的融资可行性",
-     "emphasis": "aside", "title": "例示：L=6 时企业能融资", "spec": "代入书中例 1 的数字", "chart": "柱状图：L 与 K-w", "src": ["sections/s05.md:200-212"]},
+    {"id": "E1", "line": "side", "of": "R1", "kind": "illustrates", "why": "数值代入命题 1", "facet": "例示：$L=6$ 时的融资可行性",
+     "emphasis": "aside", "title": "例示：$L=6$ 时企业能融资", "spec": "代入书中例 1 的数字", "chart": "柱状图：$L$ 与 $K-w$", "src": ["sections/s05.md:200-212"]},
     {"id": "G", "take": "Key/3|b|a|2", "use": "对应：剩余控制权即清算权"},
     {"id": "L1", "line": "off", "facet": "局限：单期清算抽象", "emphasis": "aside", "title": "局限：不考虑多期再谈判", "spec": "模型抽象边界", "src": ["sections/s05.md:213-220"]}
   ],

@@ -26,6 +26,7 @@
 mod args;
 mod audit;
 mod backfill;
+mod backup;
 mod batch_runner;
 mod figure_explain;
 mod bridge;
@@ -50,6 +51,7 @@ mod link_gap;
 mod lockcheck;
 mod math;
 mod model;
+mod model_explain;
 mod organize;
 mod pilot;
 mod prepare;
@@ -157,8 +159,10 @@ fn main() {
         std::process::exit(code);
     }
     // A run on a copy of the box names it in its staging folder (zt-box.txt, zt_check::mcp::boxpin):
-    // every child `zt mcp` of this process then serves that box, never the live one.
-    if let Err(error) = zt_check::mcp::boxpin::apply(&rest) {
+    // bind tool positional parameters once before pin discovery so relative positional paths like
+    // `model-explain plan K/1 relativeWork` discover the exact same pin as `-Work relativeWork` (H2).
+    let pin_args = util::bind_tool_args(&tool, &rest);
+    if let Err(error) = zt_check::mcp::boxpin::apply(&pin_args) {
         eprintln!("zt-digest {tool}: {error:#}");
         std::process::exit(1);
     }
@@ -183,9 +187,11 @@ pub(crate) fn run_one(tool: &str, rest: &[String]) -> i32 {
         "open-call" => calls::cli(&rest, true),
         "service-wait" => service_wait_cli(&rest),
         "audit" => audit::cli(&rest),
+        "backup" => backup::cli(&rest),
         "card" => card::cli(&rest),
         "coverage" => coverage::cli(&rest),
         "model" => model::cli(&rest),
+        "model-explain" => model_explain::cli(&rest),
         "model-context" => model::context_cli(&rest),
         "list-models" => model::list_cli(&rest),
         "evidence-link" => model::evidence_link_cli(&rest),
@@ -259,7 +265,7 @@ pub(crate) fn run_one(tool: &str, rest: &[String]) -> i32 {
             Ok(0)
         }
         _ => {
-            util::emit_err("usage: zt-digest <tool> [-Name value ...]\ntools: call, grow, service-wait, audit, card, coverage, model, model-context, list-models, hub, register, join, topic-home, bridge, math, event, finding, gate,\n       terms, term-cards, term-link, term-pilot, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, pilot, publish, resolve, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, cleanup-run, model-deps, finish-batch, batch");
+            util::emit_err("usage: zt-digest <tool> [-Name value ...]\ntools: call, grow, service-wait, audit, backup, card, coverage, model, model-context, model-explain, list-models, hub, register, join, topic-home, bridge, math, event, finding, gate,\n       terms, term-cards, term-link, term-pilot, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, pilot, publish, resolve, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, cleanup-run, model-deps, finish-batch, batch");
             Ok(2)
         }
     };
@@ -304,7 +310,7 @@ pub(crate) fn is_open_flag(arg: &str) -> bool {
 /// `open-call` is the helper in the open scope, a command of its own that no digest job's approval
 /// allows (docs/agent-write-scope-proposal.md, D10).
 const OPEN_TOOLS: &[&str] = &[
-    "open-call", "grow", "hub", "register", "gate", "join", "topic-home", "publish", "resolve", "pilot",
+    "open-call", "backup", "grow", "hub", "register", "gate", "join", "topic-home", "publish", "resolve", "pilot",
     "restate", "snapshot-topics", "service-wait", "list-models", "version", "--version", "-v",
 ];
 

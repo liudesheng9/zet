@@ -86,31 +86,58 @@ Two to four sentences: what the result means, and which card uses it.
 - A temporary symbol (`H`, `C(ω)`) is defined in a sentence where it first appears.
 - A step the paper skipped is marked `（论文略去，此处补出）`.
 
-## Setting card
+## Setting, Assumption, Definition & Criterion cards (setting tree)
 
 ```
-一句话：what this card sets.
+一句话：what this card sets up, restricts, or defines.
 
 **起点**
-- 依赖 [[earlier setting]] 的…：what this card uses from it.   (or: 原始设定：不依赖其他设定。)
-- 变体二：… (a variant's setting says which variant it is and what it changes)
+- 依赖 [[earlier setting]] 的设定：what this card uses from it.   (or: 原始设定：不依赖其他设定。)
 
-**内容**
-1. Agents, choices, timing, assumptions; one per item; formulas unchanged. A symbol the reader meets here first is defined here.
+**设定**   (or **假设** / **定义** / **判据** / **均衡定义** / **解概念**)
+1. Agents, choices, timing, restrictions, or criterion conditions; one per item; formulas unchanged. A symbol the reader meets here first is defined here.
 
-**为什么需要它**
-One sentence: which chapter uses this setting.
+**作用域**   (required on Criterion cards and variant/regime assumptions; optional otherwise)
+Which baseline, variant, strategy class, or information regime this card covers.
 
-符号与记号的含义见符号表 [[notation card]]。
+**直觉**
+- 是什么：what this setting is in plain words.
+- 为什么需要：what mechanism or comparison it enables.
+- 怎样进入模型：which later setting or chapter uses it (never state a later derived result).
+
+**说明**
+Pointers to chapters or results that use this setting or establish existence/uniqueness under this criterion.
 
 来源：[[citationKey]] §x
 ```
 
-## Notation card (first Side successor of the setting)
+## Notation card (first Side successor of the setting, `<head>|a|a`)
 
-- **怎样读卡片上的记号**: equation numbers, `（论文略去，此处补出）`, `推导链第 k 步，共 n 步`, what `ω` and the subscripts mean.
-- One table per block (economy, production, wages, costs and draws, extensions, estimation): `| 符号 | 含义 |`, each symbol once.
-- **统一用语**: the one term to use for each concept.
+- **怎样读卡片上的记号**: equation numbers, `（论文略去，此处补出）`, `推导链第 k 步，共 n 步`, what subscripts/superscripts mean.
+- One table per block (or `沿用 [[<lender notation card>]] 的全部符号。` plus local override rows): `| 符号 | 含义 | 首次出现 |`, linking the Card where a reader meets each symbol first.
+- **统一用语**: `| 术语 | 不用 |` (or `无特殊用语约定。` when the model adds no special term rules).
+
+## Argument card (`论证：`, non-algebraic proof step)
+
+```
+目标：one sentence naming the claim this argument establishes (never a premise).
+
+**依据**
+- 依赖 [[设定：…]]、[[假设：…]]、[[判据：…]]：each premise once.
+
+**论证**
+Structured verbal, constructive, or graphical/phase-diagram argument.
+
+**结论**
+What this step establishes and how it closes or hands off to the next proof Card.
+
+来源：[[citationKey]] §x
+```
+
+## Calibration (`校准：`) & Numerical Experiment (`数值实验：`) cards
+
+- `校准：` uses `**起点**`, `**参数与出处**` (`| 参数 | 含义 | 取值 | 单位/频率 | 来源类型 | 目标或出处 |`, with per-row provenance `assigned` / `external-estimate` / `moment-matched`), and `**映射说明**`.
+- `数值实验：` opens with a sentence clearly marking its numerical/calibrated status, then `**实验设定**` (linking `[[校准：…]]` or baseline setting), `**数值结果**`, and `**边界**`.
 
 ## Aside cards (example, footnote, limitation, extension)
 

@@ -2491,7 +2491,7 @@ fn render_card(body: &str, snapshot: &Snapshot, target: Target<'_>) -> String {
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_MATH;
-    let source = fence_html_charts(&protect_table_links(&normalize_math_delimiters(body)));
+    let source = fence_html_charts(&protect_table_pipes(&normalize_math_delimiters(body)));
     let mut events: Vec<Event> = Vec::new();
     let mut pending = String::new();
     let mut in_code_block = false;
@@ -2692,26 +2692,75 @@ fn is_plain_inline_tag(raw: &str) -> bool {
     TAGS.iter().any(|tag| inner.eq_ignore_ascii_case(tag))
 }
 
-/// A table row keeps a Link whose address holds `|` (a Side address such as `[[b/19|a|3]]`) in
-/// one cell: inside `[[…]]` each `|` is escaped, so the table parser does not take it for a
-/// column divider. The table parser drops the escape before the cell is read, as GFM does for any
-/// `\|` in a row (inline code included), so the cell's text reaches `link_events` with the plain
-/// `|` again. Only rows (lines that start with `|`) outside fenced code change.
-fn protect_table_links(source: &str) -> String {
+/// Whether a trimmed Markdown line is a GFM table delimiter row (e.g. `| --- | :--- |` or
+/// `--- | ---`).
+fn is_table_delimiter_row(trimmed: &str) -> bool {
+    if !trimmed.contains('|') || !trimmed.contains('-') {
+        return false;
+    }
+    let core = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let core = core.strip_suffix('|').unwrap_or(core);
+    let mut count = 0usize;
+    for cell in core.split('|') {
+        let c = cell.trim();
+        let c = c.strip_prefix(':').unwrap_or(c);
+        let c = c.strip_suffix(':').unwrap_or(c);
+        if c.is_empty() || !c.bytes().all(|b| b == b'-') {
+            return false;
+        }
+        count += 1;
+    }
+    count > 0
+}
+
+/// Protect pipes inside closed `[[…]]` Links, inline code spans (`` `…` ``), and inline/display
+/// math (`$…$`, `$$…$$`) on Markdown table rows so the GFM table parser does not split a cell at a
+/// Side address (`[[b/19|a|3]]`), code literal (`` `$x|y$` ``), or math absolute value
+/// (`$|\mathcal{N}|$`). GFM unescapes `\|` back to `|` inside table cells (code and math
+/// included), so every protected cell reaches downstream rendering intact. Handles both
+/// leading-`|` rows and outer-pipe-less GFM tables outside fenced code.
+fn protect_table_pipes(source: &str) -> String {
+    let lines: Vec<&str> = source.split_inclusive('\n').collect();
     let mut out = String::with_capacity(source.len());
     let mut fence: Option<&str> = None;
-    for line in source.split_inclusive('\n') {
+    let mut in_pipeless_table = false;
+    for (idx, &line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
+        let trimmed_all = trimmed.trim_end_matches(['\r', '\n']);
         if let Some(open) = fence {
             if trimmed.starts_with(open) {
                 fence = None;
             }
+            in_pipeless_table = false;
             out.push_str(line);
         } else if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             fence = Some(&trimmed[..3]);
+            in_pipeless_table = false;
             out.push_str(line);
         } else if trimmed.starts_with('|') {
-            out.push_str(&escape_link_pipes(line));
+            in_pipeless_table = false;
+            if is_table_delimiter_row(trimmed_all) {
+                out.push_str(line);
+            } else {
+                out.push_str(&escape_table_pipes(line));
+            }
+        } else if !in_pipeless_table
+            && trimmed_all.contains('|')
+            && lines
+                .get(idx + 1)
+                .is_some_and(|next| is_table_delimiter_row(next.trim()))
+        {
+            in_pipeless_table = true;
+            out.push_str(&escape_table_pipes(line));
+        } else if in_pipeless_table {
+            if trimmed_all.is_empty() || !trimmed_all.contains('|') {
+                in_pipeless_table = false;
+                out.push_str(line);
+            } else if is_table_delimiter_row(trimmed_all) {
+                out.push_str(line);
+            } else {
+                out.push_str(&escape_table_pipes(line));
+            }
         } else {
             out.push_str(line);
         }
@@ -2719,27 +2768,128 @@ fn protect_table_links(source: &str) -> String {
     out
 }
 
-/// One table row with every `|` inside a closed `[[…]]` written `\|`.
-fn escape_link_pipes(line: &str) -> String {
-    let chars: Vec<char> = line.chars().collect();
-    let mut out = String::with_capacity(line.len() + 8);
-    let mut in_link = false;
+/// Whether byte `at` is preceded by an odd number of ASCII backslashes.
+fn pipe_is_escaped(bytes: &[u8], at: usize) -> bool {
+    let mut backslashes = 0usize;
+    let mut i = at;
+    while i > 0 && bytes[i - 1] == b'\\' {
+        backslashes += 1;
+        i -= 1;
+    }
+    backslashes % 2 == 1
+}
+
+/// Emit `slice` into `out`, rewriting every unescaped `|` to `\|`.
+fn push_escaping_unescaped_pipes(out: &mut String, slice: &str) {
+    let bytes = slice.as_bytes();
     let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        if !in_link && c == '[' && next == Some('[') {
-            // Only a macro that closes on this line is a Link; an open `[[` leaves the row alone.
-            in_link = chars[i + 2..].windows(2).any(|pair| pair == [']', ']']);
-        } else if in_link && c == ']' && next == Some(']') {
-            in_link = false;
-        } else if in_link && c == '|' && (i == 0 || chars[i - 1] != '\\') {
+    while i < bytes.len() {
+        if bytes[i] == b'|' && !pipe_is_escaped(bytes, i) {
             out.push_str("\\|");
             i += 1;
             continue;
         }
-        out.push(c);
-        i += 1;
+        let ch = slice[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+}
+
+/// One table row with every unescaped `|` inside a closed inline code span, `[[…]]` Link, or
+/// `$…$`/`$$…$$` math span rewritten to `\|`.
+fn escape_table_pipes(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len() + 8);
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // 1. Inline code span (`...`): `$` inside code stays literal, pipes inside code stay in cell.
+        if bytes[i] == b'`' {
+            let mut open = 0usize;
+            while i + open < bytes.len() && bytes[i + open] == b'`' {
+                open += 1;
+            }
+            let mut j = i + open;
+            let mut close = None;
+            while j < bytes.len() {
+                if bytes[j] == b'`' {
+                    let mut run = 0usize;
+                    while j + run < bytes.len() && bytes[j + run] == b'`' {
+                        run += 1;
+                    }
+                    if run == open {
+                        close = Some(j + run);
+                        break;
+                    }
+                    j += run;
+                } else {
+                    j += 1;
+                }
+            }
+            if let Some(end) = close {
+                push_escaping_unescaped_pipes(&mut out, &line[i..end]);
+                i = end;
+                continue;
+            }
+            out.push_str(&line[i..i + open]);
+            i += open;
+            continue;
+        }
+        // 2. Closed `[[...]]` Link macro.
+        if bytes[i] == b'[' && bytes.get(i + 1) == Some(&b'[') {
+            if let Some(rel) = line[i + 2..].find("]]") {
+                let end = i + 2 + rel + 2;
+                push_escaping_unescaped_pipes(&mut out, &line[i..end]);
+                i = end;
+                continue;
+            }
+        }
+        // 3. Closed `$$...$$` or `$...$` math span (respecting backslash parity for `\$`).
+        if bytes[i] == b'$' && !pipe_is_escaped(bytes, i) {
+            if bytes.get(i + 1) == Some(&b'$') {
+                let mut j = i + 2;
+                let mut close = None;
+                while j + 1 < bytes.len() {
+                    if bytes[j] == b'$' && bytes[j + 1] == b'$' && !pipe_is_escaped(bytes, j) {
+                        close = Some(j + 2);
+                        break;
+                    }
+                    j += 1;
+                }
+                if let Some(end) = close {
+                    push_escaping_unescaped_pipes(&mut out, &line[i..end]);
+                    i = end;
+                    continue;
+                }
+                out.push_str("$$");
+                i += 2;
+                continue;
+            }
+            let mut j = i + 1;
+            let mut close = None;
+            while j < bytes.len() {
+                if bytes[j] == b'`' {
+                    break;
+                }
+                if bytes[j] == b'$' && !pipe_is_escaped(bytes, j) {
+                    if bytes.get(j + 1) == Some(&b'$') {
+                        break;
+                    }
+                    if j > i + 1 {
+                        close = Some(j + 1);
+                    }
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(end) = close {
+                push_escaping_unescaped_pipes(&mut out, &line[i..end]);
+                i = end;
+                continue;
+            }
+        }
+        let ch = line[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
@@ -7920,6 +8070,61 @@ mod render_tests {
         assert!(rows[1].contains("data-target=\"0/1\""), "{}", rows[1]);
         let prose = &html[html.find("正文里的").unwrap()..];
         assert!(prose.contains("data-target=\"0/1|a\""), "{prose}");
+    }
+
+    #[test]
+    fn table_cells_keep_math_pipes_code_pipes_and_outer_pipeless_rows_intact() {
+        let (temp, _) = snapshot();
+        ops::create_successor(
+            temp.path(),
+            Access::Owner,
+            Successor::Side,
+            "0/1",
+            CardType::Idea,
+            None,
+            "# A side\n\nbody\n",
+        )
+        .unwrap();
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let body = concat!(
+            "| 符号 | 含义 | 首次出现 |\n",
+            "| --- | --- | --- |\n",
+            "| $\\phi$ | 活跃产品线测度（$\\equiv |\\mathcal{N}|$） | [[0/1|a]] |\n",
+            "| $\\|x\\|$ | 绝对值（来自 table_cell） | [[0/1]] |\n",
+            "| $\\lVert x \\rVert$ | 显式范数 | [[0/1]] |\n",
+            "| $a \\mid b$ | 整除关系 | [[0/1]] |\n",
+            "| `$x|y$` | 代码内竖线与美元 | [[0/1]] |\n",
+            "| $P^{\\$d}$ | 主导货币与 $|x|$ | [[0/1]] |\n",
+            "\n",
+            "符号 | 含义 | 首次出现\n",
+            "--- | --- | ---\n",
+            "$\\phi$ | 测度 $|\\mathcal{N}|$ | [[0/1|a]]\n",
+        );
+        let html = render_markdown(body, &snapshot, &Charts::default());
+        let tables: Vec<&str> = html.split("<table>").skip(1).collect();
+        assert_eq!(tables.len(), 2, "two tables rendered: {html}");
+
+        let rows1: Vec<&str> = tables[0].split("<tr>").skip(2).collect();
+        assert_eq!(rows1.len(), 6, "six body rows in table 1: {}", tables[0]);
+        for (idx, row) in rows1.iter().enumerate() {
+            assert_eq!(row.matches("<td").count(), 3, "row {idx} must have 3 cells: {row}");
+        }
+        assert!(rows1[0].contains(r#"<span class="math math-inline">\equiv |\mathcal{N}|</span>"#), "{}", rows1[0]);
+        assert!(rows1[0].contains("data-target=\"0/1|a\""), "{}", rows1[0]);
+        assert!(rows1[1].contains(r#"<span class="math math-inline">|x|</span>"#), "{}", rows1[1]);
+        assert!(rows1[1].contains("data-target=\"0/1\""), "{}", rows1[1]);
+        assert!(rows1[2].contains(r#"<span class="math math-inline">\lVert x \rVert</span>"#), "{}", rows1[2]);
+        assert!(rows1[3].contains(r#"<span class="math math-inline">a \mid b</span>"#), "{}", rows1[3]);
+        assert!(rows1[4].contains("<code>$x|y$</code>"), "{}", rows1[4]);
+        assert!(rows1[4].contains("data-target=\"0/1\""), "{}", rows1[4]);
+        assert!(rows1[5].contains(r#"<span class="math math-inline">P^{\$d}</span>"#), "{}", rows1[5]);
+        assert!(rows1[5].contains(r#"<span class="math math-inline">|x|</span>"#), "{}", rows1[5]);
+
+        let rows2: Vec<&str> = tables[1].split("<tr>").skip(2).collect();
+        assert_eq!(rows2.len(), 1, "one body row in outer-pipeless table: {}", tables[1]);
+        assert_eq!(rows2[0].matches("<td").count(), 3, "{}", rows2[0]);
+        assert!(rows2[0].contains(r#"<span class="math math-inline">|\mathcal{N}|</span>"#), "{}", rows2[0]);
+        assert!(rows2[0].contains("data-target=\"0/1|a\""), "{}", rows2[0]);
     }
 
     #[test]

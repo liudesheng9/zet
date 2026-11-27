@@ -17,7 +17,6 @@ macro_rules! pattern {
 pattern!(DISPLAY, r"\$\$[\s\S]+?\$\$");
 pattern!(INLINE, r"\$[^$\n]+\$");
 pattern!(SENTENCE_END, r"(?i)[。！？\n]");
-pattern!(DISPLAY_WHOLE, r"(?i)^\$\$([\s\S]*)\$\$$");
 pattern!(SECTION_HEAD, r"(?i)^\s*\*\*(思路|起点|步骤|结果|解读)\*\*\s*$");
 pattern!(POSITION, r"(?i)^第 \d+ 张，共 \d+ 张");
 // zt-model-restructure's per-chapter wording; the per-chain line above replaces it.
@@ -29,7 +28,7 @@ pattern!(STEP_NUMBER, r"(?i)^\s*(\d+)[.、)]");
 pattern!(LINKS_OR_SOURCE, r"(?i)^\s*(\*\*(关联|来源)\*\*|#+\s*(关联|来源)|(关联|来源)[：:])");
 pattern!(NEXT_HEAD, r"(?i)^\s*(\*\*[^*]+\*\*\s*$|#+\s|\S{2,6}[：:]\s*$)");
 pattern!(SETTING_FACET, r"(?i)设定");
-pattern!(INLINE_TAG, r"\\tag\{([^}]*)\}");
+pattern!(INLINE_TAG, r"\\tag(\*?)\s*\{((?:[^{}]|\{[^{}]*\})*)\}");
 pattern!(INLINE_ENV, r"\\(?:begin|end)\{(?:aligned|align\*?|array|gathered|gather\*?|cases)\}(?:\{[^}]*\})?");
 pattern!(INLINE_BREAK, r"\\\\(?:\[[^\]]*\])?");
 pattern!(MULTI_SPACE, r"\s+");
@@ -119,23 +118,101 @@ pub fn result_formula(result: &str) -> String {
     if ps::len16(&first) > 30 { ps::cut16(&first, 30) + "…" } else { first }
 }
 
-/// Clean display-only TeX constructs (`\tag{...}`, `\\`, alignment environments, newlines) so an
-/// inline `$...$` span inside a chain header always renders in KaTeX.
+/// Replace display-only `\tag{...}` and `\tag*{...}` inside inline math with `\quad (...)` or
+/// `\quad ...`, stripping nested `$` (e.g. `\tag{9-30$^{\prime}$}` -> `\quad (9-30^{\prime})`)
+/// so KaTeX never sees `$` inside math mode.
+fn replace_inline_tags(text: &str) -> String {
+    INLINE_TAG
+        .replace_all(text, |caps: &regex::Captures| {
+            let starred = !caps[1].is_empty();
+            let inner = caps[2].replace('$', "");
+            let inner = inner.trim();
+            if starred {
+                format!(r"\quad {inner}")
+            } else {
+                format!(r"\quad ({inner})")
+            }
+        })
+        .into_owned()
+}
+
+/// Replace unescaped alignment `&` tabs with spaces while preserving escaped `\&` (e.g. `\text{R\&D}`).
+fn strip_alignment_tabs(text: &str) -> String {
+    if !text.contains('&') {
+        return text.to_string();
+    }
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'&' {
+            let mut backslashes = 0usize;
+            let mut k = i;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                out.push(' ');
+                i += 1;
+                continue;
+            }
+        }
+        let ch = text[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Clean display-only TeX constructs (`\tag{...}`, `\tag*{...}`, `\\`, alignment environments,
+/// unescaped `&`, newlines) so an inline `$...$` span always renders cleanly in KaTeX.
 fn clean_inline_math(inner: &str) -> String {
     let s = INLINE_ENV.replace_all(inner, " ");
-    let s = INLINE_TAG.replace_all(&s, r"\quad ($1)");
+    let s = replace_inline_tags(&s);
     let s = INLINE_BREAK.replace_all(&s, r",\; ");
-    let s = s.replace('&', " ");
+    let s = strip_alignment_tabs(&s);
     MULTI_SPACE.replace_all(s.trim(), " ").into_owned()
 }
 
-/// `Get-Inline`: a display formula as an inline one.
+/// `Get-Inline`: convert display formulas (`$$...$$`) to inline `$...$` and clean any `\tag` /
+/// `\tag*` inside existing inline `$...$` spans, preserving surrounding prose and punctuation.
 pub fn inline(formula: &str) -> String {
     let f = formula.trim();
-    match DISPLAY_WHOLE.captures(f) {
-        Some(c) => format!("${}$", clean_inline_math(&c[1])),
-        None => f.to_string(),
+    if !f.contains('$') {
+        return f.to_string();
     }
+    let spans = zt_check::text::math_ranges(f);
+    if spans.is_empty() {
+        return f.to_string();
+    }
+    let mut out = String::with_capacity(f.len());
+    let mut cursor = 0usize;
+    for r in spans {
+        if r.start > cursor {
+            out.push_str(&f[cursor..r.start]);
+        }
+        let slice = &f[r.clone()];
+        if slice.starts_with("$$") && slice.ends_with("$$") && slice.len() >= 4 {
+            let inner = &slice[2..slice.len() - 2];
+            out.push('$');
+            out.push_str(&clean_inline_math(inner));
+            out.push('$');
+        } else if slice.starts_with('$') && slice.ends_with('$') && slice.len() >= 2 && slice.contains("\\tag") {
+            let inner = &slice[1..slice.len() - 1];
+            let cleaned = replace_inline_tags(inner);
+            out.push('$');
+            out.push_str(MULTI_SPACE.replace_all(cleaned.trim(), " ").as_ref());
+            out.push('$');
+        } else {
+            out.push_str(slice);
+        }
+        cursor = r.end;
+    }
+    if cursor < f.len() {
+        out.push_str(&f[cursor..]);
+    }
+    out
 }
 
 /// `Format-ChainLine`: the first line of a chain member's 思路.
@@ -437,6 +514,32 @@ mod tests {
         assert!(!line.contains("\\\\"), "{line}");
         assert!(line.contains("$\\varphi = a \\quad (A.1) ,\\; \\Phi = b \\quad (A.2)$"), "{line}");
         assert!(line.contains("$r = g + \\rho \\quad (2)$"), "{line}");
+    }
+
+    #[test]
+    fn inline_handles_spaced_starred_nested_tags_trailing_punctuation_multiple_spans_and_rd() {
+        // Spaced `\tag {10}` (MinerU format)
+        assert_eq!(
+            inline(r"$$\phi_1 = \frac{\lambda_H}{\lambda_H + 2\lambda_L} \tag {10}$$"),
+            r"$\phi_1 = \frac{\lambda_H}{\lambda_H + 2\lambda_L} \quad (10)$"
+        );
+        // Starred `\tag*{7}` omits automatic parens
+        assert_eq!(inline(r"$$x = 1 \tag*{7}$$"), r"$x = 1 \quad 7$");
+        // Nested `$...$` inside `\tag{9-30$^{\prime}$}` must not leave `$` inside outer inline math
+        let nested = inline(r"$$a = b \tag{9-30$^{\prime}$}$$");
+        assert_eq!(nested, r"$a = b \quad (9-30^{\prime})$");
+        assert_eq!(nested.matches('$').count(), 2, "no inner $ left: {nested}");
+        // Trailing punctuation preserved outside `$...$`
+        assert_eq!(inline(r"$$x = 1 \tag {2}$$。"), r"$x = 1 \quad (2)$。");
+        // Multiple display spans in one string converted individually (non-greedy)
+        assert_eq!(inline(r"$$a = 1$$ 和 $$b = 2$$"), r"$a = 1$ 和 $b = 2$");
+        // Already-inline `$...$` containing `\tag {2}` is cleaned in place
+        assert_eq!(inline(r"$r_t = g_t + \rho \tag {2}$"), r"$r_t = g_t + \rho \quad (2)$");
+        // Escaped `\&` in `\text{R\&D}` is preserved while alignment `&` is cleared
+        assert_eq!(
+            inline(r"$$\begin{aligned} y &= \text{R\&D} \end{aligned}$$"),
+            r"$y = \text{R\&D}$"
+        );
     }
 
     // A setting, an assumption or a definition explains itself in **直觉** (是什么, 为什么需要, 怎样进入模型).

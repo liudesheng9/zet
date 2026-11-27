@@ -4,7 +4,7 @@ title: Digest prompts
 paths:
   - "scripts/book-digest/*.md"
 synced: f1a113d96258
-updated: 2026-11-09
+updated: 2026-11-27
 ---
 
 # Digest prompts
@@ -363,6 +363,7 @@ Gaps: no test covers the insert-before-`## 回复` step of `prepare-book-digest.
 
 ## Change history
 
+- `2026-11-27` — **Math rendering fix Layer D (`model-architect.md`, `model-architect-empirical.md`, `dsh-fill-instructions.zh.md`, `docs/math-rendering-fix-design.md`)**: documented explicit KaTeX math-delimiter discipline (`$...$` for inline math, `$$...$$` for display math, no bare LaTeX commands/scripts in prose, `\tag{...}`/`\tag*{...}` only inside display `$$...$$`, and no unescaped `|` inside table cells unless protected) in the formal and empirical architect prompts and under `## 正文格式` in `dsh-fill-instructions.zh.md` (preserving the shared 5-bullet `## 通用写入规则` block verbatim; verified by `writer-guidance.tests.ps1`).
 - `2026-11-23` — `dsh-math-proof-review.zh.md`: premise and derivation parts are context; the reviewer writes one verdict for the proof plan, every `证明：…` step and the conclusion, none missing (the ledger's proof finish checks exactly these). thompson1914calculus pilot: the review skipped the premise and three derivations while the finish demanded them.
 - `2026-11-22` — `dsh-math-instructions.zh.md` rewritten (docs/math-digest-redesign-proposal.md §3.2): a math chapter writer writes reading notes and links the allocated units; it writes no Model Card, no form/facet/level and no unit body (the unit pipeline's fill writes the head). The skeleton's group headings say 单元流水线写它们，你只链接. The ledger appends the same rule to every math group prompt (`math_writer_note`), because the base prefix still teaches Model Cards.
 - `2026-11-12` — `dsh-model-cards.zh.md`: **跨组的实证模型** (owner). A group that holds only part of an own-data estimation (data, specification, estimates or tests) writes an empirical Model Card for that part; its 来源 names the group's own sections and its 概要 the continuation in the neighbouring group. The model layer builds each part and `zt-model-fold` merges Model Cards of one estimand on one data set. goldsmithpinkham2020bartik §VI was split over groups 13 and 14, both writers answered `models: 0` under the old "每个完整模型" wording, and the model had to be backfilled. Test: `digest-prompt.tests.ps1`.

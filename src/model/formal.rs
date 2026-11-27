@@ -394,9 +394,19 @@ pub(crate) fn faults(
         defined_symbols.extend(notation_symbols(&body));
         for target in borrowed_notation_targets(&body) {
             let target_body = (view.body)(&target);
-            if !target_body.is_empty() {
-                defined_symbols.extend(notation_symbols(&target_body));
+            if target_body.is_empty() || role(&target) != Some(FormalRole::Notation) {
+                if in_range.contains(at) {
+                    out.formal_shape.push(json!({
+                        "address": at,
+                        "lacks": "符号表与读法",
+                        "fix": format!(
+                            "`{at}` binds `沿用 [[{target}]] 的全部符号`, but `{target}` is missing or is not a `符号表与读法` card: link the lender's notation card (`<lender_head>|a|a`) directly"
+                        ),
+                    }));
+                }
+                continue;
             }
+            defined_symbols.extend(notation_symbols(&target_body));
         }
     }
     for at in in_range {
@@ -556,42 +566,99 @@ pub(crate) fn badge(facet: &str, body: &str, proof_steps: usize) -> Option<Value
                 .unwrap_or_else(|| "未编号".to_string());
             let scope = extract_scope_tag(&stmt);
             let just = section(body, "依据").unwrap_or_default();
-            let justification = if proof_steps > 0 {
-                if just.contains("启发式") && !just.contains("局部证明") {
-                    Some(format!("启发式 · {proof_steps} 步"))
-                } else if just.contains("局部数值") && !just.contains("局部证明") {
-                    Some(format!("数值 · {proof_steps} 步"))
-                } else if just.contains("局部构造") && !just.contains("局部证明") {
-                    Some(format!("构造 · {proof_steps} 步"))
-                } else if just.contains("局部图示") && !just.contains("局部证明") {
-                    Some(format!("图示 · {proof_steps} 步"))
-                } else if let Some(app) = find_appendix_proof(&just) {
-                    Some(format!("{app}证明 · {proof_steps} 步"))
-                } else {
-                    Some(format!("证明 · {proof_steps} 步"))
+            // Parse each clause of **依据** independently so external citations/forces never bleed into local proof stamps.
+            let mut external_stamp: Option<String> = None;
+            let mut local_kind: Option<&'static str> = None;
+            let mut local_appendix: Option<String> = None;
+            let mut has_inline_local = false;
+            let mut has_numerical = false;
+            let mut has_supplied = false;
+            let mut has_omitted = false;
+            for line in just.lines() {
+                for clause in line.split(['；', ';']) {
+                    let c = clause.trim();
+                    if c.is_empty() {
+                        continue;
+                    }
+                    let is_ext_proof =
+                        c.contains("外部证明") || c.contains("外部引证") || (!c.contains("外部") && c.contains("引证"));
+                    let is_ext_other = c.contains("外部构造")
+                        || c.contains("外部图示")
+                        || c.contains("外部启发式")
+                        || c.contains("外部论证")
+                        || c.contains("外部数值");
+                    if is_ext_proof {
+                        if external_stamp.is_none() {
+                            external_stamp = Some(match find_bracket_cite(c) {
+                                Some(cit) => format!("外部证明 {cit}"),
+                                None => "外部证明".to_string(),
+                            });
+                        }
+                        continue;
+                    }
+                    if is_ext_other {
+                        if external_stamp.is_none() {
+                            external_stamp = Some(match find_bracket_cite(c) {
+                                Some(cit) => format!("外部依据 {cit}"),
+                                None => "外部依据".to_string(),
+                            });
+                        }
+                        continue;
+                    }
+                    if is_local_route_clause(c) || c.contains("局部") || c.contains("启发式") {
+                        if c.contains("局部证明") {
+                            local_kind = Some("证明");
+                            if let Some(app) = find_appendix_proof(c) {
+                                local_appendix = Some(app);
+                            }
+                            has_inline_local = true;
+                        } else if c.contains("启发式") && local_kind.is_none() {
+                            local_kind = Some("启发式");
+                        } else if c.contains("局部数值") && local_kind.is_none() {
+                            local_kind = Some("数值");
+                        } else if c.contains("局部构造") && local_kind.is_none() {
+                            local_kind = Some("构造");
+                            has_inline_local = true;
+                        } else if c.contains("局部图示") && local_kind.is_none() {
+                            local_kind = Some("图示");
+                            has_inline_local = true;
+                        } else if c.contains("局部论证") && local_kind.is_none() {
+                            local_kind = Some("论证");
+                            has_inline_local = true;
+                        } else if let Some(app) = find_appendix_proof(c) {
+                            local_appendix = Some(app);
+                        }
+                    }
+                    if c.contains("数值实验") {
+                        has_numerical = true;
+                    }
+                    if c.contains("补写") {
+                        has_supplied = true;
+                    }
+                    if c.contains("原文未证") || c.contains("猜想") {
+                        has_omitted = true;
+                    }
                 }
-            } else if just.contains("外部证明") || just.contains("外部引证") || just.contains("引证") {
-                if let Some(c) = find_bracket_cite(&just) {
-                    Some(format!("外部证明 {c}"))
-                } else {
-                    Some("外部证明".to_string())
-                }
-            } else if just.contains("外部构造") || just.contains("外部图示") || just.contains("外部启发式") {
-                if let Some(c) = find_bracket_cite(&just) {
-                    Some(format!("外部依据 {c}"))
-                } else {
-                    Some("外部依据".to_string())
-                }
-            } else if just.contains("数值实验") {
-                Some("数值实验".to_string())
-            } else if just.contains("补写") {
-                Some("补写证明".to_string())
-            } else if just.contains("局部证明") || just.contains("局部构造") || just.contains("局部图示") || just.contains("局部论证") {
-                Some("行内论证".to_string())
-            } else if just.contains("原文未证") || just.contains("猜想") {
-                Some("原文未证".to_string())
+            }
+            let local_stamp = if proof_steps > 0 {
+                let prefix = match (local_kind, local_appendix) {
+                    (Some("证明") | None, Some(app)) => format!("{app}证明"),
+                    (Some(k), _) => k.to_string(),
+                    (None, None) => "证明".to_string(),
+                };
+                Some(format!("{prefix} · {proof_steps} 步"))
             } else {
                 None
+            };
+            let justification = match (external_stamp, local_stamp) {
+                (Some(ext), Some(loc)) => Some(format!("{ext} + {loc}")),
+                (None, Some(loc)) => Some(loc),
+                (Some(ext), None) => Some(ext),
+                (None, None) if has_numerical => Some("数值实验".to_string()),
+                (None, None) if has_supplied => Some("补写证明".to_string()),
+                (None, None) if has_inline_local => Some("行内论证".to_string()),
+                (None, None) if has_omitted => Some("原文未证".to_string()),
+                _ => None,
             };
             Some(json!({
                 "kind": "result",
@@ -661,11 +728,48 @@ pub(crate) fn badge(facet: &str, body: &str, proof_steps: usize) -> Option<Value
 fn extract_scope_tag(stmt: &str) -> Option<String> {
     for line in stmt.lines() {
         let t = line.trim().trim_start_matches(['-', '*', '•']).trim();
-        if let Some(rest) = t.strip_prefix("作用域").or_else(|| t.strip_prefix("情形")) {
-            let val = rest
+        if let Some(rest) = t
+            .strip_prefix("条件与作用域")
+            .or_else(|| t.strip_prefix("作用域"))
+            .or_else(|| t.strip_prefix("情形"))
+        {
+            let raw = rest
                 .trim_start_matches(['：', ':', ' '])
                 .trim_end_matches(['。', '.'])
                 .trim();
+            // Strip raw `[[addr]]` markup when extracting a concise board scope tag.
+            let mut clean = String::with_capacity(raw.len());
+            let mut rest_s = raw;
+            while let Some(open) = rest_s.find("[[") {
+                clean.push_str(&rest_s[..open]);
+                let after = &rest_s[open + 2..];
+                if let Some(close) = after.find("]]") {
+                    let inner = &after[..close];
+                    if let Some(at) = inner.find('@') {
+                        clean.push_str(&inner[..at]);
+                    }
+                    rest_s = &after[close + 2..];
+                } else {
+                    clean.push_str("[[");
+                    rest_s = after;
+                }
+            }
+            clean.push_str(rest_s);
+            let mut val = clean.as_str().trim();
+            loop {
+                let next = val
+                    .trim_start_matches(['、', '，', ',', '；', ';', ' '])
+                    .strip_prefix("依赖")
+                    .map(|s| s.trim_start_matches(['、', '，', ',', '；', ';', ' ']));
+                match next {
+                    Some(rest2) => val = rest2,
+                    None => {
+                        val = val.trim_start_matches(['、', '，', ',', '；', ';', ' ']);
+                        break;
+                    }
+                }
+            }
+            let val = val.trim_end_matches(['。', '.', '、', '，', ',', ' ']).trim();
             if !val.is_empty() {
                 let clipped: String = val.chars().take(18).collect();
                 return Some(clipped);
@@ -681,13 +785,13 @@ mod tests {
 
     #[test]
     fn formal_badges_render_claim_label_and_honest_justification() {
-        let prop1 = "固定供给下国内块按比例缩放。\n\n**陈述**\n- 出处与力度：命题 1（原文 §5.2）；力度：characterization。\n- 作用域：固定供给\n\n**依据**\n- 局部证明：附录 B 证明见 [[K/1|a|1|a|a]]。\n";
+        let prop1 = "固定供给下国内块按比例缩放。\n\n**陈述**\n- 出处与力度：命题 1（原文 §5.2）；力度：characterization。\n- 条件与作用域：固定供给、泰勒原理。\n\n**依据**\n- 局部证明：附录 B 证明见 [[K/1|a|1|a|a]]。\n";
         assert_eq!(
             badge("结果：命题 1 条件比例性", prop1, 3),
             Some(json!({
                 "kind": "result",
                 "label": "命题 1",
-                "scope": "固定供给",
+                "scope": "固定供给、泰勒原理",
                 "justification": "附录B证明 · 3 步"
             }))
         );
@@ -703,6 +807,40 @@ mod tests {
             }))
         );
 
+        let mirrlees_mixed = "激励相容充要条件。\n\n**陈述**\n- 出处与力度：定理 1；力度：iff。\n- 条件与作用域：依次满足单交叉与有界条件。\n\n**依据**\n- 外部证明：严格证明见原文引证 [4]。\n- 启发式推导：见 [[K/1|a|1|a|a]]（额外假定二阶可微）。\n";
+        assert_eq!(
+            badge("结果：定理 1 激励相容", mirrlees_mixed, 2),
+            Some(json!({
+                "kind": "result",
+                "label": "定理 1",
+                "scope": "依次满足单交叉与有界条件",
+                "justification": "外部证明 [4] + 启发式 · 2 步"
+            }))
+        );
+
+        // Astra Round 2 & 3: external heuristic + local constructive keeps distinct per-clause forces,
+        // and a second external heuristic clause after an external proof does not pollute the local proof stamp.
+        let ext_heur_local_const = "存在分离均衡。\n\n**陈述**\n- 出处与力度：命题 2；力度：existence。\n\n**依据**\n- 外部启发式：见原文引证 [4]。\n- 局部构造：见 [[K/1|a|1|a|a]]。\n";
+        assert_eq!(
+            badge("结果：命题 2", ext_heur_local_const, 2),
+            Some(json!({
+                "kind": "result",
+                "label": "命题 2",
+                "scope": null,
+                "justification": "外部依据 [4] + 构造 · 2 步"
+            }))
+        );
+        let two_ext_and_local_proof = "定理。\n\n**陈述**\n- 出处与力度：定理 2；力度：necessary。\n\n**依据**\n- 外部证明：见原文 [4]。\n- 外部启发式：见 [5]。\n- 局部证明：见 [[K/1|a|1|a|a]]。\n";
+        assert_eq!(
+            badge("结果：定理 2", two_ext_and_local_proof, 3),
+            Some(json!({
+                "kind": "result",
+                "label": "定理 2",
+                "scope": null,
+                "justification": "外部证明 [4] + 证明 · 3 步"
+            }))
+        );
+
         let spence_unnumbered = "存在一族分离均衡。\n\n**陈述**\n- 出处与力度：未编号（§5）；力度：sufficient。\n\n**依据**\n- 局部论证：见 [[K/1|a|1|a|a]]。\n";
         assert_eq!(
             badge("结果：一族分离均衡", spence_unnumbered, 1),
@@ -710,7 +848,7 @@ mod tests {
                 "kind": "result",
                 "label": "未编号",
                 "scope": null,
-                "justification": "证明 · 1 步"
+                "justification": "论证 · 1 步"
             }))
         );
 

@@ -30,7 +30,7 @@
 use crate::ps;
 use crate::util;
 use crate::zt::Zt;
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 /// The exit code of a writing mode that stopped because its destination Literature tree is Locked.
@@ -121,6 +121,97 @@ pub fn preflight(zt: &mut Zt, mode: &str, step: &str, key: &str) -> Result<Optio
         return Ok(None);
     }
     Ok(lock_of(zt, key)?.map(|lock| refusal(mode, step, key, &lock)))
+}
+
+/// Fail-closed Lock parser for strict preflight (H7): accepts only explicit `lock: null` as
+/// unlocked, or a complete `{lock_id: i64, tree: key, since: non-empty string}` object as locked.
+/// Missing `lock`, `{}`, wrong-tree locks, missing/non-string `since`, or malformed values fail.
+pub fn strict_lock_fact(card: &Value, key: &str) -> Result<Option<Lock>> {
+    match card.get("lock") {
+        Some(Value::Null) => Ok(None),
+        Some(Value::Object(obj)) => {
+            let lock_id = obj
+                .get("lock_id")
+                .and_then(Value::as_i64)
+                .with_context(|| format!("cannot verify Lock state of `{key}`: lock lacks integer `lock_id`"))?;
+            let tree = obj
+                .get("tree")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .with_context(|| format!("cannot verify Lock state of `{key}`: lock lacks non-empty string `tree`"))?;
+            if tree != key {
+                bail!(
+                    "cannot verify Lock state of `{key}`: lock reports tree `{tree}` instead of `{key}`"
+                );
+            }
+            let since = obj
+                .get("since")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .with_context(|| format!("cannot verify Lock state of `{key}`: lock lacks non-empty string `since`"))?;
+            Ok(Some(Lock {
+                lock_id,
+                tree: tree.to_string(),
+                since: since.to_string(),
+            }))
+        }
+        Some(_) => bail!("cannot verify Lock state of `{key}`: malformed `lock` projection"),
+        None => bail!("cannot verify Lock state of `{key}`: missing `lock` field"),
+    }
+}
+
+/// Validates a full `get_cards` JSON reply for `preflight_strict` (H7): checks `cards`, `missing`,
+/// and `complete` jointly so contradictory replies (e.g. `complete: true` alongside `missing: [K]`)
+/// fail closed instead of being read as unlocked.
+pub fn parse_strict_preflight_reply(
+    value: &Value,
+    mode: &str,
+    step: &str,
+    key: &str,
+) -> Result<Option<Value>> {
+    let cards = value
+        .get("cards")
+        .and_then(Value::as_array)
+        .with_context(|| format!("cannot verify Lock state of `{key}`: missing `cards` array"))?;
+    let missing = value
+        .get("missing")
+        .and_then(Value::as_array)
+        .with_context(|| format!("cannot verify Lock state of `{key}`: missing `missing` array"))?;
+    if missing.iter().any(|m| m.as_str().is_none()) {
+        bail!("cannot verify Lock state of `{key}`: non-string entry in `missing`");
+    }
+    let complete = value
+        .get("complete")
+        .and_then(Value::as_bool)
+        .with_context(|| format!("cannot verify Lock state of `{key}`: missing boolean `complete`"))?;
+    if complete != missing.is_empty() || cards.len() + missing.len() != 1 {
+        bail!(
+            "cannot verify Lock state of `{key}`: contradictory reply (complete={complete}, cards={}, missing={})",
+            cards.len(),
+            missing.len()
+        );
+    }
+    if !complete || cards.len() != 1 || cards[0]["address"].as_str() != Some(key) {
+        bail!("cannot verify Lock state of `{key}`: incomplete or missing tree root projection");
+    }
+    Ok(strict_lock_fact(&cards[0], key)?.map(|lock| refusal(mode, step, key, &lock)))
+}
+
+/// Fail-closed Lock preflight for commands that may destructively reset local work directories
+/// (H7): propagates read errors, malformed JSON, contradictory `complete`/`missing`, missing or
+/// malformed `lock`, or a missing root card instead of treating an unreadable Lock state as unlocked.
+pub fn preflight_strict(zt: &mut Zt, mode: &str, step: &str, key: &str) -> Result<Option<Value>> {
+    if key.trim().is_empty() {
+        bail!("cannot verify Lock state: empty book key");
+    }
+    let reply = zt.request("get_cards", json!({ "addresses": [key], "view": "text" }))?;
+    if let Some(msg) = zt_check::mcp::reply_error(&reply) {
+        bail!("cannot verify Lock state of `{key}`: {msg}");
+    }
+    let text = zt_check::mcp::reply_text(&reply);
+    let value: Value = serde_json::from_str(&text)
+        .with_context(|| format!("cannot verify Lock state of `{key}`: reply is not JSON"))?;
+    parse_strict_preflight_reply(&value, mode, step, key)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -344,6 +435,30 @@ mod tests {
         // A Lock fact without its id or tree is not a Lock this client may act on.
         assert_eq!(lock_fact(&json!({"lock": {"tree": "K"}})), None);
         assert_eq!(lock_fact(&json!({"lock": {"lock_id": 2}})), None);
+
+        // H7: strict_lock_fact accepts only explicit `lock: null` or a valid lock object matching
+        // `key` with non-empty `since`; missing `lock`, `{}`, wrong tree, missing `since`, or
+        // contradictory `complete: true` + `missing: ["K"]` replies must return Err.
+        assert_eq!(strict_lock_fact(&locked, "K").unwrap(), Some(lock()));
+        assert_eq!(strict_lock_fact(&json!({"address": "K", "lock": null}), "K").unwrap(), None);
+        assert!(strict_lock_fact(&json!({"address": "K"}), "K").is_err());
+        assert!(strict_lock_fact(&json!({"address": "K", "lock": {}}), "K").is_err());
+        assert!(strict_lock_fact(&json!({"address": "K", "lock": {"tree": "K"}}), "K").is_err());
+        assert!(strict_lock_fact(&json!({"address": "K", "lock": {"lock_id": 2, "tree": "Other", "since": "2026-10-21T10:00:00Z"}}), "K").is_err());
+        assert!(strict_lock_fact(&json!({"address": "K", "lock": {"lock_id": 2, "tree": "K"}}), "K").is_err());
+        assert!(strict_lock_fact(&json!({"address": "K", "lock": "bad"}), "K").is_err());
+        assert!(parse_strict_preflight_reply(
+            &json!({"cards": [{"address": "K", "lock": null}], "missing": ["K"], "complete": true}),
+            "model-explain", "plan", "K"
+        ).is_err());
+        assert!(parse_strict_preflight_reply(
+            &json!({"cards": [{"address": "K", "lock": null}], "missing": [], "complete": true}),
+            "model-explain", "plan", "K"
+        ).unwrap().is_none());
+        assert!(parse_strict_preflight_reply(
+            &json!({"cards": [locked], "missing": [], "complete": true}),
+            "model-explain", "plan", "K"
+        ).unwrap().is_some());
     }
 
     #[test]

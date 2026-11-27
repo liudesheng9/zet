@@ -34,6 +34,11 @@ const USAGE: &str = "usage:
   zt-check --json <file> [--setting <address>] [--level concept|formal|empirical] [--require-explain] [limits]
   zt-check --draft <file> [--report <file>] [--workspace human|agent] [--setting <address>] [limits]
   zt-check --model <address> [--skip-shared] [--setting <address>] [--level concept|formal|empirical] [--require-explain] [limits]
+  zt-check --model <address> --stage fold|settings|restructure|final [--format text|json]
+  zt-check --model <address> --premises|--settings [--symbols]|--network|--charts [--format text|json]
+  zt-check --draft-diff <orig.json> <draft.json> [--chapters a,b,...] [--format text|json]
+  zt-check --tree <key> [--snapshot <file>] [--format text|json]
+  zt-check --charts-json <file> [--format text|json]
   zt-check --addresses <a,b,...> [--setting <address>] [--level concept|formal|empirical] [--require-explain] [limits]
   zt-check --cards <a,b,...> [--log <file>] [--book <key>] [--rules R2,R3,...] [limits]
 every mode: [--workspace human|agent] [--report <file>]
@@ -865,11 +870,12 @@ fn check_model(
             }
         }
     }
+    let is_formal_model = ps_eq(&level, "formal") && math_form.is_none();
+    // Resolve R6 terms BEFORE `--skip-shared` drops borrowed notation cards from `cards`.
+    let body = setting_body(zt, &cards, &setting, is_formal_model)?;
     if options.skip_shared {
         cards.retain(|card| !ps_in(&ps_string(prop(card, "address")), &shared));
     }
-    let is_formal_model = ps_eq(&level, "formal") && math_form.is_none();
-    let body = setting_body(zt, &cards, &setting, is_formal_model)?;
     let check = Check::new(options.limits.clone(), options.require_explain, &level)
         .with_terms(body.as_deref())
         .with_shared(shared)
@@ -1316,7 +1322,7 @@ fn check_cards(
 
 // --- the command ------------------------------------------------------------------------------
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Options {
     json: Option<String>,
     draft: Option<String>,
@@ -1336,11 +1342,25 @@ struct Options {
     require_explain: bool,
     skip_shared: bool,
     limits: Limits,
+    /// Post-digest audit modes (Waves 1–2):
+    stage: Option<crate::post_digest::stage::Stage>,
+    premises: bool,
+    settings: bool,
+    symbols: bool,
+    network: bool,
+    charts: bool,
+    charts_json: Option<String>,
+    draft_diff: Option<(String, String)>,
+    chapters: Option<String>,
+    tree: Option<String>,
+    snapshot: Option<String>,
+    format_json: bool,
 }
 
 impl Options {
     fn parse(args: &[String]) -> Result<Self> {
         let mut options = Options::default();
+        let mut limit_flag_set = false;
         let mut index = 0;
         while index < args.len() {
             let flag = args[index].as_str();
@@ -1366,6 +1386,32 @@ impl Options {
                 "--rules" => options.rules = Some(value()?),
                 "--setting" => options.setting = Some(value()?),
                 "--report" => options.report = Some(value()?),
+                "--stage" => {
+                    let s = value()?;
+                    options.stage = Some(crate::post_digest::stage::Stage::parse(&s)?);
+                }
+                "--premises" => options.premises = true,
+                "--settings" => options.settings = true,
+                "--symbols" => options.symbols = true,
+                "--network" => options.network = true,
+                "--charts" => options.charts = true,
+                "--charts-json" => options.charts_json = Some(value()?),
+                "--draft-diff" => {
+                    let orig = value()?;
+                    let draft = value()?;
+                    options.draft_diff = Some((orig, draft));
+                }
+                "--chapters" => options.chapters = Some(value()?),
+                "--tree" => options.tree = Some(value()?),
+                "--snapshot" => options.snapshot = Some(value()?),
+                "--format" => {
+                    let fmt = value()?.to_lowercase();
+                    match fmt.as_str() {
+                        "text" => options.format_json = false,
+                        "json" => options.format_json = true,
+                        other => bail!("--format is text or json, not `{other}`"),
+                    }
+                }
                 "--workspace" => {
                     let workspace = value()?.to_lowercase();
                     if !ps_in(&workspace, &["human", "agent"]) {
@@ -1382,16 +1428,38 @@ impl Options {
                 }
                 "--require-explain" => options.require_explain = true,
                 "--skip-shared" => options.skip_shared = true,
-                "--max-sentences" => options.limits.max_sentences = number(value()?)?,
-                "--max-chars" => options.limits.max_chars = number(value()?)?,
-                "--max-steps" => options.limits.max_steps = number(value()?)?,
-                "--max-explain-sentences" => {
-                    options.limits.max_explain_sentences = number(value()?)?
+                "--max-sentences" => {
+                    limit_flag_set = true;
+                    options.limits.max_sentences = number(value()?)?;
                 }
-                "--max-explain-chars" => options.limits.max_explain_chars = number(value()?)?,
-                "--min-idea-chars" => options.limits.min_idea_chars = number(value()?)?,
-                "--max-idea-chars" => options.limits.max_idea_chars = number(value()?)?,
-                "--min-reason" => options.limits.min_reason = number(value()?)?,
+                "--max-chars" => {
+                    limit_flag_set = true;
+                    options.limits.max_chars = number(value()?)?;
+                }
+                "--max-steps" => {
+                    limit_flag_set = true;
+                    options.limits.max_steps = number(value()?)?;
+                }
+                "--max-explain-sentences" => {
+                    limit_flag_set = true;
+                    options.limits.max_explain_sentences = number(value()?)?;
+                }
+                "--max-explain-chars" => {
+                    limit_flag_set = true;
+                    options.limits.max_explain_chars = number(value()?)?;
+                }
+                "--min-idea-chars" => {
+                    limit_flag_set = true;
+                    options.limits.min_idea_chars = number(value()?)?;
+                }
+                "--max-idea-chars" => {
+                    limit_flag_set = true;
+                    options.limits.max_idea_chars = number(value()?)?;
+                }
+                "--min-reason" => {
+                    limit_flag_set = true;
+                    options.limits.min_reason = number(value()?)?;
+                }
                 "-h" | "--help" => bail!("{USAGE}"),
                 other => bail!("unknown option `{other}`\n{USAGE}"),
             }
@@ -1403,12 +1471,40 @@ impl Options {
             options.model.is_some(),
             options.addresses.is_some(),
             options.cards.is_some() || options.log.is_some(),
+            options.draft_diff.is_some(),
+            options.tree.is_some(),
+            options.charts_json.is_some(),
         ]
         .into_iter()
         .filter(|on| *on)
         .count();
         if modes != 1 {
-            bail!("name one input: --json, --draft, --model, --addresses, or --cards/--log\n{USAGE}");
+            bail!("name one input: --json, --draft, --model, --addresses, --cards/--log, --draft-diff, --tree, or --charts-json\n{USAGE}");
+        }
+        let model_audits = [
+            options.stage.is_some(),
+            options.premises,
+            options.settings,
+            options.network,
+            options.charts,
+        ]
+        .into_iter()
+        .filter(|on| *on)
+        .count();
+        if model_audits > 1 {
+            bail!("pick at most one model audit: --stage, --premises, --settings, --network, or --charts");
+        }
+        if model_audits == 1 && options.model.is_none() {
+            bail!("--stage, --premises, --settings, --network, and --charts apply to --model only");
+        }
+        if options.symbols && !options.settings {
+            bail!("--symbols applies to --model <head> --settings only");
+        }
+        if options.chapters.is_some() && options.draft_diff.is_none() {
+            bail!("--chapters applies to --draft-diff only");
+        }
+        if options.snapshot.is_some() && options.tree.is_none() {
+            bail!("--snapshot applies to --tree only");
         }
         let cards_mode = options.cards.is_some() || options.log.is_some();
         if cards_mode
@@ -1427,7 +1523,65 @@ impl Options {
         if options.skip_shared && options.model.is_none() {
             bail!("--skip-shared applies to --model only");
         }
+        if options.skip_shared && model_audits > 0 {
+            bail!("--skip-shared applies to plain --model Card checks only, not post-digest audits");
+        }
+        if options.format_json && !options.has_post_digest_mode() {
+            bail!("--format json applies to post-digest audit modes only (--stage, --premises, --settings, --network, --charts, --charts-json, --draft-diff, --tree)");
+        }
+        if options.workspace.is_some() && options.has_post_digest_mode() {
+            bail!("--workspace does not apply to post-digest audit modes");
+        }
+        if options.has_post_digest_mode()
+            && (options.setting.is_some()
+                || !options.level.is_empty()
+                || options.require_explain
+                || limit_flag_set)
+        {
+            bail!(
+                "--setting, --level, --require-explain, and size-limit flags do not apply to post-digest audit modes"
+            );
+        }
+        if let Some(report) = options.report.as_deref() {
+            for input in options.input_file_paths() {
+                if same_path_identity(Path::new(report), Path::new(input)) {
+                    bail!("--report `{report}` cannot overwrite input file `{input}`");
+                }
+            }
+        }
         Ok(options)
+    }
+
+    fn input_file_paths(&self) -> Vec<&str> {
+        let mut paths = Vec::new();
+        for p in [
+            self.json.as_deref(),
+            self.draft.as_deref(),
+            self.log.as_deref(),
+            self.charts_json.as_deref(),
+            self.snapshot.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            paths.push(p);
+        }
+        if let Some((orig, draft)) = &self.draft_diff {
+            paths.push(orig.as_str());
+            paths.push(draft.as_str());
+        }
+        paths
+    }
+
+    fn has_post_digest_mode(&self) -> bool {
+        self.stage.is_some()
+            || self.premises
+            || self.settings
+            || self.network
+            || self.charts
+            || self.charts_json.is_some()
+            || self.draft_diff.is_some()
+            || self.tree.is_some()
     }
 }
 
@@ -1749,12 +1903,88 @@ pub fn run_cli(args: &[String]) -> Result<u8> {
     Ok(run.exit_code())
 }
 
-/// The structured status document, written whole so a reader never sees half of one.
+fn normalize_path_for_compare(path: &Path) -> std::path::PathBuf {
+    if let Ok(c) = std::fs::canonicalize(path) {
+        return c;
+    }
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        let dir = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        if let Ok(cp) = std::fs::canonicalize(dir) {
+            return cp.join(name);
+        }
+    }
+    path.to_path_buf()
+}
+
+fn same_path_identity(a: &Path, b: &Path) -> bool {
+    let na = normalize_path_for_compare(a);
+    let nb = normalize_path_for_compare(b);
+    if na == nb {
+        return true;
+    }
+    crate::mcp::boxpin::same(&na.to_string_lossy(), &nb.to_string_lossy())
+}
+
+/// The structured status document, published atomically via sibling temp file + rename
+/// so a reader never sees a truncated file and an existing directory/symlink is never clobbered.
 fn write_status(path: &str, status: &Status) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let dst = Path::new(path);
+    match std::fs::symlink_metadata(dst) {
+        Ok(meta) => {
+            let ft = meta.file_type();
+            if ft.is_dir() || ft.is_symlink() || !ft.is_file() {
+                bail!("--report target `{path}` must be a regular file, not a directory or symlink");
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err).with_context(|| format!("failed to inspect {path}")),
+    }
+
     let mut document =
         serde_json::to_string_pretty(&status.to_json()).context("the check status is not JSON")?;
     document.push('\n');
-    std::fs::write(path, document).with_context(|| format!("failed to write {path}"))?;
+
+    let parent = dst
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let stem = dst
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "report.json".to_string());
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = parent.join(format!(".{stem}.{}.{n}.tmp", std::process::id()));
+
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&tmp)
+        .with_context(|| format!("failed to create temporary report file {}", tmp.display()))?;
+    // Arm cleanup ONLY after exclusive creation succeeded so a collision can never delete
+    // a pre-existing file (H10).
+    struct RemoveOnDrop(Option<std::path::PathBuf>);
+    impl Drop for RemoveOnDrop {
+        fn drop(&mut self) {
+            if let Some(p) = &self.0 {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+    let mut guard = RemoveOnDrop(Some(tmp.clone()));
+    file.write_all(document.as_bytes())
+        .with_context(|| format!("failed to write temporary report file {}", tmp.display()))?;
+    file.sync_all()
+        .with_context(|| format!("failed to sync temporary report file {}", tmp.display()))?;
+    drop(file);
+    std::fs::rename(&tmp, dst).with_context(|| format!("failed to publish report to {path}"))?;
+    guard.0 = None;
     Ok(())
 }
 
@@ -1781,6 +2011,104 @@ pub fn run(args: &[String], zt: Option<&mut Zt>) -> Result<Run> {
             std::fs::read_to_string(path).with_context(|| format!("failed to read {path}"))?;
         let outcome = check_draft(&raw, InputKind::Draft, &options)?;
         return Ok(draft_run("draft_bundle", outcome));
+    }
+    if options.has_post_digest_mode() {
+        let (mode_name, (lines, exit, fault_count)) = if let Some(path) = &options.charts_json {
+            (
+                "charts_json",
+                crate::post_digest::charts::run_json_file(path, options.format_json)?,
+            )
+        } else {
+            let zt = server(zt, &mut own)?;
+            if let Some(stage) = options.stage {
+                let head = options.model.as_deref().unwrap_or_default();
+                (
+                    "stage",
+                    crate::post_digest::stage::run_live(zt, head, stage, options.format_json)?,
+                )
+            } else if options.premises {
+                let head = options.model.as_deref().unwrap_or_default();
+                (
+                    "premises",
+                    crate::post_digest::premises::run_live(zt, head, options.format_json)?,
+                )
+            } else if options.settings {
+                let head = options.model.as_deref().unwrap_or_default();
+                (
+                    "settings",
+                    crate::post_digest::settings::run_live(
+                        zt,
+                        head,
+                        options.symbols,
+                        options.format_json,
+                    )?,
+                )
+            } else if options.network {
+                let head = options.model.as_deref().unwrap_or_default();
+                (
+                    "network",
+                    crate::post_digest::network::run_live(zt, head, options.format_json)?,
+                )
+            } else if options.charts {
+                let head = options.model.as_deref().unwrap_or_default();
+                (
+                    "charts",
+                    crate::post_digest::charts::run_live(zt, head, options.format_json)?,
+                )
+            } else if let Some((orig, draft)) = &options.draft_diff {
+                let chapters: Vec<String> = options
+                    .chapters
+                    .as_deref()
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                (
+                    "draft_diff",
+                    crate::post_digest::draft_diff::run_live(
+                        zt,
+                        orig,
+                        draft,
+                        &chapters,
+                        options.format_json,
+                    )?,
+                )
+            } else {
+                let key = options.tree.as_deref().unwrap_or_default();
+                (
+                    "tree",
+                    crate::post_digest::tree::run_live(
+                        zt,
+                        key,
+                        options.snapshot.as_deref(),
+                        options.format_json,
+                    )?,
+                )
+            }
+        };
+        let verdict = match exit {
+            0 => "pass",
+            1 => "block",
+            _ => "incomplete",
+        };
+        return Ok(Run {
+            lines,
+            status: Status {
+                mode: mode_name,
+                verdict,
+                missing: Vec::new(),
+                reasons: Vec::new(),
+                blocking: fault_count,
+                advisory: 0,
+                workspace: "each stored Card's own".to_string(),
+                policy_source: crate::contract::POLICY_SOURCE_BUILT_IN,
+                contract: crate::contract::Contract::built_in(&options.limits).publish(),
+                gate: Value::Null,
+                diagnostics: Vec::new(),
+            },
+        });
     }
     // The `--cards` list is read before any archive call, so an empty list still
     // answers without a service, as it always has.
@@ -2833,5 +3161,74 @@ mod tests {
         );
         let agent_only = vec![json!({ "address": "1/1", "workspace": "agent" })];
         assert!(workspace_gaps(&agent_only, "agent").is_empty());
+    }
+
+    #[test]
+    fn post_digest_cli_options_and_offline_charts_json_seam() {
+        let s = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert!(Options::parse(&s(&["--model", "K/1|a", "--stage", "fold", "--premises"])).is_err());
+        assert!(Options::parse(&s(&["--stage", "fold"])).is_err());
+        assert!(Options::parse(&s(&["--model", "K/1|a", "--symbols"])).is_err());
+        assert!(Options::parse(&s(&["--model", "K/1|a", "--stage", "fold", "--skip-shared"])).is_err());
+        assert!(Options::parse(&s(&["--tree", "K", "--chapters", "K/1"])).is_err());
+        assert!(Options::parse(&s(&["--model", "K/1|a", "--settings", "--format", "yaml"])).is_err());
+        assert!(Options::parse(&s(&["--json", "a.json", "--format", "json"])).is_err());
+        assert!(Options::parse(&s(&["--model", "K/1|a", "--format", "json"])).is_err());
+        assert!(Options::parse(&s(&["--model", "K/1|a", "--stage", "fold", "--workspace", "agent"])).is_err());
+
+        let ok1 = Options::parse(&s(&["--model", "K/1|a", "--stage", "final", "--format", "json"])).unwrap();
+        assert!(ok1.format_json && ok1.stage == Some(crate::post_digest::stage::Stage::Final));
+        let ok2 = Options::parse(&s(&["--model", "K/1|a", "--settings", "--symbols"])).unwrap();
+        assert!(ok2.settings && ok2.symbols);
+        let ok3 = Options::parse(&s(&["--draft-diff", "a.json", "b.json", "--chapters", "K/1,K/2"])).unwrap();
+        assert_eq!(ok3.draft_diff, Some(("a.json".into(), "b.json".into())));
+        let ok4 = Options::parse(&s(&["--tree", "K", "--snapshot", "s.json"])).unwrap();
+        assert_eq!(ok4.tree.as_deref(), Some("K"));
+
+        let tmp = std::env::temp_dir().join(format!("zt-check-charts-test-{}.json", std::process::id()));
+        std::fs::write(
+            &tmp,
+            serde_json::json!({
+                "head": "K/2|a",
+                "figures": { "K/2|a|a": "<svg viewBox=\"0 0 800 100\"><text>e_R</text></svg>" },
+                "intuitions": { "K/2|a|a": { "what": "说明；分号。", "why": "理由。", "how": "进入第 1 章。" } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let res = run(
+            &s(&["--charts-json", tmp.to_str().unwrap(), "--format", "json"]),
+            None,
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        assert_eq!(res.exit_code(), 1);
+        let payload: Value = serde_json::from_str(&res.lines.join("\n")).unwrap();
+        assert_eq!(payload["ok"], false);
+        let fault_count = payload["faults"].as_array().unwrap().len();
+        assert!(fault_count >= 3);
+        assert_eq!(res.status.blocking, fault_count);
+
+        // P0-6: unused legacy flags rejected on post-digest modes.
+        assert!(Options::parse(&s(&["--model", "K/1|a", "--stage", "fold", "--require-explain"])).is_err());
+        assert!(Options::parse(&s(&["--model", "K/1|a", "--settings", "--max-sentences", "20"])).is_err());
+        assert!(Options::parse(&s(&["--tree", "K", "--level", "formal"])).is_err());
+
+        // P0-6: --report aliasing any input file must be rejected before writing.
+        let inp = std::env::temp_dir().join(format!("zt-check-alias-{}.json", std::process::id()));
+        std::fs::write(&inp, r#"{"figures": {}}"#).unwrap();
+        let inp_s = inp.to_str().unwrap();
+        let err = Options::parse(&s(&["--charts-json", inp_s, "--report", inp_s])).unwrap_err();
+        assert!(format!("{err:#}").contains("cannot overwrite input"), "{err:#}");
+        let err_dd = Options::parse(&s(&["--draft-diff", inp_s, "other.json", "--report", inp_s])).unwrap_err();
+        assert!(format!("{err_dd:#}").contains("cannot overwrite input"), "{err_dd:#}");
+        // Atomic write_status publishes cleanly and refuses a directory target.
+        let report_out = std::env::temp_dir().join(format!("zt-check-report-{}.json", std::process::id()));
+        write_status(report_out.to_str().unwrap(), &res.status).unwrap();
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&report_out).unwrap()).unwrap();
+        assert_eq!(written["blocking"], fault_count);
+        assert!(write_status(std::env::temp_dir().to_str().unwrap(), &res.status).is_err());
+        let _ = std::fs::remove_file(&inp);
+        let _ = std::fs::remove_file(&report_out);
     }
 }

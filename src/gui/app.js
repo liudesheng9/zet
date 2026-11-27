@@ -407,6 +407,22 @@
   };
   /** How a facet reads: a common facet by its English name, any other label as written. */
   const facetLabel = (facet) => FACETS[facet]?.label || facet || '';
+  /** Split a facet on its first `：` or `:` outside `$…$` math so `$f:X\to Y$` stays intact. */
+  function splitFacetColon(text) {
+    if (!text) return [''];
+    let inMath = false;
+    let escaped = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (ch === '$' && !escaped) {
+        inMath = !inMath;
+      } else if (!inMath && (ch === '：' || ch === ':')) {
+        return [text.slice(0, i), text.slice(i + 1)];
+      }
+      escaped = ch === '\\' && !escaped;
+    }
+    return [text];
+  }
   /** The rubber stamp an Event, Finding, Model, or Hub Card carries; Idea Cards carry none. A Model part's
    *  stamp names its facet; a core part's stamp carries a dot; a Model Card's names its level. */
   const typeStamp = (type, title, facet, emphasis, level, form) => {
@@ -426,8 +442,7 @@
     return h('span', {
       class: 'type-stamp ' + type + (part ? ' part' : '') + (part && emphasis ? ' ' + emphasis : '') + (lvl ? ' level-' + level : ''),
       title: title || (part ? `Model part · ${facetLabel(facet)}${note ? ' — ' + note : ''}` : `${CARD_TYPES[type].label} Card — ${CARD_TYPES[type].note}${lvl ? ` · ${lvl.note}` : ''}`),
-      text: part ? `${type} · ${facet}` : lvl ? `${type} · ${lvl.label}` : type,
-    });
+    }, part ? [type, ' · ', ...titleNodes(facet)] : lvl ? `${type} · ${lvl.label}` : type);
   };
 
   // ------------------------------------------------------------------ math
@@ -447,19 +462,52 @@
     }
   }
   const titleCache = new Map();
-  /** A title as nodes, with its `$…$` runs typeset. Each distinct title is typeset and parsed once;
-   *  later uses clone the parsed nodes (#240). */
+  /** A title or facet as nodes, with its `$…$` / `$$…$$` runs typeset (respecting `\$` escapes).
+   *  Each distinct string is typeset and parsed once; later uses clone the parsed nodes (#240). */
   function titleNodes(text) {
     if (!text || !text.includes('$') || !katexReady()) return [text];
     let parsed = titleCache.get(text);
     if (parsed === undefined) {
       const escape = (value) => value.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
-      const html = text.split(/(\$[^$]+\$)/).map((part) => {
-        if (part.length > 2 && part.startsWith('$') && part.endsWith('$')) {
-          try { return window.katex.renderToString(part.slice(1, -1), { throwOnError: false }); } catch { return escape(part); }
+      const isEscaped = (at) => {
+        let bs = 0;
+        for (let k = at - 1; k >= 0 && text[k] === '\\'; k -= 1) bs += 1;
+        return bs % 2 === 1;
+      };
+      let html = '';
+      let i = 0;
+      let plainStart = 0;
+      while (i < text.length) {
+        if (text[i] === '$' && !isEscaped(i)) {
+          const dbl = text[i + 1] === '$';
+          const delimLen = dbl ? 2 : 1;
+          let j = i + delimLen;
+          let close = -1;
+          while (j < text.length) {
+            if (text[j] === '$' && !isEscaped(j)) {
+              if (dbl) {
+                if (text[j + 1] === '$') { close = j; break; }
+              } else if (text[j + 1] === '$') {
+                break;
+              } else if (j > i + 1) {
+                close = j;
+                break;
+              }
+            }
+            j += 1;
+          }
+          if (close > i + delimLen) {
+            if (i > plainStart) html += escape(text.slice(plainStart, i));
+            const inner = text.slice(i + delimLen, close);
+            try { html += window.katex.renderToString(inner, { throwOnError: false }); } catch { html += escape(text.slice(i, close + delimLen)); }
+            i = close + delimLen;
+            plainStart = i;
+            continue;
+          }
         }
-        return escape(part);
-      }).join('');
+        i += 1;
+      }
+      if (plainStart < text.length) html += escape(text.slice(plainStart));
       parsed = document.createElement('template');
       parsed.innerHTML = html;
       if (titleCache.size > 4000) titleCache.clear();
@@ -5599,7 +5647,7 @@
       if (line === 'off') apart = true;
       const where = (line === 'shared' ? ` · shared from ${part.home || 'another model'}`
         : line === 'side' ? ` · beside ${part.from}` : line === 'off' ? ' · outside the build' : '') + (stepOf.get(part.address) || '');
-      tabs.push(tab((line === 'shared' ? '⧉ ' : '') + facetLabel(part.facet), part.address, part.address === card.address,
+      tabs.push(tab(line === 'shared' ? ['⧉ ', ...titleNodes(facetLabel(part.facet))] : titleNodes(facetLabel(part.facet)), part.address, part.address === card.address,
         `${facetLabel(part.facet)}${part.emphasis ? ` (${part.emphasis})` : ''}${where} · ${part.address} — ${part.title}`, extra));
     }
     return h('nav', { class: 'model-tabs', 'aria-label': 'Model structure' }, tabs);
@@ -5768,7 +5816,7 @@
         dataset: { at: part.address },
         onclick: part.address === here ? null : () => go(part.address),
       },
-        h('span', { class: 'mb-facet', text: facetLabel(part.facet) }),
+        h('span', { class: 'mb-facet' }, titleNodes(facetLabel(part.facet))),
         h('span', { class: 'mb-title' }, titleNodes(bareTitle(part.title))),
       );
       slips.set(part.address, node);
@@ -5903,7 +5951,7 @@
         reasons.map((reason) => h('button', { class: 'mb-reason ' + reason.way, onclick: () => go(reason.at), title: `${reason.label} ${reason.at}` },
           h('span', { class: 'way', text: glyph[reason.way] }),
           h('span', { class: 'mb-kind', text: reason.label }),
-          h('span', { class: 'note' }, h('span', { class: 'mb-facet', text: facetLabel(facetOf.get(reason.at)) }), ' ', titleNodes(reason.note)),
+          h('span', { class: 'note' }, h('span', { class: 'mb-facet' }, titleNodes(facetLabel(facetOf.get(reason.at)))), ' ', titleNodes(reason.note)),
         ))) : null,
       beyond.length ? h('div', { class: 'mb-reasons mb-beyond', 'aria-label': 'Cards outside the model' },
         h('div', { class: 'mb-tray', text: `Beyond the model · ${beyond.length}` }),
@@ -5995,7 +6043,7 @@
     const partOf = new Map(model.parts.map((p) => [p.address, p]));
     const nameOf = (id) => {
       const b = blocks[index.get(id)];
-      return b ? (PLAIN[b.kind] || facetLabel(b.facet).split('：')[0]) : id;
+      return b ? (PLAIN[b.kind] || splitFacetColon(facetLabel(b.facet))[0]) : id;
     };
     // A block's short name: a chapter by its number, the rest by their name; a name several blocks
     // share (a flat model's 推导, 推导, ...) counts them in reading order: 推导1, 推导2.
@@ -6012,7 +6060,10 @@
       return m ? m[1] : seen.get(name) > 1 ? `${name}${ordinal.get(id)}` : name;
     };
     // A facet as a card's header: `结果：最优性` reads `结果 · 最优性`.
-    const headLabel = (facet) => facetLabel(facet).replace(/\s*[：:]\s*/, ' · ');
+    const headLabel = (facet) => {
+      const parts = splitFacetColon(facetLabel(facet));
+      return parts.length === 2 ? `${parts[0].trim()} · ${parts[1].trim()}` : parts[0];
+    };
     const cardName = (at) => {
       const p = partOf.get(at);
       return p ? `${headLabel(p.facet)} — ${bareTitle(p.title)}` : at;
@@ -6082,12 +6133,12 @@
       const more = byFrom.size - rows.length;
       pairsCard.replaceChildren(...[
         h('div', { class: 'mbk-pairs-head' },
-          h('b', { text: nameOf(from) }), ' rests on ', h('b', { text: nameOf(to) }),
+          h('b', {}, titleNodes(nameOf(from))), ' rests on ', h('b', {}, titleNodes(nameOf(to))),
           h('span', { class: 'mbk-count', text: ` · ${flag.count} Link${flag.count === 1 ? '' : 's'}` })),
         flag.up ? h('p', { class: 'mbk-pairs-fault', text: 'Forward: this block rests on a later one. File the premise before it, or move the Card that rests on it after the premise.' }) : null,
         h('ul', {}, rows.map(([at, tos]) => h('li', {},
-          h('button', { class: 'mbk-pairs-from', onclick: () => go(at), title: at }, cardName(at)),
-          tos.map(([to2, kind]) => h('button', { class: 'mbk-pairs-to', onclick: () => go(to2), title: `${(KINDS[kind] || KINDS.refers).fwd} ${to2}` }, h('span', { class: 'arrow', text: '→' }), cardName(to2)))))),
+          h('button', { class: 'mbk-pairs-from', onclick: () => go(at), title: at }, titleNodes(cardName(at))),
+          tos.map(([to2, kind]) => h('button', { class: 'mbk-pairs-to', onclick: () => go(to2), title: `${(KINDS[kind] || KINDS.refers).fwd} ${to2}` }, h('span', { class: 'arrow', text: '→' }), titleNodes(cardName(to2))))))),
         more > 0 ? h('p', { class: 'mbk-pairs-more', text: `+${more} more Card${more === 1 ? '' : 's'}` }) : null,
         h('button', { class: 'mbk-pairs-open', onclick: () => openBridge(flag) }, 'Lay the two blocks side by side'),
       ].filter(Boolean));
@@ -6108,8 +6159,8 @@
       pairsCard.replaceChildren(
         h('div', { class: 'mbk-pairs-head' }, h('b', { text: `引入 by ${list.length} model${list.length === 1 ? '' : 's'}` })),
         h('ul', {}, list.map((l) => h('li', {},
-          h('button', { class: 'mbk-pairs-from', onclick: () => go(l.model), title: l.model }, bareTitle(l.title) || l.model),
-          l.roots.map((at) => h('span', { class: 'mbk-pairs-to', title: at }, h('span', { class: 'arrow', text: '⧉' }), cardName(at)))))));
+          h('button', { class: 'mbk-pairs-from', onclick: () => go(l.model), title: l.model }, titleNodes(bareTitle(l.title) || l.model)),
+          l.roots.map((at) => h('span', { class: 'mbk-pairs-to', title: at }, h('span', { class: 'arrow', text: '⧉' }), titleNodes(cardName(at))))))));
       const width = Math.min(320, board.clientWidth - 24);
       pairsCard.style.width = `${width}px`;
       pairsCard.style.left = `${Math.min(board.clientWidth - width - 8, Math.max(8, point.x + 14))}px`;
@@ -6148,9 +6199,11 @@
         return flag;
       };
       // A tab: the block's short name. A card shrunk to a tab on a tall board shows the same.
-      const asTab = () => [h('span', { class: 'mbn-num', text: shortName(b.id) }), fault(), lentFlag()];
+      const asTab = () => [h('span', { class: 'mbn-num' }, titleNodes(shortName(b.id))), fault(), lentFlag()];
       const full = PLAIN[b.kind] ? b.title : `${facetLabel(b.facet)} — ${bareTitle(b.title)}`;
       const flags = flagsOf(b.id);
+      const compactSub = (splitFacetColon(facetLabel(b.facet))[1] || '').trim();
+      const tabText = PLAIN[b.kind] || (lv === 'focus' ? headLabel(b.facet) : (compactSub ? `${shortName(b.id)} · ${compactSub}` : shortName(b.id)));
       const node = h('div', {
         class: `mbn-node level-${lv}` + (isOpen ? ' open' : '') + (b.head === here ? ' here' : '') + (unanchored.has(b.id) ? ' unanchored' : '') + (holdsHit(b) ? ' found' : ''),
         role: 'button', tabindex: '0',
@@ -6162,7 +6215,7 @@
           ? asTab()
           : [
             h('span', { class: 'mbn-head' },
-              h('span', { class: 'mbn-tab', text: PLAIN[b.kind] || (lv === 'focus' ? headLabel(b.facet) : `${shortName(b.id)} · ${(facetLabel(b.facet).split(/[：:]/)[1] || '').trim()}`.replace(/ · $/, '')) }),
+              h('span', { class: 'mbn-tab' }, titleNodes(tabText)),
               fault()),
             h('span', { class: 'mbn-title' }, titleNodes(bareTitle(b.title))),
             headline(b),
@@ -6199,8 +6252,7 @@
             class: 'mbn-tick' + (open && b.id === open.id ? ' open' : '') + (unanchored.has(b.id) ? ' fault' : '') + (holdsHit(b) ? ' found' : ''),
             title: PLAIN[b.kind] ? b.title : `${facetLabel(b.facet)} — ${b.title}`,
             onclick: () => openBlock(b),
-            text: shortName(b.id),
-          });
+          }, titleNodes(shortName(b.id)));
           tick.dataset.block = b.id;
           return tick;
         })))));
@@ -6253,8 +6305,7 @@
               class: 'mbn-flag',
               title: `${count} Link${count === 1 ? '' : 's'} ${side === 'left' ? 'to' : 'from'} ${nameOf(block)}`,
               onclick: (event) => { event.stopPropagation(); go(blocks[index.get(block)].head); },
-              text: shortName(block),
-            });
+            }, titleNodes(shortName(block)));
             el.addEventListener('mouseenter', () => lift(new Set([open.id, block])));
             el.addEventListener('mouseleave', unlift);
             return el;
@@ -6280,7 +6331,7 @@
           const part = partOf.get(at);
           items.push(h('li', { class: 'mbn-slip aside' + (at === here ? ' here' : ''), style: `z-index: ${items.length + 1}` },
             h('button', { onclick: (event) => { event.stopPropagation(); go(at); }, title: at },
-              h('span', { class: 'mbk-step', text: part && part.facet ? headLabel(part.facet).split(' · ')[0] : '附' }),
+              h('span', { class: 'mbk-step' }, titleNodes(part && part.facet ? splitFacetColon(facetLabel(part.facet))[0].trim() : '附')),
               h('span', { class: 'mbk-step-title' }, titleNodes(part ? bareTitle(part.title) : at)))));
         }
         return h('ol', { class: 'mbn-proof', 'aria-label': 'Proof chain' }, items);
@@ -6362,7 +6413,7 @@
           onkeydown: (event) => { if (event.key === 'Enter') go(c.address); },
         },
           h('div', { class: 'mbn-tuck-head' },
-            h('span', { class: 'mbk-facet', text: headLabel(c.facet) }),
+            h('span', { class: 'mbk-facet' }, titleNodes(headLabel(c.facet))),
             pulled ? null : h('span', { class: 'mbn-tuck-line' }, titleNodes(bareTitle(c.title))),
             badgeOf(c),
             lentStamp(c.address),
@@ -6399,7 +6450,7 @@
             : h('p', { class: 'mbk-lead', text: SHELF[open.kind] }))
         : h('div', { class: 'mbn-chapter' + (open.head === here ? ' here' : ''), style: `z-index: ${open.children.length + 3}` },
           h('div', { class: 'mbk-head' },
-            h('span', { class: 'mbk-tab', text: headLabel(open.facet) }),
+            h('span', { class: 'mbk-tab' }, titleNodes(headLabel(open.facet))),
             open.members > 1 ? h('span', { class: 'mbk-count', text: `${open.members} 张` }) : null,
             lentStamp(open.head)),
           h('button', { class: 'mbk-chapter', onclick: () => go(open.head), title: open.head }, titleNodes(bareTitle(open.title))),
@@ -6610,19 +6661,19 @@
     const cardEl = (at) => {
       const p = ctx.partOf.get(at);
       return h('button', { class: 'mbk-bcard' + (at === ctx.here ? ' here' : ''), title: at, style: `--tilt: ${ZtLayout.tilt(at)}deg`, onclick: () => go(at) },
-        h('span', { class: 'mbk-facet', text: p ? ctx.headLabel(p.facet) : at }),
+        h('span', { class: 'mbk-facet' }, titleNodes(p ? ctx.headLabel(p.facet) : at)),
         h('span', { class: 'mbk-title' }, titleNodes(p ? bareTitle(p.title) : at)));
     };
     const head = (id) => {
       const b = ctx.blocks[ctx.index.get(id)];
       return h('div', { class: 'mbk-bcol-head' },
-        h('span', { class: 'mbk-tab', text: ctx.headLabel(b.facet) || ctx.nameOf(id) }),
+        h('span', { class: 'mbk-tab' }, titleNodes(ctx.headLabel(b.facet) || ctx.nameOf(id))),
         h('button', { class: 'mbk-bcol-title', onclick: () => go(b.head), title: b.head }, titleNodes(bareTitle(b.title))));
     };
     const view = h('div', { class: 'mbk-bridge' + (ctx.up ? ' up' : '') },
       h('div', { class: 'mbk-bridge-bar' },
         h('button', { class: 'mbk-bridge-close', onclick: close, title: 'Back to the board (Esc)' }, '← Board'),
-        h('span', {}, h('b', { text: ctx.nameOf(edge.from_block) }), ` ${KINDS[kind].fwd} `, h('b', { text: ctx.nameOf(edge.to_block) }), ` · ${edge.count} Link${edge.count === 1 ? '' : 's'}`)),
+        h('span', {}, h('b', {}, titleNodes(ctx.nameOf(edge.from_block))), ` ${KINDS[kind].fwd} `, h('b', {}, titleNodes(ctx.nameOf(edge.to_block))), ` · ${edge.count} Link${edge.count === 1 ? '' : 's'}`)),
       ctx.up ? h('p', { class: 'mbk-pairs-fault', text: 'Forward: the right block rests on a later block. File the premise before it, or move the Card that rests on it after the premise.' }) : null,
       h('div', { class: 'mbk-bridge-body' },
         head(edge.to_block), head(edge.from_block),
@@ -6863,7 +6914,7 @@
     const node = h('aside', { class: 'pullout', role: 'dialog', 'aria-label': `Look up ${address}` },
       h('div', { class: 'pullout-card' },
         h('header', { class: 'pullout-head' },
-          unitHead ? typeStamp(card.type, null, null, null, card.level, card.form) : h('span', { class: 'sd-facet', text: facetLabel(card.facet) || card.type }),
+          unitHead ? typeStamp(card.type, null, null, null, card.level, card.form) : h('span', { class: 'sd-facet' }, titleNodes(facetLabel(card.facet) || card.type)),
           addressStamp(address),
           h('button', { class: 'open-btn', type: 'button', title: 'Open this Card in the reader', text: 'Open', onclick: () => { study.close(); dropBack(); go(address); } }),
           h('button', { class: 'pullout-close', title: 'Drop it back into the box (Esc)', 'aria-label': 'Drop back', text: '×', onclick: () => dropBack() })),
@@ -7307,7 +7358,7 @@
         h('div', { class: 'sd-flip' },
           h('div', { class: 'sd-face front' },
             h('header', { class: 'sd-head' },
-              head ? typeStamp(card.type, null, null, null, card.level, card.form) : h('span', { class: 'sd-facet', text: facetLabel(facet) }),
+              head ? typeStamp(card.type, null, null, null, card.level, card.form) : h('span', { class: 'sd-facet' }, titleNodes(facetLabel(facet))),
               crux ? h('span', { class: 'sd-crux', title: 'The crux step: the idea of the proof', text: 'crux' }) : null,
               labels && !head ? h('span', { class: 'sd-uses', title: 'The labels this Card uses' }, labels.split(' ').map((label) => h('span', { class: 'lchip small', tabindex: '0', dataset: { label }, text: label }))) : null,
               addressStamp(address),
@@ -7385,7 +7436,7 @@
             class: 'sd-fslip', dataset: { at, labels: head ? null : desk.labels.get(at) || null },
             title: `${at} — ${card.title}\nPull it out of the stack`,
             onclick: (event) => pullOut(at, event.currentTarget).catch(fail),
-          }, h('span', { class: 'sd-facet', text: head ? card.form : facetLabel(card.facet) }), h('span', { class: 'sd-fslip-title' }, titleNodes(bareTitle(card.title))));
+          }, h('span', { class: 'sd-facet' }, titleNodes(head ? card.form : facetLabel(card.facet))), h('span', { class: 'sd-fslip-title' }, titleNodes(bareTitle(card.title))));
         })),
         h('button', {
           class: 'sd-stack', title: `${folded.length} more Card${folded.length === 1 ? '' : 's'} ${unit ? 'of this unit' : 'of this theory'}, face down in a stack`,
@@ -7397,7 +7448,7 @@
         const card = desk.cards.get(at);
         if (!card) return null;
         return h('details', { class: 'sd-slip', dataset: { at, labels: desk.labels.get(at) || null } },
-          h('summary', {}, h('span', { class: 'sd-facet', text: facetLabel(card.facet) }), ' ', titleNodes(bareTitle(card.title))),
+          h('summary', {}, h('span', { class: 'sd-facet' }, titleNodes(facetLabel(card.facet))), ' ', titleNodes(bareTitle(card.title))),
           (() => { const md = h('div', { class: 'md' }); md.innerHTML = card.html; wireMarkdown(md); return md; })());
       }).filter(Boolean);
       const anyDown = focus.some((node) => node.classList.contains('down'));
@@ -7526,9 +7577,9 @@
       image.addEventListener('click', () => showFigure(figure.dataset.artifact, image.alt));
       image.title = 'Open figure';
     }
-    // Link chips carry their target's title, which may hold TeX.
-    for (const title of root.querySelectorAll('.zt-link-title')) {
-      if (title.textContent.includes('$')) title.replaceChildren(...titleNodes(title.textContent));
+    // Link chips carry their target's title and (for Model parts) facet, both of which may hold TeX.
+    for (const label of root.querySelectorAll('.zt-link-title, .zt-link-facet')) {
+      if (label.textContent.includes('$')) label.replaceChildren(...titleNodes(label.textContent));
     }
     for (const anchor of root.querySelectorAll('a[href]')) {
       if (anchor.classList.contains('zt-link')) {

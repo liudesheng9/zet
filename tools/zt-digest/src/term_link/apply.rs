@@ -128,6 +128,9 @@ pub(crate) struct Stop {
 pub(crate) struct Ran {
     pub(crate) chunks: Vec<ChunkState>,
     pub(crate) stop: Option<Stop>,
+    /// Secondary receipt/output verification fault observed when a primary archive refusal
+    /// (`ran.stop`, e.g. `card_locked`) is already active (H5).
+    pub(crate) verification_error: Option<Stop>,
 }
 
 impl Ran {
@@ -148,8 +151,12 @@ impl Ran {
 
 /// `-Step apply`: read the frozen plan, revalidate it, and apply its exact edits.
 pub fn run(p: &Params) -> Result<i32> {
-    let frozen = read_plan(p)?;
     let mut zt = crate::zt::start()?;
+    Ok(run_with(&mut zt, p, false)?.0)
+}
+
+pub(crate) fn run_with(zt: &mut Zt, p: &Params, quiet_on_ok: bool) -> Result<(i32, Value)> {
+    let frozen = read_plan(p)?;
     let manifest = common::manifest(&p.staging)?;
     let key = book_key(&manifest, p)?;
     // The plan's own options are the ones the reviewed preview froze; the invocation must repeat
@@ -174,7 +181,8 @@ pub fn run(p: &Params) -> Result<i32> {
     let (plan, applied_plan, replanned, applied) =
         match review(&frozen.plan, &fresh.plan, p, &read.cards) {
             Review::Stale { reasons } => {
-                return stop_stale(p, &frozen, &fresh, revision_before, reasons);
+                let code = stop_stale(p, &frozen, &fresh, revision_before, reasons)?;
+                return Ok((code, json!({})));
             }
             Review::Current => (frozen.plan.clone(), frozen.plan.clone(), Vec::new(), Vec::new()),
             Review::Revised {
@@ -195,7 +203,7 @@ pub fn run(p: &Params) -> Result<i32> {
     let chunks = chunks_of(&applied_plan)?;
     // A Lock governs every write; the preflight names it before the first chunk. The archive stays
     // authoritative: a Lock that appears later refuses its chunk with the same typed answer.
-    if let Some(refusal) = lockcheck::preflight(&mut zt, "term-link", "apply", &key)? {
+    if let Some(refusal) = lockcheck::preflight(zt, "term-link", "apply", &key)? {
         let ran = Ran {
             chunks: chunks.iter().map(pending_state).collect(),
             stop: Some(Stop {
@@ -208,6 +216,7 @@ pub fn run(p: &Params) -> Result<i32> {
                 detail: refusal.clone(),
                 exit: lockcheck::LOCKED_EXIT,
             }),
+            verification_error: None,
         };
         return finish(
             p,
@@ -221,10 +230,11 @@ pub fn run(p: &Params) -> Result<i32> {
             revision_before,
             revision_before,
             ran,
+            quiet_on_ok,
         );
     }
-    let ran = execute(&chunks, |items| send_batch(&mut zt, items))?;
-    let (ran, settled_revision) = verify_outputs(&mut zt, &applied_plan, ran)?;
+    let ran = execute(&chunks, |items| send_batch(zt, items))?;
+    let (ran, settled_revision) = verify_outputs(zt, &applied_plan, ran)?;
     // A stop after at least one attempted chunk may have left committed writes (and an unknown
     // chunk's commit), so the report names the archive's revision after that work rather than
     // pretending the archive did not move.
@@ -250,6 +260,7 @@ pub fn run(p: &Params) -> Result<i32> {
         revision_before,
         revision_after,
         ran,
+        quiet_on_ok,
     )
 }
 
@@ -637,7 +648,11 @@ where
                 states.push(done_state(chunk, answers)?);
             }
             Reply::Refused(refusal) => {
-                let code = refusal["error"].as_str().unwrap_or("refused");
+                let code = refusal["code"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| refusal["error"].as_str())
+                    .unwrap_or("refused");
                 let (stop_code, exit) = stop_of(code);
                 let message = refusal["message"]
                     .as_str()
@@ -681,6 +696,7 @@ where
     Ok(Ran {
         chunks: states,
         stop,
+        verification_error: None,
     })
 }
 
@@ -695,10 +711,12 @@ fn done_state(chunk: &Chunk, results: Vec<Value>) -> Result<ChunkState> {
     }
     let mut replayed = 0usize;
     for (item, result) in chunk.items.iter().zip(&results) {
+        let expected_at = item["arguments"]["at"].as_str();
         if result["op_key"] != item["op_key"]
             || result["client_ref"] != item["client_ref"]
             || !result["replayed"].is_boolean()
             || result["result"]["address"].as_str().is_none_or(str::is_empty)
+            || expected_at.is_some_and(|at| result["result"]["address"].as_str() != Some(at))
             || result["result"]["after_fingerprint"]
                 .as_str()
                 .is_none_or(|fingerprint| fingerprint.len() != 64)
@@ -793,7 +811,20 @@ pub(crate) fn verify_outputs(
             ) else {
                 continue;
             };
-            if expected.contains_key(at) && !addresses.iter().any(|seen| seen == at) {
+            if !expected.contains_key(at) {
+                if receipt_diverge.is_none() {
+                    receipt_diverge = Some(Stop {
+                        code: "output_diverged",
+                        message: format!(
+                            "the archived receipt returned unexpected address `{at}` not in this plan"
+                        ),
+                        detail: json!({"address": at, "receipt": fingerprint}),
+                        exit: STOP_EXIT,
+                    });
+                }
+                continue;
+            }
+            if !addresses.iter().any(|seen| seen == at) {
                 addresses.push(at.to_string());
             }
             // The receipt's own claim must be this plan's planned output.
@@ -813,8 +844,14 @@ pub(crate) fn verify_outputs(
             }
         }
     }
-    if receipt_diverge.is_some() {
-        ran.stop = receipt_diverge;
+    if let Some(diverge) = receipt_diverge {
+        if ran.stop.is_some() {
+            // H5: preserve the archive's primary typed stop (e.g. `card_locked`) and record the
+            // receipt discrepancy separately so a secondary verification fault never masks exit 2.
+            ran.verification_error = Some(diverge);
+        } else {
+            ran.stop = Some(diverge);
+        }
     }
     if ran.stop.is_some() || addresses.is_empty() {
         return Ok((ran, None));
@@ -872,7 +909,8 @@ fn finish(
     revision_before: u64,
     revision_after: u64,
     ran: Ran,
-) -> Result<i32> {
+    quiet_on_ok: bool,
+) -> Result<(i32, Value)> {
     let bodies: BTreeMap<String, String> = read
         .cards
         .iter()
@@ -892,15 +930,32 @@ fn finish(
         &ran,
     );
     let work = p.work();
-    util::write_atomic(&ps::join(&work, APPLY), &ps::json_pretty(&report))?;
-    util::write_atomic(&ps::join(&work, APPLY_MD), &report_md(&report))?;
+    let report_err = util::write_atomic(&ps::join(&work, APPLY), &ps::json_pretty(&report))
+        .and_then(|()| util::write_atomic(&ps::join(&work, APPLY_MD), &report_md(&report)))
+        .err();
     let mut summary = report["summary"].clone();
     summary["report"] = json!(ps::join(&work, APPLY));
     summary["report_md"] = json!(ps::join(&work, APPLY_MD));
     summary["work"] = json!(work);
-    util::print_line(&canon::canonical_json(&summary))?;
+    if let Some(err) = &report_err {
+        summary["report_error"] = json!(format!("{err:#}"));
+    }
     match &ran.stop {
         Some(stop) => {
+            // H5: even if writing apply.json / apply.md fails, still emit the typed archive refusal
+            // on stdout and return `stop.exit` so callers never lose `card_locked` / `scope_refused`.
+            if let Some(err) = &report_err {
+                crate::util::emit_err(&format!(
+                    "zt-digest term-link: failed to write apply report: {err:#}"
+                ));
+            }
+            if let Some(verr) = &ran.verification_error {
+                crate::util::emit_err(&format!(
+                    "zt-digest term-link: secondary verification error: {}",
+                    verr.message
+                ));
+            }
+            util::print_line(&canon::canonical_json(&summary))?;
             // The archive's typed refusal is the step's last line, so a caller reads the same
             // JSON it reads from every other step and never matches English text (R0409).
             if stop.code == "card_locked"
@@ -912,9 +967,17 @@ fn finish(
                 util::print_line(&canon::canonical_json(&stop.detail))?;
             }
             crate::util::emit_err(&format!("zt-digest term-link: {}", stop.message));
-            Ok(stop.exit)
+            Ok((stop.exit, summary))
         }
-        None => Ok(0),
+        None => {
+            if let Some(err) = report_err {
+                return Err(err);
+            }
+            if !quiet_on_ok {
+                util::print_line(&canon::canonical_json(&summary))?;
+            }
+            Ok((0, summary))
+        }
     }
 }
 
@@ -1051,6 +1114,13 @@ pub(crate) fn build_report(
             "detail": stop.detail,
         })
     });
+    let verification_error = ran.verification_error.as_ref().map(|err| {
+        json!({
+            "code": err.code,
+            "message": err.message,
+            "detail": err.detail,
+        })
+    });
     let summary = json!({
         "schema_version": 1,
         "ok": stop.is_none(),
@@ -1059,6 +1129,7 @@ pub(crate) fn build_report(
         "complete": complete,
         "no_op": no_op,
         "code": stop.as_ref().map(|stop| stop["code"].clone()),
+        "verification_error": verification_error,
         "claim_token": p.token,
         "pass": if p.round.is_some() { "final" } else { "book" },
         "round": p.round,
@@ -1412,6 +1483,7 @@ mod tests {
             round: None,
             token: None,
             apply: true,
+            plan_only: false,
         }
     }
 
@@ -1812,8 +1884,14 @@ mod tests {
         assert!(ran.chunks.iter().all(|chunk| chunk.state == "committed"));
         assert_eq!(ran.receipts().count(), 130);
         // A refusal in the second chunk keeps the first committed chunk and leaves the third
-        // pending; the typed refusal and its exit travel with the stop.
-        let refusal = json!({"error": "write_conflict", "code": "write_conflict", "message": "authored base changed at `K/20`"});
+        // pending; test the REAL core producer shape (`code: "write_conflict"` with a human sentence
+        // in `error`, H5) so classification and final-line formatting stay typed.
+        let refusal = json!({
+            "ok": false,
+            "code": "write_conflict",
+            "error": "the Card changed since the base fingerprint was read at `K/20`",
+            "observed_fingerprint": "0".repeat(64)
+        });
         let mut seen = 0;
         let ran = execute(&chunks, |items| {
             seen += 1;
@@ -1835,6 +1913,18 @@ mod tests {
         assert_eq!(stop.code, "stale_base");
         assert_eq!(stop.exit, STOP_EXIT);
         assert_eq!(stop.detail, refusal);
+
+        // M12: a receipt returning a wrong address for an item must fail done_state.
+        let bad_addr_err = execute(&chunks[..1], |items| {
+            let mut ans = match answer(items) {
+                Reply::Done(v) => v,
+                _ => unreachable!(),
+            };
+            ans[0]["result"]["address"] = json!("Wrong/999");
+            Ok(Reply::Done(ans))
+        })
+        .unwrap_err();
+        assert!(format!("{bad_addr_err:#}").contains("mismatch"), "{bad_addr_err:#}");
     }
 
     #[test]
@@ -1948,7 +2038,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let state = done_state(&chunks[0], answers).unwrap();
-        let ran = Ran { chunks: vec![state], stop: None };
+        let ran = Ran { chunks: vec![state], stop: None, verification_error: None };
         let report = build_report(
             &params(),
             &Frozen { plan: plan.clone(), path: "plan.json".into() },
@@ -1994,6 +2084,7 @@ mod tests {
                 detail: json!({"error": "card_check", "faults": ["K/1 R3 (advisory) 甲；乙。"]}),
                 exit: STOP_EXIT,
             }),
+            verification_error: None,
         };
         let report = build_report(
             &params(),
@@ -2017,5 +2108,66 @@ mod tests {
         assert!(md.contains("Replanned Cards"), "{md}");
         assert!(md.contains("Body changed since the plan:"), "{md}");
         assert!(md.contains("Updated plan:"), "{md}");
+    }
+
+    #[test]
+    fn secondary_report_write_failure_and_verification_error_never_mask_primary_card_locked_stop() {
+        let plan = plan_of(1, vec![card("K/1", "生产函数决定产出。", true)]);
+        let lock_detail = json!({
+            "ok": false,
+            "code": "card_locked",
+            "error": "the Literature tree K is locked by the owner",
+            "tree": "K",
+            "lock_id": 7
+        });
+        let ran = Ran {
+            chunks: Vec::new(),
+            stop: Some(Stop {
+                code: "card_locked",
+                message: "the Literature tree K is locked by the owner".to_string(),
+                detail: lock_detail.clone(),
+                exit: lockcheck::LOCKED_EXIT,
+            }),
+            verification_error: Some(Stop {
+                code: "output_diverged",
+                message: "earlier receipt diverged".to_string(),
+                detail: json!({"address": "K/1"}),
+                exit: STOP_EXIT,
+            }),
+        };
+        // Point staging at a regular file so writing `<staging>/term-link/apply.json` fails.
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_not_dir = dir.path().join("not-a-dir");
+        std::fs::write(&file_not_dir, "blocking file").unwrap();
+        let mut p = params();
+        p.staging = file_not_dir.to_string_lossy().into_owned();
+        let read = zt_check::mcp::CardRead {
+            cards: Vec::new(),
+            archive_revision: 5,
+        };
+        let guard = crate::util::begin_capture(crate::util::DEFAULT_CAPTURE_CAP);
+        let (code, summary) = finish(
+            &p,
+            &Frozen { plan: plan.clone(), path: "plan.json".into() },
+            "plan.json",
+            &plan,
+            false,
+            &[],
+            &[],
+            &read,
+            5,
+            5,
+            ran,
+            false,
+        )
+        .unwrap();
+        let cap = guard.finish();
+        assert_eq!(code, lockcheck::LOCKED_EXIT);
+        assert_eq!(summary["code"], json!("card_locked"));
+        assert!(summary["report_error"].is_string(), "{summary}");
+        assert_eq!(summary["verification_error"]["code"], json!("output_diverged"));
+        assert_eq!(cap.last_json, Some(lock_detail));
+        assert!(cap.stderr.contains("failed to write apply report"), "{}", cap.stderr);
+        assert!(cap.stderr.contains("secondary verification error"), "{}", cap.stderr);
     }
 }

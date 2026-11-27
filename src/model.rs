@@ -2088,15 +2088,43 @@ fn build_report(
         .collect::<BTreeMap<_, _>>();
 
     let homes = |at: &str| heads(at, by_address, inbound);
+    let home_meta = |at: &str, card: &Card| -> (Option<&'static str>, Option<&'static str>) {
+        let home = homes(at).into_iter().find(|model| model != head);
+        let Some(home_addr) = home else {
+            return (None, None);
+        };
+        let Some(home_card) = by_address.get(&home_addr) else {
+            return (None, None);
+        };
+        let Some(hlevel) = home_card.level else {
+            return (None, None);
+        };
+        let hrole = if hlevel == Level::Empirical {
+            card.facet.as_ref().and_then(|facet| empirical::role_of(facet.id())).map(|r| r.id())
+        } else if hlevel == Level::Formal && home_card.form.is_none() {
+            card.facet.as_ref().and_then(|facet| formal::role_of(facet.id())).map(|r| r.id())
+        } else {
+            None
+        };
+        (Some(hlevel.id()), hrole)
+    };
     let card_ref = |at: &str| {
         let card = &by_address[at];
-        json!({
+        let (home_level, home_role) = home_meta(at, card);
+        let mut obj = json!({
             "address": at,
             "title": title(at),
             "type": card.card_type.id(),
             "facet": card.facet.as_ref().map(Facet::id),
             "models": homes(at),
-        })
+        });
+        if let Some(hl) = home_level {
+            obj["home_level"] = json!(hl);
+        }
+        if let Some(hr) = home_role {
+            obj["home_role"] = json!(hr);
+        }
+        obj
     };
     let order_values = order
         .iter()
@@ -2113,7 +2141,28 @@ fn build_report(
                 value["from"] = json!(from);
             }
             if *line == "shared" {
-                value["home"] = json!(homes(at).into_iter().find(|model| model != head));
+                let home = homes(at).into_iter().find(|model| model != head);
+                if let Some(ref home_addr) = home
+                    && let Some(home_card) = by_address.get(home_addr)
+                {
+                    if let Some(hlevel) = home_card.level {
+                        value["home_level"] = json!(hlevel.id());
+                        if hlevel == Level::Empirical {
+                            if let Some(hrole) =
+                                card.facet.as_ref().and_then(|facet| empirical::role_of(facet.id()))
+                            {
+                                value["home_role"] = json!(hrole.id());
+                            }
+                        } else if hlevel == Level::Formal && home_card.form.is_none() {
+                            if let Some(hrole) =
+                                card.facet.as_ref().and_then(|facet| formal::role_of(facet.id()))
+                            {
+                                value["home_role"] = json!(hrole.id());
+                            }
+                        }
+                    }
+                }
+                value["home"] = json!(home);
                 match import_of.get(at.as_str()) {
                     Some(root) => {
                         value["import"] = json!(root);

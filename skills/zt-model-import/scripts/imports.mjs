@@ -43,6 +43,44 @@ function grouped(addresses) {
   return out
 }
 
+/** Whether a borrowed or outside target is a cross-level singleton use that must stay `单卡` (never
+ * grouped or upgraded to `整块` merely because its home model holds its premises):
+ * 1. Empirical model: only `假说` parts rest on a formal `结果` (docs/empirical-models-proposal.md §7, §9.4).
+ * 2. Formal model: only `校准` parts rest on an empirical `估计` or `参数` (docs/formal-models-proposal.md §7, §9.4). */
+export function isSingletonImport(root, m, own, roleOf, homeInfoOf, closureConsumers = new Map()) {
+  const fromSet = new Set()
+  for (const r of m.relations || []) {
+    if (r.kind === 'rests-on' && r.to === root && own.has(r.from)) fromSet.add(r.from)
+  }
+  for (const fromAddr of closureConsumers.get(root) || []) {
+    if (own.has(fromAddr)) fromSet.add(fromAddr)
+  }
+  const from = [...fromSet]
+  if (!from.length) return false
+  const target = homeInfoOf.get(root) || {}
+  if (m.level === 'empirical') {
+    const allHyp = from.every((a) => roleOf.get(a) === 'hypothesis' || /^假说/.test(target.consumerFacet?.get(a) || ''))
+    if (!allHyp) return false
+    // Explicit documented pair: empirical Hypothesis -> formal Result (never protect a formal Setting or empirical data/spec).
+    const isFormalResult =
+      target.homeRole === 'result' ||
+      ((!target.homeLevel || target.homeLevel === 'formal') && /^结果/.test(target.facet || ''))
+    // Backward-compatible fallback when a minimal fixture omits target facet/home_role entirely.
+    const unspecifiedTarget = !target.homeRole && !target.homeLevel && !target.facet
+    return isFormalResult || unspecifiedTarget
+  }
+  if (m.level === 'formal' && !m.form) {
+    const allCal = from.every((a) => roleOf.get(a) === 'calibration' || /^校准/.test(target.consumerFacet?.get(a) || ''))
+    if (!allCal) return false
+    const isEmpiricalEstimate =
+      target.homeRole === 'estimate' ||
+      target.homeRole === 'parameter' ||
+      ((!target.homeLevel || target.homeLevel === 'empirical') && /^(?:估计|参数)/.test(target.facet || ''))
+    return isEmpiricalEstimate
+  }
+  return false
+}
+
 /** The plan for one model (`m`: get_model of its Model Card). `changes` are import lines to write;
  * `manual` and `advice` are for the reader. */
 export function propose(m) {
@@ -53,43 +91,110 @@ export function propose(m) {
   const changes = []
   const manual = []
   const advice = []
-  // Premises in other models.
+  const roleOf = new Map(order.map((o) => [o.address, o.role]))
+  const consumerFacet = new Map(order.map((o) => [o.address, o.facet || '']))
+  const homeInfoOf = new Map()
+  for (const o of order) {
+    homeInfoOf.set(o.address, { homeLevel: o.home_level || null, homeRole: o.home_role || null, facet: o.facet || '', consumerFacet })
+  }
+  // Premises in other models: collect EVERY consumer (`closure[].from`) per target before grouping.
   const outside = new Map()
+  const closureConsumers = new Map()
   for (const c of b.closure || []) {
     const card = c.card || {}
     if (card.type === 'model' && card.facet && (card.models || []).length) {
       if (!outside.has(c.to)) outside.set(c.to, c)
+      if (!closureConsumers.has(c.to)) closureConsumers.set(c.to, new Set())
+      if (c.from) closureConsumers.get(c.to).add(c.from)
+      if (!homeInfoOf.has(c.to)) {
+        homeInfoOf.set(c.to, {
+          homeLevel: card.home_level || card.level || null,
+          homeRole: card.home_role || card.role || null,
+          facet: card.facet || '',
+          consumerFacet,
+        })
+      }
     } else if (card.type === 'model' && !card.facet) {
       manual.push({ kind: 'whole model', from: c.from, target: c.to, fix: `${c.from} rests on the Model Card ${c.to}: rest on the part of it the step uses, and import that part` })
     } else {
       manual.push({ kind: 'not a part', from: c.from, target: c.to, fix: `${c.from} rests on ${c.to}, which is no model's part: restate it in a part of this model, or keep it as a neighbour` })
     }
   }
-  for (const g of grouped([...outside.keys()])) {
+  // Keep cross-level singletons (empirical Hypothesis -> formal Result; formal Calibration -> empirical Estimate)
+  // out of `grouped()` so sibling/descendant premises never pull them into `整块` — across both initial AND repeat plans.
+  const singletonOutside = []
+  const groupableOutside = []
+  for (const addr of outside.keys()) {
+    if (isSingletonImport(addr, m, own, roleOf, homeInfoOf, closureConsumers)) singletonOutside.push(addr)
+    else groupableOutside.push(addr)
+  }
+  const legacySingletons = imports
+    .filter((x) => x.mode === 'legacy' && isSingletonImport(x.root, m, own, roleOf, homeInfoOf, closureConsumers))
+  const existingSingletons = imports
+    .filter((i) => i.mode === 'card' && isSingletonImport(i.root, m, own, roleOf, homeInfoOf, closureConsumers))
+    .map((i) => i.root)
+  const protectedSingletons = [...new Set([...singletonOutside, ...existingSingletons, ...legacySingletons.map((i) => i.root)])]
+  const enclosedBy = (root) => protectedSingletons.filter((s) => s !== root && inBlock(s, root))
+
+  for (const addr of singletonOutside) {
+    const c = outside.get(addr)
+    changes.push({ why: 'premise', root: addr, mode: '单卡', text: c.card.title || afterColon(c.note), absorbed: [] })
+  }
+  for (const g of grouped(groupableOutside)) {
     const c = outside.get(g.root)
-    changes.push({ why: 'premise', root: g.root, mode: g.absorbed.length ? '整块' : '单卡', text: c.card.title || afterColon(c.note), absorbed: g.absorbed })
+    const wantsBlock = g.absorbed.length > 0
+    const enclosed = wantsBlock ? enclosedBy(g.root) : []
+    if (enclosed.length) {
+      // Withhold any enclosing 整块 from auto-apply so it cannot override a pending or existing protected 单卡 singleton.
+      manual.push({
+        kind: 'mixed singleton',
+        from: c.from,
+        target: g.root,
+        fix: `${g.root} encloses cross-level singleton target(s) ${enclosed.join(', ')}: withheld from auto-apply; decide whether this model truly needs 整块 [[${g.root}]] or separate 单卡 imports`,
+      })
+      continue
+    }
+    changes.push({ why: 'premise', root: g.root, mode: wantsBlock ? '整块' : '单卡', text: c.card.title || afterColon(c.note), absorbed: g.absorbed })
   }
-  // 单卡 imports whose home model holds their tolerated premises. In an empirical model, a result that only
-  // 假说 parts rest on is the prediction under test: it stays 单卡 (docs/empirical-models-proposal.md §7, §9.4).
-  const roleOf = new Map((b.order || []).map((o) => [o.address, o.role]))
-  const tested = (root) => {
-    if (m.level !== 'empirical') return false
-    // Only this model's own parts decide: an imported prediction that rests on another one is not a user of it.
-    const from = (m.relations || []).filter((r) => r.kind === 'rests-on' && r.to === root && own.has(r.from)).map((r) => r.from)
-    return from.length > 0 && from.every((a) => roleOf.get(a) === 'hypothesis')
-  }
+  // 单卡 imports whose home model holds their tolerated premises. Cross-level singletons stay 单卡,
+  // and any parent 整块 upgrade that would enclose a protected singleton is withheld for manual review.
   for (const i of imports.filter((x) => x.mode === 'card')) {
-    if (tested(i.root)) continue
+    if (isSingletonImport(i.root, m, own, roleOf, homeInfoOf, closureConsumers)) continue
     if ((b.tolerated || []).some((t) => t.part === i.root && (t.premise?.models || []).includes(i.home))) {
+      const enclosed = enclosedBy(i.root)
+      if (enclosed.length) {
+        manual.push({
+          kind: 'mixed singleton',
+          from: m.head?.address || i.root,
+          target: i.root,
+          fix: `upgrading ${i.root} to 整块 would enclose cross-level singleton target(s) ${enclosed.join(', ')}: withheld from auto-apply for review`,
+        })
+        continue
+      }
       changes.push({ why: 'upgrade', root: i.root, mode: '整块', text: '', absorbed: [] })
     }
   }
   // Legacy （共用） lines.
   const legacy = imports.filter((x) => x.mode === 'legacy')
-  for (const g of grouped(legacy.map((x) => x.root))) {
+  const legacyGroupable = legacy.filter((x) => !isSingletonImport(x.root, m, own, roleOf, homeInfoOf, closureConsumers))
+  for (const i of legacySingletons) {
+    changes.push({ why: 'legacy', root: i.root, mode: '单卡', text: i.title || '', absorbed: [] })
+  }
+  for (const g of grouped(legacyGroupable.map((x) => x.root))) {
     const i = legacy.find((x) => x.root === g.root)
     const brought = (b.tolerated || []).some((t) => (t.part === g.root || g.absorbed.includes(t.part)) && (t.premise?.models || []).includes(i.home))
-    changes.push({ why: 'legacy', root: g.root, mode: g.absorbed.length || brought ? '整块' : '单卡', text: i.title || '', absorbed: g.absorbed })
+    const wantsBlock = g.absorbed.length > 0 || brought
+    const enclosed = wantsBlock ? enclosedBy(g.root) : []
+    if (enclosed.length) {
+      manual.push({
+        kind: 'mixed singleton',
+        from: m.head?.address || g.root,
+        target: g.root,
+        fix: `converting legacy share ${g.root} to 整块 would enclose cross-level singleton target(s) ${enclosed.join(', ')}: withheld from auto-apply for review`,
+      })
+      continue
+    }
+    changes.push({ why: 'legacy', root: g.root, mode: wantsBlock ? '整块' : '单卡', text: i.title || '', absorbed: g.absorbed })
   }
   // False shares: imported when a part of this model rests on them, else left to the reader.
   const rel = m.relations || []

@@ -89,7 +89,8 @@ Draft the text with DeepSeek: one job per chapter or per group, each with the fo
 
 ## Step 4: verify and record
 
-- `scripts/check-model.mjs <head>`: the main line, and the `closure`, `forward`, `reach_in`, `unanchored` faults; `self_sufficient` must be true.
+- `scripts/check-model.mjs <head>` (defaults to `--stage restructure`): blocks on all local graph and formal Layer 1 faults (`forward`, `reach_in`, `unanchored`, `formal_shape`, `setting_dependency`, `criterion_unbound`, `result_unbound`, `proof_unbound`, `experiment_unbound`, `symbol_uncovered`); cross-model `closure` (premises in other models) is deferred to Stage 4 (`zt-model-import`, where `--stage final` enforces strict `self_sufficient === true` and `formal_structured === true`).
+- `zt-check --model <head> --skip-shared`: enforces Card-form rules (`FM1`–`FM6` on Level 2 formal models; `EM1`–`EM5` on Level 3 empirical models) across the head and all owned parts.
 - `../zt-model-settings/scripts/check-settings.mjs <head>` still prints `settings: all in the setting part`.
 - `list_broken_links` is empty; the tree has the same number of Cards plus the ones you created; no title vanished except the ones you renamed.
 - Rebuild the head's **结构** section from the tree (two levels: the main line and one level under each main card).
