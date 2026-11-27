@@ -285,6 +285,7 @@
     // Term edges (S16, #158): a Term use is a vocabulary reference, not a reasoning Link, so the
     // Map, the Table and the Constellation leave its edge out until the reader shows them.
     termEdges: store.get('zt-term-edges') === '1',
+    crossEdges: store.get('zt-cross-edges') === '1',
     mode: ['constellation', 'table'].includes(store.get('zt-mode')) ? store.get('zt-mode') : 'map',
     // The Workspace shown at ROOT and given new trees; it follows the Pointer.
     workspace: store.get('zt-workspace') === 'agent' ? 'agent' : 'human',
@@ -1111,6 +1112,22 @@
     // The whole tree in one read (a page of 5,000 stations), so a bookmark to any station opens.
     const tree = await connApi('get_connection_tree', { tree: treeName, limit: 5000 });
     if (!stationLoads.isLatest(seq)) return;
+    // A tree past 5,000 stations comes in pages: read them all, so any station opens. A write
+    // between two pages makes the cursor stale: the read starts again, once.
+    for (let attempt = 0; tree.next_cursor; ) {
+      let more;
+      try {
+        more = await connApi('get_connection_tree', { tree: treeName, limit: 5000, cursor: tree.next_cursor, include_connections: false });
+      } catch (error) {
+        if (attempt++ || !/stale cursor/.test(String(error.message || error))) throw error;
+        const fresh = await connApi('get_connection_tree', { tree: treeName, limit: 5000 });
+        Object.assign(tree, fresh);
+        continue;
+      }
+      if (!stationLoads.isLatest(seq)) return;
+      tree.placements.push(...(more.placements || []));
+      tree.next_cursor = more.next_cursor;
+    }
     if (parsed.kind === 'conn') {
       const coord = parsed.value.includes('/') ? parsed.value : `${tree.tree}/0`;
       const found = tree.placements.find((p) => p.coord === coord);
@@ -1135,22 +1152,30 @@
   function renderConnBar() {
     const conn = state.conn;
     const bar = $('#conn-bar');
-    bar.replaceChildren(...[
-      h('button', { class: 'mini-btn', text: 'Lock…', title: 'Lock this Connection tree: its stations, glosses and connections freeze and its mounted Cards are pinned', onclick: () => lockTree(conn.tree.tree).catch(fail) }),
-    ].filter(Boolean));
+    const tree = connMenuTree(conn.tree);
+    bar.replaceChildren(h('button', {
+      class: 'mini-btn', text: 'Tree ▾', 'aria-haspopup': 'menu',
+      title: 'This Connection tree: export it, lock or unlock it, or delete it',
+      onclick: (event) => { const box = event.currentTarget.getBoundingClientRect(); treeMenu.open(tree, box.left, box.top - 8, 'actions', true); },
+    }));
   }
 
   async function mountHere(parent, asSide = false) {
     const conn = state.conn;
-    const answerText = await promptValue(asSide ? 'Mount a Side branch' : 'Mount a Card', `The Card to mount ${asSide ? 'as a Side branch of' : 'after'} ${conn.station.coord}: an address, a Citation key or a handle such as ~3#2`, '');
+    const answerText = await promptValue(asSide ? 'Mount Side branches' : 'Mount Cards', `The Cards to mount ${asSide ? 'as Side branches of' : 'after'} ${conn.station.coord}, in order: addresses, Citation keys or handles such as ~3#2, separated by spaces or commas`, '');
     if (!answerText) return;
-    const [target, where] = answerText.trim().split(/\s+/);
-    const side = asSide || where === 'side';
-    const args = { host: conn.tree.tree, parent_placement_id: parent || conn.stationId, edge: side && conn.station.edge !== 'root' ? 'side' : 'direct', target_at: target };
-    const answer = await connWrite(`Mount ${target}`, 'place_card', args);
+    const targets = CONN.mountTargets(answerText);
+    if (!targets.length) return;
+    const side = asSide && conn.station.edge !== 'root';
+    const args = { host: conn.tree.tree, parent_placement_id: parent || conn.stationId, edge: side ? 'side' : 'direct', targets };
+    const answer = await connWrite(`Mount ${targets.length === 1 ? targets[0] : `${targets.length} Cards`}`, 'place_card', args);
     if (!answer) return;
-    toast(answer.already_placed ? `${target} already stands at ${answer.coord}` : `mounted at ${answer.coord}`);
-    openStation(answer.placement_id);
+    const placed = answer.placed || [];
+    const already = answer.already_placed || [];
+    toast([placed.length ? `mounted ${placed.length}: ${placed.map((p) => p.coord).join(', ')}` : null,
+      already.length ? `already in the tree: ${already.map((a) => `${a.target} at ${a.coord}`).join(', ')}` : null].filter(Boolean).join(' · ') || 'nothing to mount');
+    if (placed.length) openStation(placed[placed.length - 1].placement_id);
+    else if (already.length === 1) openStation(already[0].placement_id);
   }
 
   // ------------------------------------------------ a station read like any Card
@@ -1159,6 +1184,9 @@
   // its coordinates is a stamp on the card's head (its home address, then every station, the one
   // open here inked), the curator's note is a pencil line under the title, the tree connections are
   // chips like the Links, and the station's actions stand in the action row.
+
+  /** A Connection root whose title is its own handle: written without a title (D2). */
+  const untitledRoot = (card) => !!card && /^~\d+$/.test(card.address) && (!card.title || card.title === card.address);
 
   /** A tree's name for a tooltip: its title when the cabinet knows it, else its id. */
   function treeName(tree) {
@@ -1298,6 +1326,8 @@
       s.status === 'missing' ? ['Rebind to another Card', () => rebindStation(s), false, editHost ? null : readOnly] : null,
       s.origin === 'native' && !root && live ? ['Promote to a Topic home', () => promoteNative(s)] : null,
       ['Copy station bookmark', async () => { if (await copyText(`place:${s.placement_id}`)) toast('station bookmark copied'); }],
+      live && state.card && !PORTABLE ? ['New Connection tree from this Card', () => treeFromCard(state.card)] : null,
+      root && live && state.card && !untitledRoot(state.card) && !PORTABLE ? ['Clear title', () => clearRootTitle(state.card), false, editHost ? null : readOnly] : null,
       ['Unplace from this tree', () => unplaceStation(s), true, editHost && !root && s.origin !== 'native' ? null : root ? 'The root stays' : s.origin === 'native' ? 'A Card written here is deleted at home, not unplaced' : readOnly],
     ].filter(Boolean);
     return [
@@ -1312,6 +1342,7 @@
    *  and at a station. An entry is [label, run, danger, why-not]: with a reason it stays, greyed. */
   let closeMore = null;
   function moreButton(entries) {
+    entries = entries.filter(Boolean);
     const button = h('button', { class: 'btn more-btn', type: 'button', 'aria-haspopup': 'menu', title: 'The occasional actions: ' + entries.map((e) => e[0]).join(', '), text: 'More ▾' });
     button.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -1558,13 +1589,68 @@
     if (answer) openConnTree(answer.tree);
   }
 
+  /** A new Connection tree, at once: its root is an ordinary Card, untitled until you write in it
+   *  (docs/connection-trees-free-proposal.md D2). */
   async function newConnectionTree() {
     if (notInPortable('Creating a Connection tree')) return;
-    const title = await promptValue('New Connection tree', 'A title is enough to start:', '');
-    if (!title) return;
-    const answer = await connApi('create_connection_tree', { title, workspace: state.workspace });
+    const answer = await connApi('create_connection_tree', { workspace: state.workspace });
+    await refresh();
+    toast(`${answer.tree} is ready: mount Cards with Mount (n), or write in its root with Edit (e)`);
+    openConnTree(answer.tree);
+  }
+
+  /** Clear a Connection root's title: the root keeps its body and is titled with its own handle
+   *  again, which reads as untitled (D2). An ordinary edit, checked against the text it read. */
+  async function clearRootTitle(card) {
+    if (notInPortable('Editing a Card')) return;
+    const full = card.text != null ? card : await cardWith(card, 'text');
+    const lines = String(full.text || '').split('\n');
+    const at = lines.findIndex((line) => /^#\s/.test(line) || line === '#');
+    if (at < 0) throw new Error(`${card.address} has no title line`);
+    lines[at] = `# ${card.address}`;
+    const ok = await confirmPlan(`Clear the title of ${card.address}`, [`title "${card.title}" → none (the root reads as untitled; its body stays)`], 'clear');
+    if (!ok) return;
+    await api('edit', { at: card.address, text: lines.join('\n'), base: full.text });
+    toast(`${card.address} is untitled`);
+    await refresh();
+  }
+
+  /** A new untitled Connection tree that starts from this Card, mounted as its first station. */
+  async function treeFromCard(card) {
+    if (notInPortable('Creating a Connection tree')) return;
+    const answer = await connWrite(`New Connection tree from ${card.address}`, 'seed_connection_tree',
+      { from: 'search', source_params: { cards: [card.address] }, workspace: state.workspace });
+    if (!answer || !answer.tree) return;
     await refresh();
     openConnTree(answer.tree);
+  }
+
+  /** A new untitled Connection tree from the Cards on the Table, top to bottom, then left to right. */
+  async function treeFromTable() {
+    if (notInPortable('Creating a Connection tree')) return;
+    // The reading order of a Spread: top to bottom, then left to right (as `seed` reads a Spread).
+    const cards = spreads.cards().slice().sort((a, b) => (a.y - b.y) || (a.x - b.x) || a.at.localeCompare(b.at)).map((card) => card.at);
+    if (!cards.length) { toast('The Table is empty: lay Cards on it first (p)'); return; }
+    const answer = await connWrite(`New Connection tree from the Table (${cards.length} cards)`, 'seed_connection_tree',
+      { from: 'search', source_params: { cards }, workspace: state.workspace });
+    if (!answer || !answer.tree) return;
+    await refresh();
+    openConnTree(answer.tree);
+  }
+
+  /** Delete a whole tree of any role: the same plan as deleting its root Card, then its word. */
+  async function deleteTree(tree) {
+    if (notInPortable('Deleting a tree')) return;
+    const plan = await api('delete', { at: tree.root });
+    const ok = await confirmPlan(`Delete tree ${tree.root}`, plan.lines, plan.confirm);
+    if (!ok) return;
+    const result = await api('delete', { at: tree.root, confirm: plan.confirm, plan_hash: plan.plan_hash });
+    const here = (state.conn && state.conn.tree && state.conn.tree.tree === tree.root)
+      || (state.card && CONN.treeOf(state.card.address) === CONN.treeOf(tree.root));
+    toast(`deleted tree ${tree.root}: ${result.deleted} card${result.deleted === 1 ? '' : 's'}`);
+    if (here) { state.conn = null; location.hash = '#/'; }
+    await refresh();
+    await loadConnTrees();
   }
 
   /** The cabinet's third section: the Connection trees of the current Workspace. */
@@ -1573,23 +1659,31 @@
     if (!box) return;
     const filter = ($('#connection-filter') && $('#connection-filter').value || '').toLowerCase();
     const trees = (state.connTrees || []).filter((t) => t.workspace === state.workspace)
-      .filter((t) => !filter || `${t.title} ${t.purpose || ''}`.toLowerCase().includes(filter));
-    box.replaceChildren(...(trees.length ? trees.map((t) => h('button', {
+      .filter((t) => !filter || `${t.tree} ${t.title} ${t.purpose || ''}`.toLowerCase().includes(filter));
+    // The same drawer and the same tree menu as a Topic or Literature tree (D5).
+    box.replaceChildren(...(trees.length ? trees.map((t) => treeMenu.wire(h('button', {
       class: 'drawer connection' + (t.locked ? ' locked' : '') + (state.conn && state.conn.tree.tree === t.tree ? ' on' : ''),
-      title: t.title,
+      title: `${CONN.treeLabel(t)}${t.locked ? ' — locked tree' : ''} · right-click for the tree menu`,
+      'aria-haspopup': 'menu',
       onclick: () => { openConnTree(t.tree); openRail(false); },
     },
       h('span', { class: 'addr', text: t.tree }),
-      h('span', { class: 't', text: t.title || '(untitled)' }),
+      h('span', { class: 't' + (t.untitled ? ' untitled' : ''), text: t.untitled ? '(untitled)' : (t.title || '(untitled)') }),
       h('span', { class: 'n', text: t.locked ? 'locked' : String(t.mounted + t.native) }),
       h('span', { class: 'x', text: (t.purpose ? `${t.purpose} · ` : '') + t.counts }),
-    )) : [h('div', { class: 'empty-hint', text: 'No Connection trees yet — press + c.' })]));
+    ), connMenuTree(t))) : [h('div', { class: 'empty-hint', text: 'No Connection trees yet — press + c.' })]));
+  }
+
+  /** A Connection tree as the tree menu takes it: its root, role, Lock state and name. */
+  function connMenuTree(t) {
+    return { root: t.tree, tree: t.tree, kind: 'connection', locked: !!t.locked, title: CONN.treeLabel(t), count: (t.mounted || 0) + (t.native || 0) };
   }
 
   async function loadConnTrees() {
-    const listed = await connApi('list_connection_trees', {}).catch(() => null);
+    const listed = await connApi('list_connection_trees', { sort: 'recent' }).catch(() => null);
     state.connTrees = listed ? listed.trees : [];
     renderConnectionDrawers();
+    if (state.overview && !state.card && !state.conn && state.mode === 'map') renderDesk();
   }
 
   /** At a home Card: the trees it also stands in, and the Topic-side mounts beside a Topic Card. */
@@ -1700,7 +1794,8 @@
         const seq = pointerLoads.begin();
         connApi('list_placements', { at: parsed.value }).then((listed) => {
           if (!pointerLoads.isLatest(seq)) return;
-          const mount = (listed.placements || [])[0];
+          // The Card's placements are every tree it stands in: mark the mount this coordinate names.
+          const mount = (listed.placements || []).find((p) => p.coord === parsed.value) || null;
           state.markMount = mount ? mount.placement_id : null;
           state.markAnchor = parsed.value.split('+')[0];
           go(state.markAnchor);
@@ -1855,13 +1950,38 @@
     if (change.graph) { state.tree = null; state.outline = null; }
     if (change.graph || change.fetch.length || change.drop.length) sky.invalidate();
     state.prints = prints;
+    // Coordinates live outside the Card summaries: a mount, a move or a tree connection changes no
+    // tree fingerprint. When the archive revision moved, the open tree (its stamps and crossings) is
+    // read again unless it was just read, and the reader reads its places again.
+    // A failed read keeps the old revision, so the next refresh reads the tree again.
+    let revisionRead = true;
+    if (overview.revision !== state.revision) {
+      const open = state.tree && state.tree.tree;
+      if (open && !String(open).startsWith('conn:') && !change.graph && !change.fetch.includes(open)) {
+        const again = await api('tree?id=' + enc(open)).catch(() => null);
+        if (again && state.tree && state.tree.tree === open) { state.tree = again; state.outline = ZtLayout.outline(again.cards, again.root); }
+        else if (!again) revisionRead = false;
+      }
+      state.homeExtras = null;
+    }
+    if (revisionRead) state.revision = overview.revision;
     await loadConnTrees();
     renderRail();
     renderTopbar();
     // A station view reloads its tree and station by placement ID (a write elsewhere may have moved
     // or removed it); a removed station says so instead of opening another Card.
     if (state.conn) {
-      await loadStation({ kind: 'place', value: state.conn.stationId }).catch((error) => toast(String(error.message || error), 'err'));
+      const tree = state.conn.tree && state.conn.tree.tree;
+      try {
+        await loadStation({ kind: 'place', value: state.conn.stationId });
+      } catch (error) {
+        // The station was removed (or its tree deleted) elsewhere: say so and leave it, to its
+        // tree's root when the tree still stands, else to the cabinet.
+        toast(String(error.message || error), 'err');
+        state.conn = null;
+        const standing = tree && (state.connTrees || []).some((t) => t.tree === tree);
+        location.hash = standing ? CONN.treeHash(tree) : '#/';
+      }
       return;
     }
     // A station still loading (a refresh at boot) follows the route, never the Card pointer: a
@@ -2637,6 +2757,12 @@
    * switch for all three views, kept like the other view options in this browser only; it never
    * adds or removes a Card, only the dotted Term edges between them.
    */
+  function setCrossEdges(on) {
+    state.crossEdges = on;
+    store.set('zt-cross-edges', on ? '1' : '0');
+    renderStage();
+  }
+
   function setTermEdges(on) {
     state.termEdges = on;
     store.set('zt-term-edges', on ? '1' : '0');
@@ -2662,7 +2788,7 @@
       state.tree = conn.map;
       state.outline = conn.outline;
       conn.focusCard = CONN.focusCard(conn.map, conn.station ? conn.station.coord : conn.map.root);
-      for (const id of ['#desk', '#table-plane', '#term-toggle', '#sky', '#table-tools', '#table-empty', '#table-hand', '#ask-bar']) $(id).hidden = true;
+      for (const id of ['#desk', '#table-plane', '#term-toggle', '#cross-toggle', '#sky', '#table-tools', '#table-empty', '#table-hand', '#ask-bar']) $(id).hidden = true;
       $('#stage-title').hidden = false;
       $('#plane').hidden = false;
       $('.zoom').hidden = false;
@@ -2676,7 +2802,7 @@
       map.render();
       const total = conn.map.cards.length;
       const shown = map.shownCount();
-      $('#stage-title').textContent = `Connection ${conn.tree.tree} · ${conn.tree.title || ''} — `
+      $('#stage-title').textContent = `Connection ${conn.tree.tree}${conn.tree.untitled || !conn.tree.title ? '' : ` · ${conn.tree.title}`} — `
         + (shown < total ? `${shown} of ${total} stations in view` : `${total} station${total === 1 ? '' : 's'}`)
         + (conn.tree.locked ? ' · locked' : '');
       return;
@@ -2703,6 +2829,16 @@
     lens.classList.toggle('on', state.expandAll);
     lens.title = state.expandAll ? 'Focus on the pointer and fold the rest (x)' : 'Unfold the whole tree (x)';
     lens.querySelector('span').textContent = state.expandAll ? 'Whole tree' : 'Focus';
+    // The Crossings switch: shown in a Topic or Literature tree that a Connection tree crosses.
+    const cross = $('#cross-toggle');
+    const crossing = inTree && state.tree && state.tree.crossings ? Object.keys(state.tree.crossings).length : 0;
+    cross.hidden = !crossing;
+    cross.classList.toggle('on', state.crossEdges);
+    cross.setAttribute('aria-pressed', state.crossEdges ? 'true' : 'false');
+    cross.querySelector('span').textContent = crossing === 1 ? 'Crossings · 1 tree' : `Crossings · ${crossing} trees`;
+    cross.title = state.crossEdges
+      ? 'Every Connection tree that crosses this tree is drawn where it lies in this tree: show only the lines of the card you hold again'
+      : 'Draw every Connection tree that crosses this tree, where it lies in this tree (the lines of the card you hold are always drawn)';
     const terms = $('#term-toggle');
     terms.hidden = !(inTree || onTableMode || state.mode === 'constellation');
     terms.classList.toggle('on', state.termEdges);
@@ -2800,7 +2936,39 @@
       ...zoneSection('topic', 'Topic zone', 'New Topic', 't', () => newCard('topic', '')),
       zoneHead('literature', 'Literature zone'),
       ...literatureShelves(),
+      ...connectionZone(),
     );
+  }
+
+  /** The desk's Connection zone: one stack per Connection tree of this Workspace, the same stack
+   *  and tree menu as a Topic or Literature tree, most recent first. */
+  function connectionZone() {
+    const trees = (state.connTrees || []).filter((t) => t.workspace === state.workspace)
+      .slice().sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+    const stack = (t) => {
+      const count = (t.mounted || 0) + (t.native || 0);
+      return treeMenu.wire(h('button', {
+        class: 'stack connection' + (t.locked ? ' locked' : ''), onclick: () => openConnTree(t.tree),
+        title: `${CONN.treeLabel(t)}${t.locked ? ' — locked tree' : ''} · right-click for the tree menu`, 'aria-haspopup': 'menu',
+      },
+        count > 6 ? h('span', { class: 'sheet s4' }) : null,
+        count > 2 ? h('span', { class: 'sheet s3' }) : null,
+        count > 1 ? h('span', { class: 'sheet s2' }) : null,
+        h('span', { class: 'face' },
+          h('span', { class: 'kind', text: `Connection · ${t.tree}` }),
+          h('span', { class: 't' + (t.untitled ? ' untitled' : ''), text: t.untitled ? '(untitled)' : (t.title || '(untitled)') }),
+          h('span', { class: 'x', text: (t.purpose ? `${t.purpose} · ` : '') + (t.counts || '') }),
+          h('span', { class: 'foot' }, h('span', { class: 'types' },
+            h('span', { class: 'count', text: `${count} station${count === 1 ? '' : 's'}` }))),
+        ),
+      ), connMenuTree(t));
+    };
+    const blank = h('button', { class: 'stack new', onclick: () => newConnectionTree().catch(fail) },
+      h('span', { class: 'face' }, h('span', { class: 'plus', text: '+' }), h('span', { text: 'New Connection tree' }), h('kbd', { text: 'c' })));
+    return [
+      h('h2', { class: 'zone-head connection' }, h('span', { text: 'Connection zone' }), h('span', { class: 'n', text: String(trees.length) })),
+      h('div', { class: 'desk-grid' }, trees.map(stack), PORTABLE ? null : blank),
+    ];
   }
 
   // -------------------------------------------------------------------- map
@@ -2847,7 +3015,8 @@
       const external = card.links.filter((target) => !outline.card.has(target)).length;
       // Where this Card also stands: a station in a Connection tree, a mount beside a Topic Card.
       const elsewhere = (state.tree && state.tree.elsewhere && state.tree.elsewhere[card.address]) || null;
-      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.facet, card.emphasis, card.level, card.inbound, external, card.excerpt, elsewhere ? elsewhere.map((e) => e.coord).join(' ') : ''].join('\u0001');
+      const exits = n.lod === 'focus' ? CONN.exitsAt(state.tree && state.tree.crossings, card.address).map((e) => `${e.tree}:${e.n}`).join(' ') : '';
+      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.facet, card.emphasis, card.level, card.inbound, external, card.excerpt, elsewhere ? elsewhere.map((e) => e.coord).join(' ') : '', exits].join('\u0001');
       setClass(el, ['node', n.lod, 'role-' + n.role,
         card.edge === 'root' ? 'root ' + card.kind : '',
         card.type && card.type !== 'idea' ? 'type-' + card.type + hubClass(card) : '',
@@ -2886,7 +3055,24 @@
         ),
         title,
         n.lod === 'focus' && card.excerpt ? h('span', { class: 'x', text: card.excerpt }) : null,
+        n.lod === 'focus' ? exitMarks(card.address) : null,
       ].filter(Boolean));
+    }
+
+    /** On the lifted card: each crossing tree that goes on outside this tree from here (D4). */
+    function exitMarks(address) {
+      const exits = CONN.exitsAt(state.tree && state.tree.crossings, address);
+      if (!exits.length) return null;
+      return h('span', { class: 'exits' }, ...exits.map((e) => {
+        const cross = state.tree.crossings[e.tree] || {};
+        const station = (cross.stations || []).find((st) => st.address === address);
+        return h('span', {
+          class: 'exit', role: 'button', tabindex: '0',
+          title: `${CONN.treeLabel(cross)} goes on outside this tree here (${e.n} step${e.n === 1 ? '' : 's'}): show this Card in ${e.tree}`,
+          onclick: (event) => { event.stopPropagation(); if (station) openStation(station.placement_id); },
+          onkeydown: (event) => { if ((event.key === 'Enter' || event.key === ' ') && station) { event.preventDefault(); event.stopPropagation(); openStation(station.placement_id); } },
+        }, `${e.tree} ↗`);
+      }));
     }
 
     /**
@@ -3155,6 +3341,30 @@
         for (const address of state.termIn || []) {
           const b = geometry.get(address);
           if (b && seen(view.focus, address) && !near.has(address) && !state.termOut.has(address)) put('u' + address, ZtLayout.linkArc(b, focus, 18), 'e-term in');
+        }
+      }
+      // The projection (D4): the Connection trees that cross this tree, drawn for the focus and the
+      // hand, or whole with the Crossings switch. A Connection tree's own colour is the Literature ink.
+      if (state.tree && state.tree.crossings) {
+        if (state.tree.crossIndexOf !== state.tree.crossings) {
+          state.tree.crossIndex = CONN.crossingIndex(state.tree.crossings);
+          state.tree.crossIndexOf = state.tree.crossings;
+        }
+        for (const line of CONN.visibleCrossings(state.tree.crossIndex, view.focus, hovered, state.crossEdges)) {
+          const a = geometry.get(line.from); const b = geometry.get(line.to);
+          if (!a || !b || !seen(line.from, line.to)) continue;
+          const cls = 'e-cross ' + (line.kind === 'connection' ? 'conn' : line.hops ? 'via' : line.edge)
+            + (line.from === view.focus || line.to === view.focus ? ' hot' : '');
+          // Bowed out to the right a step wider than a Term arc, so it never lies on a Link arc; the
+          // lines of one pair of Cards (two assertions, two trees) lie side by side, one lane each.
+          put(line.key, ZtLayout.linkArc(a, b, 40 + line.lane * 14), cls);
+          const path = paths.get(line.key);
+          const said = CONN.crossingText(line);
+          if (path.ztSaid !== said) {
+            path.replaceChildren(svg('title', {}));
+            path.firstChild.textContent = said;
+            path.ztSaid = said;
+          }
         }
       }
       const over = hovered && hovered !== view.focus ? geometry.get(hovered) : null;
@@ -5073,7 +5283,9 @@
       class: 'chip' + (link.broken ? ' broken' : '') + (cross ? ' cross ' + link.workspace : '') + (extraClass ? ' ' + extraClass : ''),
       title: link.broken ? 'Broken link' : cross ? `${link.title} · ${wsLabel(link.workspace)} workspace` : link.title,
       onclick: link.broken ? null : () => go(link.address),
-    }, h('span', { class: 'addr', text: link.address }), h('span', { class: 't' }, link.broken ? 'missing' : titleNodes(link.title || '(untitled)')));
+    }, h('span', { class: 'addr', text: link.address }),
+    // An untitled Connection root shows its address alone.
+    untitledRoot({ address: link.address, title: link.title }) ? null : h('span', { class: 't' }, link.broken ? 'missing' : titleNodes(link.title || '(untitled)')));
   }
 
   /** A row of chips that folds when it is long (#242): more than sixty show fifty and a "+N more"
@@ -5249,7 +5461,9 @@
           title: `${hub.level || ''} hub ${hub.address} — ${hub.title}`,
           onclick: () => go(hub.address),
         }, h('span', { class: 'lvl', text: hub.level || 'hub' }), h('span', { class: 't' }, titleNodes(hub.title || hub.address))))) : null,
-        h('h1', { class: 'title' }, titleNodes(card.title || '(untitled)')),
+        // A Connection root written without a title is titled with its own handle: it reads as untitled (D2).
+        untitledRoot(card) ? h('h1', { class: 'title untitled', title: 'This root has no title: Edit (e) to write one, or leave it empty' }, '(untitled)')
+          : h('h1', { class: 'title' }, titleNodes(card.title || '(untitled)')),
         state.conn ? stationNote() : null,
         termFactsLine(card),
       ),
@@ -5316,6 +5530,7 @@
         actionButton('Insert', 'i', insertCard, regular ? writeOpts('insert', { title: 'Insert a new card in this place; this card and its successors move down' }) : { disabled: true, title: 'Nothing goes before a tree root' }),
         moreButton([
           ['Move this Card', () => moveCard(), false, regular ? (writeOpts('move').title || null) : 'Tree roots cannot move'],
+          PORTABLE ? null : ['New Connection tree from this Card', () => treeFromCard(card)],
           ['Delete Card', deleteCard, true, writeOpts('delete').title || null],
         ]),
         ]),
@@ -7625,14 +7840,24 @@
    * The tree as an index card in the dialog: what the owner freezes. Its address stamp sits in the
    * corner, the seal beside the count, and the rest folds away below.
    */
+  /** The role of a locked tree's root: a handle is a Connection tree, a number a Topic, else Literature. */
+  function lockKind(root, card) {
+    const role = CONN.roleOf(CONN.treeOf(root));
+    if (role === 'connection') return 'connection';
+    return card && card.kind ? card.kind : role;
+  }
+
   function lockCardView({ root, title, kind, workspace, count, pins, seal, broken, note, since, lockId, until, noteless }) {
-    return h('div', { class: 'lock-card' + (kind === 'literature' ? ' literature' : ' topic') },
+    return h('div', { class: 'lock-card' + (kind === 'literature' ? ' literature' : kind === 'connection' ? ' connection' : ' topic') },
       h('div', { class: 'lock-card-head' },
-        h('span', { class: 'kind-tag ' + (kind || ''), text: `${kind === 'literature' ? 'Literature' : 'Topic'} tree` }),
+        h('span', { class: 'kind-tag ' + (kind || ''), text: `${TREE_KIND_LABEL[kind] || 'Topic'} tree` }),
         h('span', { class: 'ws-tag ' + workspace, text: wsLabel(workspace) }),
         h('span', { class: 'lock-addr', text: root })),
       h('div', { class: 'lock-card-body' },
-        h('div', { class: 'lock-title' }, titleNodes(title || root)),
+        // An untitled Connection root is titled with its own handle: it reads as untitled.
+        title === root && CONN.roleOf(CONN.treeOf(root)) === 'connection'
+          ? h('div', { class: 'lock-title untitled', text: '(untitled)' })
+          : h('div', { class: 'lock-title' }, titleNodes(title || root)),
         h('div', { class: 'lock-facts' },
           h('span', { class: 'lock-count' }, h('b', { text: String(count) }), ` card${count === 1 ? '' : 's'}`),
           h('span', { class: 'lock-sub', text: `${pins} pinned target${pins === 1 ? '' : 's'}` }),
@@ -7756,15 +7981,21 @@
   /** The Lock plan: the tree card, then what the promise covers, folded by degree of interest. */
   function lockPlanView(plan) {
     const regular = plan.regular_count;
+    // A Connection tree's or a Topic's Lock also pins every mounted Card that lives outside it
+    // (`coordinates.pins`): the dialog names them beside the pins of its Links.
+    const mounts = (plan.coordinates && plan.coordinates.pins) || [];
     return [
       lockCardView({
-        root: plan.root, title: plan.title, kind: plan.zone, workspace: plan.workspace,
-        count: plan.member_count, pins: plan.pin_count, seal: plan.seal,
+        root: plan.root, title: plan.title, kind: lockKind(plan.root, { kind: plan.zone }), workspace: plan.workspace,
+        count: plan.member_count, pins: new Set([...ZtLock.pinGroups(plan).map((g) => g.target), ...mounts.map((m) => m.target_address)]).size, seal: plan.seal,
       }),
       h('p', { class: 'lock-what', text: `Freezes the root and ${regular} regular card${regular === 1 ? '' : 's'}: no edit, move, insert, delete or new card in this tree, for you as for agents, until you unlock it here. Its pinned targets keep their addresses.` }),
       h('p', { class: 'lock-limit', text: 'Pins keep a target\'s address and existence only: its meaning, and any external document, artifact or cache availability, stay outside the seal promise.' }),
       digestFold(plan.seal),
       lockFold('Pinned targets', pinRows(ZtLock.pinGroups(plan))),
+      lockFold('Pinned mounts', mounts.map((pin) => h('li', {},
+        h('span', { class: 'a', text: pin.target_address }),
+        h('span', { class: 'b', text: 'mounted here: it cannot be deleted or moved while this Lock lasts' })))),
       warningFold(ZtLock.warningsFold(plan.warnings, 'plan')),
       lockFold('Members', plan.members.map((member) => h('li', {},
         h('span', { class: 'a', text: member.address }),
@@ -7779,7 +8010,7 @@
     const broken = Boolean(ZtLock.panel(state.locks).broken[plan.lock_id]);
     return [
       lockCardView({
-        root: plan.root, title: card ? card.title : plan.root, kind: card ? card.kind : (/^\d+\//.test(plan.root) ? 'topic' : 'literature'),
+        root: plan.root, title: card ? card.title : plan.root, kind: lockKind(plan.root, card),
         workspace: plan.workspace, count: plan.member_count, pins: plan.pin_count, seal: plan.seal, broken,
         note: plan.previous_note, since: plan.locked_at, lockId: plan.lock_id,
       }),
@@ -7909,7 +8140,7 @@
       }));
       return h('section', { class: 'lock-entry' + (view.ended ? ' lock-ended' : '') + (broken ? ' faulted' : '') + (!view.ended && lock.root === focusRoot ? ' focus' : ''), dataset: { lock: String(lock.lock_id) } },
         lockCardView({
-          root: lock.root, title: card ? card.title : view.ended ? lock.root : `${lock.root} (root missing)`, kind: card ? card.kind : (/^\d+\//.test(lock.root) ? 'topic' : 'literature'),
+          root: lock.root, title: card ? card.title : view.ended ? lock.root : `${lock.root} (root missing)`, kind: lockKind(lock.root, card),
           workspace: lock.workspace, count: lock.member_count, pins: view.pins.length,
           seal: lock.seal, broken, note: lock.note, since: lock.locked_at, lockId: lock.lock_id,
           until: lock.unlocked_at, noteless: true,
@@ -8019,6 +8250,7 @@
    * drawer or a desk stack by right-click, a long press, Shift+F10 or the menu key, beside the
    * pointer, in the history menu's paper; arrows walk it, Esc and a click elsewhere close it.
    */
+  const TREE_KIND_LABEL = { topic: 'Topic', literature: 'Literature', connection: 'Connection' };
   const treeMenu = (() => {
     let menu = null;
     const close = () => { if (menu) menu.remove(); menu = null; };
@@ -8026,7 +8258,8 @@
     window.addEventListener('blur', close);
 
     async function run(id, tree, x, y) {
-      if (id === 'open') { go(tree.root); openRail(false); return; }
+      if (id === 'open') { if (tree.kind === 'connection') openConnTree(tree.root); else go(tree.root); openRail(false); return; }
+      if (id === 'delete') { await deleteTree(tree); return; }
       if (id === 'shelf') { open(tree, x, y, 'shelf'); return; }
       if (id.startsWith('shelf:')) { await setLiteratureType(tree.root, id.slice(6)); return; }
       if (id === 'export') { await exportTree(tree.root); return; }
@@ -8048,19 +8281,21 @@
       }
       const [first, ...lockRows] = ZtLock.treeActions(tree.root, tree.locked, state.locks);
       return [first, { id: 'export', label: 'Export tree', note: 'a folder that reads by itself' },
-        ...(tree.kind === 'literature' ? [{ id: 'shelf', label: 'Literature type', note: current.label }] : []), ...lockRows];
+        ...(tree.kind === 'literature' ? [{ id: 'shelf', label: 'Literature type', note: current.label }] : []), ...lockRows,
+        { id: 'delete', label: 'Delete tree…', note: tree.locked ? 'unlock first' : 'review, then delete', danger: true, disabled: !!tree.locked }];
     }
 
-    function open(tree, x, y, view = 'actions') {
+    function open(tree, x, y, view = 'actions', above = false) {
       close();
       const rows = actionsOf(tree, view).map((item) => h('button', {
         class: 'nav-row' + (item.danger ? ' danger' : '') + (item.current ? ' current' : ''), role: 'menuitem', dataset: { act: item.id },
-        onclick: () => { close(); run(item.id, tree, x, y).catch(fail); },
+        disabled: item.disabled ? true : null, title: item.disabled ? item.note : null,
+        onclick: () => { if (item.disabled) return; close(); run(item.id, tree, x, y).catch(fail); },
       }, h('span', { class: 't', text: item.label }), item.note ? h('span', { class: 'addr', text: item.note }) : null));
       menu = h('div', { class: 'nav-menu tree-menu', role: 'menu', 'aria-label': `Tree ${tree.root}` },
         h('div', { class: 'nav-menu-head', text: view === 'shelf'
           ? `Shelve ${tree.root} under`
-          : `${tree.kind === 'literature' ? 'Literature' : 'Topic'} ${tree.root}${tree.locked ? ' · locked' : ''}` }),
+          : `${TREE_KIND_LABEL[tree.kind] || 'Topic'} ${tree.root}${tree.locked ? ' · locked' : ''}` }),
         rows);
       menu.addEventListener('keydown', (event) => {
         const items = [...menu.querySelectorAll('.nav-row')];
@@ -8080,7 +8315,8 @@
       // Beside the pointer, kept inside the window.
       const box = menu.getBoundingClientRect();
       menu.style.left = `${Math.round(Math.max(8, Math.min(x, innerWidth - box.width - 8)))}px`;
-      menu.style.top = `${Math.round(Math.max(8, Math.min(y, innerHeight - box.height - 8)))}px`;
+      const top = above ? y - box.height : y;
+      menu.style.top = `${Math.round(Math.max(8, Math.min(top, innerHeight - box.height - 8)))}px`;
       (menu.querySelector('.nav-row.current') || menu.querySelector('.nav-row')).focus();
     }
 
@@ -9178,7 +9414,8 @@
     const plan = await api('delete', { at: card.address });
     const ok = await confirmPlan(`Delete ${card.address}`, plan.lines, plan.confirm);
     if (!ok) return;
-    const result = await api('delete', { at: card.address, confirm: plan.confirm });
+    // The plan's hash comes back with the word: a plan that changed meanwhile is refused as stale.
+    const result = await api('delete', { at: card.address, confirm: plan.confirm, plan_hash: plan.plan_hash });
     const moved = Object.entries(result.moved || {});
     await afterChange(result.address || null,
       `deleted: ${result.deleted}` + (moved.length ? `\ncompacted:\n${moved.map(([a, b]) => `${a} -> ${b}`).join('\n')}` : ''));
@@ -9738,8 +9975,10 @@
     $('#rail-toggle').addEventListener('click', () => openRail());
     $('#lens-toggle').addEventListener('click', () => setExpandAll(!state.expandAll));
     $('#term-toggle').addEventListener('click', () => setTermEdges(!state.termEdges));
+    $('#cross-toggle').addEventListener('click', () => setCrossEdges(!state.crossEdges));
     $('#spread-pick').addEventListener('click', () => showSpreads());
     $('#file-spread').addEventListener('click', () => fileSpread().catch(fail));
+    $('#tree-spread').addEventListener('click', () => treeFromTable().catch(fail));
     $('#ask-open').addEventListener('click', () => askBox('').catch(fail));
     $('#ask-keep').addEventListener('click', () => keepAskSpread().catch(fail));
     $('#ask-cancel').addEventListener('click', () => cancelAskSpread());
@@ -9768,6 +10007,7 @@
       const [overview, graph, kept, locks] = await Promise.all([api('overview'), api('graph'), api('spreads'), api('locks').catch(() => null)]);
       state.overview = overview;
       state.fingerprint = overview.fingerprint;
+      state.revision = overview.revision;
       applyFeatures(overview);
       setNodes(graph.nodes, overview.trees);
       state.prints = treePrints(overview);

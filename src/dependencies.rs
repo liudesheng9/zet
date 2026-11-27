@@ -570,7 +570,8 @@ pub(crate) fn seed(
 ) -> Result<Value> {
     let from = opt_str(args, "from").context("missing `from` (hub, spread, dependencies or search)")?;
     let params = args.get("source_params").cloned().unwrap_or_else(|| json!({}));
-    let title = opt_str(args, "title").context("missing `title`")?;
+    // The root has no meaning (docs/connection-trees-free-proposal.md D2): the title is optional.
+    let title = opt_str(args, "title").unwrap_or_default();
     let workspace = match opt_str(args, "workspace") {
         Some(w) => Workspace::parse(w)?,
         None => match access {
@@ -684,7 +685,8 @@ pub(crate) fn seed(
     if ordered.is_empty() {
         bail!("nothing to seed: the source names no live Card");
     }
-    let mut lines = vec![format!("create Connection tree \"{title}\" with {} station(s) in this order; no tree connection is created", ordered.len())];
+    let named = if title.is_empty() { "an untitled Connection tree".to_string() } else { format!("Connection tree \"{title}\"") };
+    let mut lines = vec![format!("create {named} with {} station(s) in this order; no tree connection is created", ordered.len())];
     for (i, (address, _, title)) in ordered.iter().enumerate() {
         lines.push(format!("{}. {address} {title}", i + 1));
     }

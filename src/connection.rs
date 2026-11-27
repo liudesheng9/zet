@@ -368,17 +368,17 @@ impl Host {
     }
 }
 
-/// Every coordinate the Cards of one Topic or Literature tree have outside their home: the stations
-/// of Connection trees and the Topic-side mounts, by the Card's address. The page stamps them on
-/// the head of each Card, so a Card in several trees shows each place it stands.
-pub(crate) fn elsewhere(conn: &Connection, tree: &str) -> Result<Value> {
-    let mut out = serde_json::Map::new();
+/// The placements whose live Card has its home in one Topic or Literature tree `tree` (the plane):
+/// `(placement, address)` for every Connection-tree station and Topic-side mount of those Cards.
+/// Membership follows the live canonical home: a retired Card is never in a plane, a promoted
+/// native Card is in its Topic's plane, and a Literature root is in its own plane by its key.
+fn plane_placements(conn: &Connection, tree: &str) -> Result<Vec<(Placement, String)>> {
     if !coord::installed(conn) {
-        return Ok(Value::Object(out));
+        return Ok(Vec::new());
     }
     // The Literature root by its key, every Location under `tree/` as an index range.
     let rows: Vec<(String, String)> = conn
-        .prepare(
+        .prepare_cached(
             "SELECT p.placement_id, COALESCE(c.location, c.citation_key) FROM placements p
              JOIN card_identity i ON i.card_id = p.card_id AND i.status = 'live'
              JOIN cards c ON c.row_id = i.card_row
@@ -386,16 +386,55 @@ pub(crate) fn elsewhere(conn: &Connection, tree: &str) -> Result<Value> {
         )?
         .query_map(params![tree, format!("{tree}/"), format!("{tree}0")], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
+    let mut out = Vec::new();
     for (id, address) in rows {
-        let Some(p) = coord::placement(conn, &id)? else { continue };
-        let Ok(host) = host_of(conn, &p) else { continue };
+        if let Some(p) = coord::placement(conn, &id)? {
+            out.push((p, address));
+        }
+    }
+    Ok(out)
+}
+
+/// The shapes of the Connection trees that hold `placements`, each built once.
+fn host_shapes(conn: &Connection, placements: &[(Placement, String)]) -> Result<BTreeMap<String, Option<TreeShape>>> {
+    let mut shapes = BTreeMap::new();
+    for (p, _) in placements {
+        if p.host_kind != "connection" || shapes.contains_key(&p.host_tree_key) {
+            continue;
+        }
+        // A damaged tree is reported by `zt status`; the views leave it out.
+        let shape = match coord::tree_by_id(conn, &p.host_tree_key)? {
+            Some(tree) => coord::load_tree_shape(conn, &tree).ok(),
+            None => None,
+        };
+        shapes.insert(p.host_tree_key.clone(), shape);
+    }
+    Ok(shapes)
+}
+
+/// `elsewhere`: every coordinate the Cards of one Topic or Literature tree have outside their home: the stations
+/// of Connection trees and the Topic-side mounts, by the Card's address. The page stamps them on
+/// the head of each Card, so a Card in several trees shows each place it stands. Each Connection
+/// tree's shape is built once, however many of the plane's Cards it holds.
+fn elsewhere_of(conn: &Connection, placements: &[(Placement, String)], shapes: &BTreeMap<String, Option<TreeShape>>) -> Result<Value> {
+    let mut out = serde_json::Map::new();
+    for (p, address) in placements {
+        let (coord, host) = if p.host_kind == "connection" {
+            let Some(Some(shape)) = shapes.get(&p.host_tree_key) else { continue };
+            let Some(coord) = shape.coord.get(&p.placement_id) else { continue };
+            (coord.clone(), shape.tree.handle())
+        } else {
+            let Ok(host) = host_of(conn, p) else { continue };
+            let Ok(coord) = coord::coordinate_of(conn, p) else { continue };
+            (coord, host.label())
+        };
         let entry = json!({
-            "placement_id": id,
-            "coord": coord::coordinate_of(conn, &p)?,
-            "host": host.label(),
+            "placement_id": p.placement_id,
+            "coord": coord,
+            "host": host,
             "gloss": p.gloss,
         });
-        if let Value::Array(list) = out.entry(address).or_insert_with(|| json!([])) {
+        if let Value::Array(list) = out.entry(address.clone()).or_insert_with(|| json!([])) {
             list.push(entry);
         }
     }
@@ -403,6 +442,120 @@ pub(crate) fn elsewhere(conn: &Connection, tree: &str) -> Result<Value> {
         if let Value::Array(list) = list {
             list.sort_by(|a, b| a["coord"].as_str().cmp(&b["coord"].as_str()));
         }
+    }
+    Ok(Value::Object(out))
+}
+
+/// The title of a Connection tree's root Card and whether the root is untitled: a root written
+/// without a title is stored with its own handle as its title (a Card title is never empty), and a
+/// title equal to the root's handle carries no meaning (docs/connection-trees-free-proposal.md D2).
+/// A root that cannot be read is an error, never an untitled root.
+pub(crate) fn root_title(conn: &Connection, tree: &ConnTree) -> Result<(String, bool)> {
+    let address = coord::address_of_card_id(conn, &tree.root_card_id)?
+        .with_context(|| format!("the root Card of {} is missing", tree.handle()))?;
+    let card = crate::load_card(conn, &address)?;
+    let title = crate::parse_card_text(&card.text)?.title;
+    if title == tree.handle() {
+        return Ok((String::new(), true));
+    }
+    Ok((title, false))
+}
+
+/// Both coordinate views of one Topic or Literature tree, from one membership read and one shape
+/// per Connection tree: `elsewhere` (the stamps) and `crossings` (the projection).
+pub(crate) fn tree_coordinates(conn: &Connection, tree: &str) -> Result<(Value, Value)> {
+    let placements = plane_placements(conn, tree)?;
+    let shapes = host_shapes(conn, &placements)?;
+    Ok((elsewhere_of(conn, &placements, &shapes)?, crossings_of(conn, &placements, &shapes)?))
+}
+
+/// `crossings`: the projection of every Connection tree that crosses one Topic or Literature tree
+/// (docs/connection-trees-free-proposal.md D4). A Connection tree is a structure in a higher
+/// dimension; the tree being read is a plane. For each Connection tree with a station whose live
+/// Card has its home in the plane, the answer names those stations, the structure lines between
+/// them (each in-plane station to its nearest in-plane ancestor through `parent_id`, Direct and
+/// Side alike; `hops` counts the stations outside the plane in between and `edge` is the kind of
+/// the step out of that ancestor), the tree connections whose two stations are both in the plane
+/// (each parallel assertion its own line), and the exits: how many structural neighbours and tree
+/// connections of each in-plane station lie outside the plane. The root station is the tree itself:
+/// it is in no plane, ends the climb, and is never counted as an exit, by structure or by
+/// connection. A Missing mount is outside every plane but still counts toward hops and exits.
+/// Topic-side mounts are not part of the projection. Only the trees that cross the plane are read;
+/// the cost is the size of those trees.
+fn crossings_of(conn: &Connection, placements: &[(Placement, String)], shapes: &BTreeMap<String, Option<TreeShape>>) -> Result<Value> {
+    let mut by_host: BTreeMap<&str, BTreeMap<&str, &str>> = BTreeMap::new();
+    for (p, address) in placements {
+        if p.host_kind == "connection" {
+            by_host.entry(&p.host_tree_key).or_default().insert(&p.placement_id, address);
+        }
+    }
+    let mut out = serde_json::Map::new();
+    for (host, in_plane) in by_host {
+        let Some(Some(shape)) = shapes.get(host) else { continue };
+        let mut stations = Vec::new();
+        let mut lines = Vec::new();
+        let mut exits: BTreeMap<String, u64> = BTreeMap::new();
+        let outside = |id: &str| id != shape.root && !in_plane.contains_key(id);
+        for id in &shape.order {
+            let Some(&address) = in_plane.get(id.as_str()) else { continue };
+            let p = &shape.by_id[id];
+            stations.push(json!({"address": address, "placement_id": id, "coord": shape.coord[id]}));
+            // The nearest in-plane ancestor, through the stations outside the plane.
+            let mut below = p;
+            let mut hops = 0u64;
+            while let Some(parent_id) = below.parent_id.as_deref() {
+                if parent_id == shape.root {
+                    break;
+                }
+                if let Some(&from) = in_plane.get(parent_id) {
+                    lines.push(json!({
+                        "kind": "structure", "from": from, "to": address,
+                        "from_placement_id": parent_id, "to_placement_id": id,
+                        "from_coord": shape.coord.get(parent_id), "to_coord": shape.coord[id],
+                        "edge": below.edge.id(), "hops": hops,
+                    }));
+                    break;
+                }
+                let Some(parent) = shape.by_id.get(parent_id) else { break };
+                hops += 1;
+                below = parent;
+            }
+            let mut n = 0u64;
+            if p.parent_id.as_deref().is_some_and(outside) {
+                n += 1;
+            }
+            if shape.direct.get(id).is_some_and(|c| outside(c)) {
+                n += 1;
+            }
+            n += shape.side.get(id).map_or(0, |kids| kids.iter().filter(|c| outside(c)).count() as u64);
+            if n > 0 {
+                *exits.entry(address.to_string()).or_default() += n;
+            }
+        }
+        for e in edges_of_tree(conn, &shape.tree.tree_id)? {
+            if e.from == shape.root || e.to == shape.root {
+                continue;
+            }
+            match (in_plane.get(e.from.as_str()), in_plane.get(e.to.as_str())) {
+                (Some(&from), Some(&to)) => lines.push(json!({
+                    "kind": "connection", "from": from, "to": to,
+                    "from_placement_id": e.from, "to_placement_id": e.to,
+                    "from_coord": shape.coord.get(&e.from), "to_coord": shape.coord.get(&e.to),
+                    "direction": if e.directed { "directed" } else { "neutral" },
+                    "relation_label": e.label, "relation_kind": e.kind, "connection_id": e.connection_id,
+                })),
+                (Some(&one), None) | (None, Some(&one)) => *exits.entry(one.to_string()).or_default() += 1,
+                (None, None) => {}
+            }
+        }
+        let (title, untitled) = root_title(conn, &shape.tree)?;
+        out.insert(
+            shape.tree.handle(),
+            json!({
+                "tree": shape.tree.handle(), "title": title, "untitled": untitled,
+                "workspace": shape.tree.workspace.id(), "stations": stations, "lines": lines, "exits": exits,
+            }),
+        );
     }
     Ok(Value::Object(out))
 }
@@ -923,7 +1076,10 @@ fn next_connection_number(conn: &Connection) -> Result<u64> {
     Ok(next)
 }
 
-/// Create a Connection tree with just a title (and optional framing body and shelf `purpose`).
+/// Create a Connection tree. The root is an ordinary Card with no special meaning
+/// (docs/connection-trees-free-proposal.md D2): its title and body are optional. A root written
+/// without a title is stored with its own handle as its title, because a Card title is never empty;
+/// `root_title` reads such a root as untitled.
 pub(crate) fn create_tree_tx(
     conn: &Connection,
     access: Access,
@@ -933,13 +1089,13 @@ pub(crate) fn create_tree_tx(
     purpose: Option<&str>,
 ) -> Result<Value> {
     access.ensure_writable(workspace)?;
-    let title = title.trim();
-    if title.is_empty() {
-        bail!("a Connection tree needs a title");
-    }
     let purpose = validate_purpose(purpose)?;
     let num = next_connection_number(conn)?;
     let handle = Handle::root(num);
+    let title = match title.trim() {
+        "" => handle.as_str(),
+        given => given,
+    };
     let text = crate::compose_card_text(title, body, "");
     let accepted = crate::gate::check_proposed(
         conn,
@@ -1002,7 +1158,7 @@ fn create_tree(ctx: &mut Ctx) -> Result<Value> {
             Access::Owner => Workspace::Human,
         },
     };
-    let title = arg_str(ctx.args, "title")?;
+    let title = opt_str(ctx.args, "title")?.unwrap_or_default();
     let body = opt_str(ctx.args, "body")?.unwrap_or_default();
     let value = create_tree_tx(ctx.conn, ctx.access, workspace, title, body, opt_str(ctx.args, "purpose")?)?;
     ctx.changed = true;
@@ -1190,6 +1346,9 @@ fn place(ctx: &mut Ctx) -> Result<Value> {
     let tree = coord::resolve_tree(conn, arg_str(ctx.args, "host")?)?;
     let host = Host::Connection(tree.clone());
     ensure_host_writable(conn, ctx.access, &host)?;
+    if ctx.args.get("targets").is_some() {
+        return place_many(ctx, tree);
+    }
     let (card, card_id) = target_card(conn, ctx.args, "target_at")?;
     let shape = shape_of(conn, &tree)?;
     if let Some(existing) = shape.placement_of_card(&card_id) {
@@ -1260,12 +1419,153 @@ fn place(ctx: &mut Ctx) -> Result<Value> {
     }))
 }
 
+/// Mount a set of Cards at once (`targets`, docs/connection-trees-free-proposal.md D1). The whole
+/// batch is resolved against the tree as it stands, deduplicated by Card identity (a promoted
+/// handle and its Topic address name one Card) in first-occurrence order, and spliced in as one
+/// block: with a Direct edge the Cards form a Direct chain after the parent (`P → A → B → old`,
+/// only `old` changing predecessor), with a Side edge they become consecutive Side branches of the
+/// parent, before `before` or appended. One transaction, one gloss review, one revision. A batch
+/// whose Cards all stand in the tree already is a successful no-op (its `op_key` receipt is kept).
+fn place_many(ctx: &mut Ctx, tree: ConnTree) -> Result<Value> {
+    let conn = ctx.conn;
+    if ctx.args.get("target_at").is_some() || ctx.args.get("card_id").is_some() {
+        bail!("give either `targets` (several Cards) or `target_at`/`card_id` (one Card), not both");
+    }
+    if ctx.args.get("gloss").is_some() {
+        bail!("a gloss belongs to one station: mount the Cards, then gloss each station with edit_placement");
+    }
+    let list = ctx.args["targets"].as_array().context("`targets` is a list of Card addresses, Citation keys or handles")?;
+    if list.is_empty() {
+        bail!("`targets` names no Card");
+    }
+    if list.len() > PLACE_MANY_MAX {
+        bail!("`targets` names {} Cards; at most {PLACE_MANY_MAX} are mounted in one call", list.len());
+    }
+    let shape = shape_of(conn, &tree)?;
+    let mut wanted: Vec<(String, String)> = Vec::new();
+    let mut already = Vec::new();
+    let mut seen = BTreeSet::new();
+    for item in list {
+        let at = item.as_str().context("`targets` is a list of strings")?;
+        let (card, card_id) = target_card(conn, &json!({ "target_at": at }), "target_at")?;
+        if !seen.insert(card_id.clone()) {
+            continue;
+        }
+        match shape.placement_of_card(&card_id) {
+            Some(existing) => already.push(json!({"target": at, "placement_id": existing.placement_id, "coord": shape.coord.get(&existing.placement_id), "card_id": card_id})),
+            None => wanted.push((card.address, card_id)),
+        }
+    }
+    if wanted.is_empty() {
+        // A confirmation sent for a plan that still placed Cards is checked first: the tree changed
+        // under it (another client mounted them), so it is stale, never a silent success.
+        if ctx.args.get("confirm").is_some() {
+            ctx.confirmed("place", &[], &json!({"gloss_review": [], "order": [], "displaced": null, "already_placed": already}))?;
+        }
+        return Ok(json!({"applied": true, "changed": false, "tree": tree.handle(), "placed": [], "already_placed": already}));
+    }
+    let slot = slot_arg(conn, &shape, ctx.args)?;
+    let displaced = match slot.edge {
+        EdgeKind::Direct => shape.direct.get(&slot.parent).cloned(),
+        _ => None,
+    };
+    let affected: Vec<String> = displaced.iter().cloned().collect();
+    let (review, decided, missing) = gloss_review(&shape, &affected, ctx.args)?;
+    let order: Vec<Value> = wanted.iter().map(|(a, id)| json!([a, id])).collect();
+    let effects = json!({"gloss_review": review, "order": order, "displaced": displaced, "already_placed": already});
+    if review.is_empty() && ctx.args.get("confirm").is_some() {
+        ctx.confirmed("place", &[], &effects)?;
+    }
+    if !review.is_empty() {
+        let mut lines: Vec<String> = vec![format!("mount {} Card(s) {} {}", wanted.len(), if slot.edge == EdgeKind::Side { "as Side branches of" } else { "after" }, shape.coord[&slot.parent])];
+        lines.extend(wanted.iter().enumerate().map(|(i, (a, _))| format!("{}. {a}", i + 1)));
+        lines.extend(review.iter().map(|r| format!("review gloss of {} (its predecessor changes): {}", r["coord"].as_str().unwrap_or_default(), r["gloss"].as_str().unwrap_or_default())));
+        if !missing.is_empty() && ctx.args.get("confirm").and_then(Value::as_str) == Some("place") {
+            bail!("gloss review required: pass gloss_updates for {}", missing.join(", "));
+        }
+        if let Some(plan) = ctx.confirmed("place", &lines, &effects)? {
+            return Ok(plan);
+        }
+    }
+    let new_station = |card_id: &str, parent: &str, edge: EdgeKind, ordinal: Option<u64>| -> Result<String> {
+        let placement_id = coord::new_uuid()?;
+        insert_placement(
+            conn,
+            &Placement {
+                placement_id: placement_id.clone(),
+                host_kind: "connection".into(),
+                host_tree_key: tree.tree_id.clone(),
+                card_id: card_id.to_string(),
+                parent_id: Some(parent.to_string()),
+                anchor_card_id: None,
+                edge,
+                ordinal,
+                gloss: None,
+            },
+        )?;
+        Ok(placement_id)
+    };
+    let mut ids = Vec::new();
+    match slot.edge {
+        EdgeKind::Direct => {
+            if let Some(d) = &displaced {
+                park(conn, &shape, std::slice::from_ref(d))?;
+            }
+            let mut parent = slot.parent.clone();
+            for (_, card_id) in &wanted {
+                parent = new_station(card_id, &parent, EdgeKind::Direct, None)?;
+                ids.push(parent.clone());
+            }
+            if let Some(d) = &displaced {
+                set_slot(conn, d, Some(&parent), EdgeKind::Direct, None)?;
+            }
+        }
+        EdgeKind::Side => {
+            let siblings = shape.side.get(&slot.parent).cloned().unwrap_or_default();
+            let position = match &slot.before {
+                Some(b) => siblings.iter().position(|s| s == b).context("`before` is not a sibling")?,
+                None => siblings.len(),
+            };
+            let later: Vec<String> = siblings[position..].to_vec();
+            park(conn, &shape, &later)?;
+            for (i, (_, card_id)) in wanted.iter().enumerate() {
+                ids.push(new_station(card_id, &slot.parent, EdgeKind::Side, Some((position + 1 + i) as u64))?);
+            }
+            for (i, id) in later.iter().enumerate() {
+                set_slot(conn, id, Some(&slot.parent), EdgeKind::Side, Some((position + wanted.len() + 1 + i) as u64))?;
+            }
+        }
+        _ => bail!("unsupported slot"),
+    }
+    apply_glosses(conn, &decided)?;
+    let shape = validate_tree(conn, &tree)?;
+    ctx.changed = true;
+    let placed: Vec<Value> = ids
+        .iter()
+        .zip(&wanted)
+        .map(|(id, (address, card_id))| json!({"placement_id": id, "coord": shape.coord.get(id), "home_address": address, "card_id": card_id}))
+        .collect();
+    Ok(json!({
+        "applied": true,
+        "changed": true,
+        "tree": tree.handle(),
+        "placed": placed,
+        "already_placed": already,
+    }))
+}
+
+/// The most Cards one `place_card` call mounts with `targets`.
+const PLACE_MANY_MAX: usize = 500;
+
 // ---------------------------------------------------------------------------------------------
 // Topic-side mounts (`<loc>+k`)
 // ---------------------------------------------------------------------------------------------
 
 fn attach(ctx: &mut Ctx) -> Result<Value> {
     let conn = ctx.conn;
+    if ctx.args.get("targets").is_some() {
+        bail!("`targets` mounts several Cards in a Connection tree; a Topic-side mount takes one Card (target_at)");
+    }
     let anchor_at = opt_str(ctx.args, "anchor_at")?
         .or(opt_str(ctx.args, "host")?)
         .context("name the Topic home Card with `anchor_at`")?;
@@ -1382,7 +1682,7 @@ fn create_native(ctx: &mut Ctx) -> Result<Value> {
         None => CardType::Idea,
     };
     ensure_native_type(card_type)?;
-    let title = arg_str(ctx.args, "title")?;
+    let title = opt_str(ctx.args, "title")?.unwrap_or_default();
     let body = opt_str(ctx.args, "body")?.unwrap_or_default();
     let shape = shape_of(conn, &tree)?;
     let slot = slot_arg(conn, &shape, ctx.args)?;
@@ -2293,9 +2593,11 @@ fn extract(ctx: &mut Ctx) -> Result<Value> {
         None => source.workspace,
     };
     ctx.access.ensure_writable(workspace)?;
-    let title = arg_str(ctx.args, "title")?;
+    // The new root has no meaning either (D2): its title is optional.
+    let title = opt_str(ctx.args, "title")?.unwrap_or_default();
+    let named = if title.trim().is_empty() { "an untitled Connection tree".to_string() } else { format!("a new Connection tree \"{}\"", title.trim()) };
     let mut lines = vec![format!(
-        "copy {} station(s) from {} (starting at {}) into a new Connection tree \"{title}\"; the original tree is unchanged",
+        "copy {} station(s) from {} (starting at {}) into {named}; the original tree is unchanged",
         selection.len(),
         source.handle(),
         shape.coord[&top.placement_id]
@@ -2466,11 +2768,7 @@ fn read(conn: &Connection, access: Access, tool: &str, args: &Value) -> Result<V
 }
 
 pub(crate) fn tree_summary(conn: &Connection, access: Access, tree: &ConnTree) -> Result<Value> {
-    let title = coord::address_of_card_id(conn, &tree.root_card_id)?
-        .and_then(|address| crate::load_card(conn, &address).ok())
-        .and_then(|card| crate::parse_card_text(&card.text).ok())
-        .map(|p| p.title)
-        .unwrap_or_default();
+    let (title, untitled) = root_title(conn, tree)?;
     let (stations, native): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(CASE WHEN c.location = ?2 OR c.location LIKE ?3 THEN 1 ELSE 0 END), 0)
          FROM placements p
@@ -2496,6 +2794,7 @@ pub(crate) fn tree_summary(conn: &Connection, access: Access, tree: &ConnTree) -
         "tree": tree.handle(),
         "tree_id": tree.tree_id,
         "title": title,
+        "untitled": untitled,
         "workspace": tree.workspace.id(),
         "purpose": tree.purpose,
         "root_card_id": tree.root_card_id,
@@ -2527,14 +2826,23 @@ fn list_trees(conn: &Connection, access: Access, args: &Value) -> Result<Value> 
         {
             continue;
         }
-        let summary = tree_summary(conn, access, &tree)?;
+        // The text filter reads the handle, the root's title and the purpose before any count is
+        // made, so a filtered list of many trees counts only the trees it answers.
         if let Some(q) = &filter {
-            let hay = format!("{} {}", summary["title"].as_str().unwrap_or_default(), summary["purpose"].as_str().unwrap_or_default()).to_lowercase();
+            let (title, _) = root_title(conn, &tree)?;
+            let hay = format!("{} {} {}", tree.handle(), title, tree.purpose.as_deref().unwrap_or_default()).to_lowercase();
             if !hay.contains(q.as_str()) {
                 continue;
             }
         }
-        out.push(summary);
+        out.push(tree_summary(conn, access, &tree)?);
+    }
+    // `number` (the default) keeps the order of the handles; `recent` puts the newest tree first
+    // (handles are never reused, so the highest number is the newest).
+    match opt_str(args, "sort")? {
+        None | Some("number") => {}
+        Some("recent") => out.reverse(),
+        Some(other) => bail!("unknown sort `{other}`; expected number or recent"),
     }
     Ok(json!({"trees": out, "archive_revision": crate::link_index::revision(conn)?}))
 }

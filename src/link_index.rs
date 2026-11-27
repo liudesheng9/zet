@@ -722,7 +722,7 @@ mod tests {
     /// The reply carries the plan lines too, so two archives must agree on the plan as well (S2).
     fn confirmed(run: impl Fn(Option<&str>) -> Result<Outcome>) -> Result<Value> {
         match run(None)? {
-            Outcome::Confirm { confirm, lines } => match run(Some(&confirm))? {
+            Outcome::Confirm { confirm, lines, .. } => match run(Some(&confirm))? {
                 Outcome::Done(value) => Ok(serde_json::json!({"plan": lines, "done": value})),
                 Outcome::Confirm { .. } => panic!("a confirmed change asked again"),
             },

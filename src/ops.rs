@@ -22,10 +22,12 @@ use crate::{Access, Card, CardType, Workspace};
 
 /// The result of a change that may need a typed confirmation first.
 pub(crate) enum Outcome {
-    /// Nothing changed; repeat the call with `confirm` set to this text.
+    /// Nothing changed; repeat the call with `confirm` set to this text. A plan that binds its
+    /// confirmation to what it showed also carries `plan_hash`: passed back, it must still match.
     Confirm {
         confirm: String,
         lines: Vec<String>,
+        plan_hash: Option<String>,
     },
     Done(Value),
 }
@@ -33,7 +35,8 @@ pub(crate) enum Outcome {
 impl Outcome {
     pub(crate) fn into_value(self) -> Value {
         match self {
-            Outcome::Confirm { confirm, lines } => json!({ "confirm": confirm, "lines": lines }),
+            Outcome::Confirm { confirm, lines, plan_hash: None } => json!({ "confirm": confirm, "lines": lines }),
+            Outcome::Confirm { confirm, lines, plan_hash: Some(hash) } => json!({ "confirm": confirm, "lines": lines, "plan_hash": hash }),
             Outcome::Done(value) => value,
         }
     }
@@ -586,6 +589,7 @@ pub(crate) fn edit_metadata(
         if confirm != Some("move") {
             let lines = crate::citation_rename_lines(&conn, &old_key, &metadata.citation_key)?;
             return Ok(Outcome::Confirm {
+                plan_hash: None,
                 confirm: "move".to_string(),
                 lines,
             });
@@ -604,12 +608,29 @@ pub(crate) fn edit_metadata(
 }
 
 /// Delete a Card and its successors (a Tree root deletes its whole tree).
+#[cfg(test)]
 pub(crate) fn delete(
     root: &Path,
     access: Access,
     at: &str,
     into: Option<&str>,
     confirm: Option<&str>,
+) -> Result<Outcome> {
+    delete_reviewed(root, access, at, into, confirm, None)
+}
+
+/// Delete as [`delete`], with the plan bound to what it showed: the plan answer carries
+/// `plan_hash`, a hash of its lines and of every Card it deletes, and a confirmation that passes it
+/// back applies only while the plan is still exactly that one. A Card added to a tree between the
+/// preview and the confirmation (docs/connection-trees-free-proposal.md §6, Astra round 1) makes the
+/// confirmation stale instead of deleting more than the owner saw.
+pub(crate) fn delete_reviewed(
+    root: &Path,
+    access: Access,
+    at: &str,
+    into: Option<&str>,
+    confirm: Option<&str>,
+    plan_hash: Option<&str>,
 ) -> Result<Outcome> {
     let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "delete")?;
     let mut conn = crate::open_db(root)?;
@@ -623,13 +644,20 @@ pub(crate) fn delete(
     access.ensure_link_rewrites_allowed(&conn, &plan.compaction())?;
     crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Delete(&plan))?;
     crate::coord_lock::ensure_delete_allowed(&conn, &plan.delete_set)?;
+    let mut lines = crate::delete_verification_lines(&plan);
+    lines.extend(crate::coord::delete_impact_lines(&conn, &plan.delete_set, plan.kept_root().map(|(root, _)| root))?);
+    let mut bound = lines.clone();
+    bound.extend(crate::coord::delete_state(&conn, &plan.delete_set)?);
+    let hash = delete_plan_hash(&plan.delete_set, &bound);
     if confirm != Some(plan.confirmation.as_str()) {
-        let mut lines = crate::delete_verification_lines(&plan);
-        lines.extend(crate::coord::delete_impact_lines(&conn, &plan.delete_set, plan.kept_root().map(|(root, _)| root))?);
         return Ok(Outcome::Confirm {
             confirm: plan.confirmation.clone(),
             lines,
+            plan_hash: Some(hash),
         });
+    }
+    if plan_hash.is_some_and(|given| given != hash) {
+        bail!("stale plan: what this delete removes changed since the plan was shown; ask for the plan again");
     }
     let result = crate::apply_delete_plan(&mut conn, plan)?;
     let next = crate::parent_location(at)
@@ -661,6 +689,7 @@ pub(crate) fn move_card(
     crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Mapping(&plan.mapping))?;
     if confirm != Some("move") {
         return Ok(Outcome::Confirm {
+            plan_hash: None,
             confirm: "move".to_string(),
             lines: crate::move_verification_lines(&plan),
         });
@@ -703,6 +732,7 @@ pub(crate) fn tree_tool(
     {
         tx.rollback()?;
         return Ok(Outcome::Confirm {
+            plan_hash: None,
             confirm: word.to_string(),
             lines: applied.lines,
         });
@@ -756,6 +786,7 @@ pub(crate) fn insert_card_with_term(
     crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::CreateAt(&plan.location))?;
     if confirm != Some("insert") {
         return Ok(Outcome::Confirm {
+            plan_hash: None,
             confirm: "insert".to_string(),
             lines: crate::place::insert_verification_lines(&plan),
         });
@@ -1245,16 +1276,22 @@ impl Snapshot {
     /// their parts) it holds, and whether an active Lock governs it (R204,
     /// S03-AC01; the sixth Card type in S14, #161).
     pub(crate) fn trees(&self) -> Vec<Value> {
+        // Every Card's tree in one pass: with many Connection roots a scan of all Cards per root
+        // would cost roots × Cards (docs/connection-trees-free-proposal.md D3). A Card belongs to
+        // the tree its address names, exactly when `is_tree_member` says so.
+        let mut by_tree: BTreeMap<&str, Vec<&Card>> = BTreeMap::new();
+        for member in &self.cards {
+            let tree = crate::tree_id(&member.address);
+            if crate::is_tree_member(&member.address, tree) {
+                by_tree.entry(tree).or_default().push(member);
+            }
+        }
         self.cards
             .iter()
             .filter(|card| crate::is_tree_root(card))
             .map(|card| {
                 let tree = crate::tree_id(&card.address);
-                let members = self
-                    .cards
-                    .iter()
-                    .filter(|member| crate::is_tree_member(&member.address, tree))
-                    .collect::<Vec<_>>();
+                let members: &[&Card] = by_tree.get(tree).map(Vec::as_slice).unwrap_or(&[]);
                 // A model counts once: its Model Card, not its parts.
                 let typed = |card_type: CardType| {
                     members
@@ -2795,4 +2832,22 @@ The model"
         .unwrap();
         assert_eq!(lying(), ["0/2", "0/3", "Lit2021"]);
     }
+}
+
+/// The hash a delete plan binds its confirmation to: every Card it deletes, every line it shows, and
+/// the state behind them (`coord::delete_state`: the deleted texts and every station and connection
+/// the delete removes or leaves missing).
+fn delete_plan_hash(delete_set: &BTreeSet<String>, lines: &[String]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for address in delete_set {
+        hasher.update(address.as_bytes());
+        hasher.update([0]);
+    }
+    hasher.update([1]);
+    for line in lines {
+        hasher.update(line.as_bytes());
+        hasher.update([0]);
+    }
+    format!("{:x}", hasher.finalize())
 }

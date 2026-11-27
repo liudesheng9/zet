@@ -207,7 +207,8 @@
   // index cards in the same focus lens. Cards pulled from different drawers keep the colour of their
   // drawer: each home tree has one hue, the same in every view, from a palette of ten that stay
   // apart at a glance and leave out the pointer's gold and the Link's blue. A Connection tree's own
-  // Cards are plum. In one page no two trees share a hue (up to ten).
+  // Cards wear the Literature colour (docs/connection-trees-free-proposal.md D6). In one page no two
+  // trees share a hue (up to nine).
 
   /** The tree a Card lives in: `~7` for `~7` and `~7#4`, else the part before the first `/`. */
   function treeOf(address) {
@@ -222,10 +223,11 @@
     return text.startsWith('~') ? 'connection' : /^\d/.test(text) ? 'topic' : 'literature';
   }
 
-  // OKLCH hues: red, orange, lime, green, teal, cyan, sky, indigo, violet, rose. Gold (the pointer,
-  // ~85) and blue (a Link, ~255) stay out; plum is a Connection tree's own.
-  const PALETTE = [18, 44, 112, 140, 164, 190, 214, 280, 300, 354];
-  const OWN_HUE = 328;
+  // OKLCH hues: lime, green, teal, cyan, sky, indigo, violet, plum, rose. Gold (the pointer, ~85)
+  // and blue (a Link, ~255) stay out, and so do the red and orange beside the Literature colour
+  // (~36), which is a Connection tree's own: no mounted tree is mistaken for the tree's own Cards.
+  const PALETTE = [112, 140, 164, 190, 214, 280, 300, 328, 354];
+  const OWN_HUE = 36;
 
   /** A tree's place in the palette: a hash of its id, the same in every view. */
   function paletteSlot(tree) {
@@ -239,8 +241,8 @@
 
   // One hue per tree for the whole page: the Map's card stock, its colour key, the stamps and the
   // chips all read it here, so a tree never shows in two colours. A tree keeps the first hue it is
-  // given; a tree whose hash meets a hue already given takes the next free one (past ten trees two
-  // share one). A Connection tree is plum.
+  // given; a tree whose hash meets a hue already given takes the next free one (past nine trees two
+  // share one). A Connection tree wears the Literature colour.
   const given = new Map();
 
   /** The hue (OKLCH degrees) of one tree in this page. */
@@ -292,7 +294,8 @@
         address: s.coord,
         parent: s.parent_id ? coordOf(s.parent_id) : null,
         edge: s.edge,
-        title: s.title || home,
+        // An untitled root (its title is its own handle) reads as untitled (D2).
+        title: s.edge === 'root' && (tree.untitled || s.title === own) ? '' : (s.title || home),
         type: s.type || 'idea',
         excerpt: s.excerpt || '',
         links: out.get(s.coord) || [],
@@ -322,8 +325,100 @@
     };
   }
 
+  // ------------------------------------------------------------ the projection (D4)
+  // A Connection tree is a structure in a higher dimension; the Topic or Literature tree being read
+  // is a plane. `crossings` (the tree answer's field, `connection::crossings`) names, per crossing
+  // tree, its stations in the plane, its lines in the plane and its exits. These rules choose what
+  // the Map draws: the lines that touch the focus or the hovered Card, or every line with the
+  // Crossings switch on, each line once even when two trees draw the same pair.
+
+  /** Every projection line of every crossing tree, each with its tree and a key unique in the page. */
+  function projectionLines(crossings) {
+    const out = [];
+    for (const [tree, cross] of Object.entries(crossings || {})) {
+      for (const line of (cross && cross.lines) || []) {
+        if (!line.from || !line.to || line.from === line.to) continue;
+        const id = line.kind === 'connection' ? line.connection_id : `${line.from_coord}>${line.to_coord}`;
+        out.push({ ...line, tree, title: (cross && cross.title) || '', key: `x${tree}|${line.kind}|${id}` });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The projection lines indexed once per tree answer: every line with its `lane` (0, 1, … among
+   * the lines that join the same two Cards, whichever way, so parallel assertions and two trees
+   * over one pair lie side by side) and the lines at each address.
+   */
+  function crossingIndex(crossings) {
+    const all = projectionLines(crossings);
+    const lanes = new Map();
+    const byEnd = new Map();
+    for (const line of all) {
+      const pair = [line.from, line.to].sort().join('\u0001');
+      line.lane = lanes.get(pair) || 0;
+      lanes.set(pair, line.lane + 1);
+      for (const end of [line.from, line.to]) {
+        if (!byEnd.has(end)) byEnd.set(end, []);
+        byEnd.get(end).push(line);
+      }
+    }
+    return { all, byEnd };
+  }
+
+  /**
+   * The projection lines the Map draws now: with `all` every line; otherwise those that touch the
+   * focused or the hovered address, each once. Takes the `crossings` field or its `crossingIndex`.
+   */
+  function visibleCrossings(crossings, focus, hovered, all) {
+    const index = crossings && crossings.byEnd ? crossings : crossingIndex(crossings);
+    if (all) return index.all;
+    const out = new Set([...(index.byEnd.get(focus) || []), ...(hovered ? index.byEnd.get(hovered) || [] : [])]);
+    return index.all.filter((line) => out.has(line));
+  }
+
+  /** How a projection line reads in its tooltip: its tree, what it is, and its hops outside. */
+  function crossingText(line) {
+    const tree = line.title ? `${line.tree} · ${line.title}` : line.tree;
+    if (line.kind === 'connection') {
+      const word = line.relation_label || line.relation_kind || (line.direction === 'directed' ? 'connects to' : 'connected');
+      return `In ${tree}: ${line.from_coord} ${line.direction === 'directed' ? '→' : '—'} ${line.to_coord} · ${word}`;
+    }
+    const how = line.edge === 'side' ? 'a Side branch of' : 'after';
+    const through = line.hops ? ` · through ${line.hops} station${line.hops === 1 ? '' : 's'} outside this tree` : '';
+    return `In ${tree}: ${line.to_coord} stands ${how} ${line.from_coord}${through}`;
+  }
+
+  /** The crossing trees that leave the plane at one address: [{ tree, n }] by tree. */
+  function exitsAt(crossings, address) {
+    const out = [];
+    for (const [tree, cross] of Object.entries(crossings || {})) {
+      const n = cross && cross.exits && cross.exits[address];
+      if (n) out.push({ tree, n });
+    }
+    return out.sort((a, b) => a.tree.localeCompare(b.tree, undefined, { numeric: true }));
+  }
+
+  /** A tree's name in a list: its title, or its handle when the root is untitled. */
+  function treeLabel(tree) {
+    if (!tree) return '';
+    return tree.untitled || !tree.title ? `${tree.tree} (untitled)` : tree.title;
+  }
+
+  /** Several Cards typed into one Mount: split on spaces, commas, semicolons and new lines. */
+  function mountTargets(text) {
+    const seen = new Set();
+    const out = [];
+    for (const part of String(text || '').split(/[\s,;，；]+/)) {
+      const at = part.trim();
+      if (at && !seen.has(at)) { seen.add(at); out.push(at); }
+    }
+    return out;
+  }
+
   return {
     GLOSS_LIMIT, LABEL_LIMIT, NOTE_LIMIT, KINDS, DIRECTIONAL,
+    projectionLines, crossingIndex, visibleCrossings, crossingText, exitsAt, treeLabel, mountTargets,
     outline, counts, focusEdges, panel, provenance, sentence, labelSuggestions,
     checkConnection, checkGloss, citation, bookmark, stationHash, treeHash, parseHash,
     portalLabel, glossReview, markByBytes,

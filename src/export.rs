@@ -562,6 +562,11 @@ fn collect_connection(root: &Path, snapshot: &Snapshot, tree_name: &str, seconds
         .collect();
     for card in &included {
         let (mut value, _) = card_value(snapshot, card, &portable, &handle, &mut heads);
+        // A mounted Card keeps its own Workspace offline: a human book mounted in an agent tree
+        // still reads as a human Card (Astra round 1). The tree's own Cards share its Workspace.
+        if card.workspace != tree.workspace {
+            value["workspace"] = json!(card.workspace.id());
+        }
         for target in snapshot.summary(card)["links"].as_array().into_iter().flatten().filter_map(Value::as_str) {
             if included_set.contains(target) {
                 authored.push(json!({"from": card.address, "to": target, "state": "in-package authored Link"}));

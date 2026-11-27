@@ -3094,7 +3094,10 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 /* ---------------------------------------------- Connection trees (关联树), proposal §9.1 */
 .conn-item { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 4px 0; font-size: 13px; }
 .conn-filter { width: 100%; margin: 4px 0 6px; padding: 4px 8px; border: 1px solid var(--line, #d8cfc0); border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: 12px; }
-.drawer.connection .addr { color: oklch(var(--tree-l) var(--tree-c) 328); }
+/* A Connection tree's own colour is the Literature colour (docs/connection-trees-free-proposal.md D6). */
+.drawer.connection::before { background: var(--lit); }
+.drawer.connection .addr { color: var(--lit); }
+.drawer .t.untitled, .stack .t.untitled { color: var(--ink-faint); font-weight: 500; font-style: italic; }
 .conn-panel h3, .side-shelf h3, .lens-pane h3 { font-size: 13px; margin: 8px 0 6px; }
 .conn-panel ul, .side-shelf ul, .lens-pane ul { list-style: none; margin: 0; padding: 0; }
 .prov { font-size: 11px; padding: 0 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent, #c4622d) 12%, transparent); white-space: nowrap; }
@@ -3138,7 +3141,9 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
   border-top: 3px solid var(--tree-ink);
 }
 .node.station.slip { background-color: color-mix(in oklab, var(--tree-ink) var(--tree-stock), color-mix(in srgb, var(--stock) 82%, var(--desk))); }
-.node.station.root { background-color: color-mix(in oklab, var(--tree-ink) calc(var(--tree-stock) * 2), var(--stock)); }
+.node.station.root { background-color: color-mix(in srgb, var(--lit-soft) 80%, var(--stock)); border-top-color: var(--lit); }
+.node.station.root .addr { color: var(--lit); }
+.node.station.native { --tree-ink: var(--lit); }
 .node.station.root .addr, .node.station.portal .addr { color: var(--tree-ink); font-weight: 600; }
 /* The curator's gloss: a pencil line under the title of the lifted card. */
 .node.focus.station .gloss {
@@ -3189,7 +3194,8 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .conn-chip .chip { border-left: 3px solid color-mix(in oklab, var(--tree-ink) 45%, transparent); }
 .conn-chip .way { color: var(--ink-faint); font: 600 12px var(--mono); }
 .conn-chip .rel { font: italic 12px var(--serif); color: var(--tree-ink); }
-.conn-chip .addr { color: oklch(var(--tree-l) var(--tree-c) var(--coord-h, 328)); font-family: var(--mono); font-size: 11px; }
+.conn-chip .addr { color: oklch(var(--tree-l) var(--tree-c) var(--coord-h, 36)); font-family: var(--mono); font-size: 11px; }
+.stamp.coord.connection, .stamp.mini.connection, .open-tab.connection { --tree-ink: var(--lit); }
 .conn-tools { display: inline-flex; gap: 2px; margin-left: 2px; opacity: 0; transition: opacity .15s; }
 .conn-chip:hover .conn-tools, .conn-chip:focus-within .conn-tools { opacity: 1; }
 .conn-tools button { border: 0; background: none; color: var(--ink-faint); font-size: 13px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
@@ -3292,3 +3298,30 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 button.station-note { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 0; }
 .station-note.empty { color: var(--ink-faint); font-size: 13px; }
 .station-note.empty::before { color: var(--ink-faint); }
+
+/* ------------------------------------------- the projection: Connection trees crossing this tree
+   A Connection tree lies in a higher dimension; where it passes through the tree being read, its
+   lines are drawn in the Literature ink, bowed out to the right a step wider than a Link or Term
+   arc, so they never lie on one. A structure line is a thin solid thread (a Side branch
+   a little lighter), a line through stations outside this tree is dotted, a tree connection is
+   dashed. The lines of the card you hold are drawn a step stronger. */
+.edges .e-cross { stroke: var(--lit); stroke-width: 1.3; opacity: .55; pointer-events: stroke; animation: term-edge-in .3s ease-in-out; }
+.edges .e-cross.side { opacity: .45; }
+.edges .e-cross.via { stroke-dasharray: .2 4; stroke-linecap: round; stroke-width: 1.7; }
+.edges .e-cross.conn { stroke-dasharray: 6 3 1.5 3; }
+.edges .e-cross.hot { opacity: .9; stroke-width: 1.8; }
+.cross-toggle .cross-arc { fill: none; stroke: var(--lit); stroke-dasharray: 2 2; }
+.cross-toggle.on { color: var(--lit); }
+/* Where a crossing tree goes on outside this tree: a small tab on the lifted card. */
+.node .exits { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.node .exit {
+  font: 600 10px/15px var(--mono); padding: 0 5px; border-radius: 3px; cursor: pointer;
+  color: var(--lit); border: 1px dashed color-mix(in srgb, var(--lit) 60%, transparent);
+}
+.node .exit:hover, .node .exit:focus-visible { border-style: solid; background: color-mix(in srgb, var(--lit) 10%, transparent); outline: none; }
+/* The desk's Connection zone: the same stacks, on the Literature colour. */
+.zone-head.connection { color: var(--ink-soft); }
+.stack.connection .face .kind { color: var(--lit); }
+.lock-card.connection .kind-tag { color: var(--lit); }
+.card h1.title.untitled { color: var(--ink-faint); font-style: italic; font-weight: 500; }
+.lock-title.untitled { color: var(--ink-faint); font-style: italic; }

@@ -1408,7 +1408,29 @@ impl App {
 
     /// One tree's answer as JSON text, assembled from the Snapshot's cached summaries (#243).
     fn tree_raw(&self, tree: &str) -> std::result::Result<String, ApiError> {
-        let snapshot = self.snapshot()?;
+        let mut snapshot = self.snapshot()?;
+        // The coordinates (the stamps and the projection) are read at the request, in one read
+        // transaction at the Snapshot's own revision: a Map never mixes Cards of one revision with
+        // stations of another (docs/connection-trees-free-proposal.md D4). A write between the two
+        // reads makes the answer use the fresh Snapshot.
+        let mut coordinates = None;
+        for attempt in 0..3 {
+            let conn = crate::open_db(&self.root)?;
+            let read = conn.unchecked_transaction()?;
+            if crate::link_index::revision(&read)? == snapshot.revision() {
+                let id = crate::tree_id(&crate::tree_root_address(tree)).to_string();
+                let (elsewhere, crossings) = crate::connection::tree_coordinates(&read, &id)?;
+                read.finish()?;
+                coordinates = Some((elsewhere.to_string(), crossings.to_string()));
+                break;
+            }
+            drop(read);
+            if attempt < 2 {
+                snapshot = self.snapshots.fresh()?;
+            }
+        }
+        let (elsewhere, crossings) = coordinates
+            .ok_or_else(|| ApiError::new("the archive kept changing while the tree was read; read it again".to_string()))?;
         let root = crate::tree_root_address(tree);
         let Some(root_card) = snapshot.by_address.get(&root) else {
             return Err(ApiError::new(format!("tree `{tree}` does not exist")));
@@ -1425,14 +1447,13 @@ impl App {
             "title": snapshot.title(&root),
         })
         .to_string();
-        // Where the tree's Cards also stand (Connection-tree stations, Topic-side mounts), read at
-        // the request: the cached summaries know nothing of the coordinate tables.
-        let elsewhere = crate::open_db(&self.root)
-            .and_then(|conn| crate::connection::elsewhere(&conn, crate::tree_id(&root)))
-            .map(|value| value.to_string())
-            .unwrap_or_else(|_| "{}".to_string());
+        // Where the tree's Cards also stand (`elsewhere`) and the Connection trees that cross it
+        // (`crossings`), read above at this Snapshot's revision.
         // The head object without its closing brace, then the coordinates and the cards.
-        Ok(format!("{},\"elsewhere\":{elsewhere},\"cards\":{cards}}}", &head[..head.len() - 1]))
+        Ok(format!(
+            "{},\"elsewhere\":{elsewhere},\"crossings\":{crossings},\"cards\":{cards}}}",
+            &head[..head.len() - 1]
+        ))
     }
 
     fn graph(&self) -> ApiResult {
@@ -2000,12 +2021,15 @@ impl App {
     }
 
     fn delete(&self, body: &Value) -> ApiResult {
-        Ok(ops::delete(
+        // The plan answer carries `plan_hash`; the page passes it back with the confirmation, so a
+        // tree that grew after the preview is never deleted on the old word.
+        Ok(ops::delete_reviewed(
             &self.root,
             ACCESS,
             &str_field(body, "at")?,
             body.get("into").and_then(Value::as_str),
             confirm_field(body),
+            body.get("plan_hash").and_then(Value::as_str),
         )?
         .into_value())
     }
@@ -3062,21 +3086,39 @@ fn link_html(link: &ClassifiedLink, snapshot: &Snapshot, reader: Target<'_>) -> 
     match link.status {
         // A Model part is named by its facet, the label a reader understands inside the model;
         // its address stays one hover away.
-        LinkStatus::Valid => match snapshot.by_address.get(link.target).and_then(|card| card.facet.as_ref()) {
+        // The Card is read at its address today: a promoted handle keeps its authored spelling and
+        // shows the Card's live title (Astra round 1). An untitled Connection root (titled with its
+        // own handle) shows its address alone, never "~7 ~7".
+        LinkStatus::Valid => match snapshot.by_address.get(snapshot.canonical(link.target)).and_then(|card| card.facet.as_ref()) {
             Some(facet) => format!(
                 "<a class=\"zt-link\" href=\"#/card/{route}\" data-target=\"{target}\" title=\"{target}\"><span class=\"zt-link-addr zt-link-facet\">{}</span><span class=\"zt-link-title\">{}</span></a>",
                 escape_html(facet.id()),
-                escape_html(&snapshot.title(link.target)),
+                escape_html(&link_title(snapshot, link.target)),
             ),
-            None => format!(
-                "<a class=\"zt-link\" href=\"#/card/{route}\" data-target=\"{target}\"><span class=\"zt-link-addr\">{target}</span><span class=\"zt-link-title\">{}</span></a>",
-                escape_html(&snapshot.title(link.target)),
-            ),
+            None => match link_title(snapshot, link.target) {
+                title if title.is_empty() => format!(
+                    "<a class=\"zt-link\" href=\"#/card/{route}\" data-target=\"{target}\"><span class=\"zt-link-addr\">{target}</span></a>"
+                ),
+                title => format!(
+                    "<a class=\"zt-link\" href=\"#/card/{route}\" data-target=\"{target}\"><span class=\"zt-link-addr\">{target}</span><span class=\"zt-link-title\">{}</span></a>",
+                    escape_html(&title),
+                ),
+            },
         },
         LinkStatus::Broken => format!(
             "<span class=\"zt-link broken\" title=\"Broken link\"><span class=\"zt-link-addr\">{target}</span><span class=\"zt-link-title\">missing</span></span>"
         ),
     }
+}
+
+/// The title a Link shows for its target: the live Card's title at its address today, and nothing
+/// for an untitled Connection root, whose stored title is its own handle
+/// (docs/connection-trees-free-proposal.md D2).
+fn link_title(snapshot: &Snapshot, target: &str) -> String {
+    let address = snapshot.canonical(target);
+    let title = snapshot.title(address);
+    let untitled_root = crate::coord::Handle::parse(address).is_some_and(|h| h.local.is_none()) && title == address;
+    if untitled_root { String::new() } else { title }
 }
 
 /// A live Link in a portable export (#258). Inside the tree it is the route alone: Links are the
@@ -3104,7 +3146,7 @@ fn portable_link_html(link: &ClassifiedLink, snapshot: &Snapshot, portable: &Por
             format!("<span class=\"zt-link zt-term outside\" title=\"{hint} · {OUTSIDE}\">{label}</span>")
         };
     }
-    let title = escape_html(&snapshot.title(target));
+    let title = escape_html(&link_title(snapshot, target));
     let facet = snapshot.by_address.get(target).and_then(|card| card.facet.as_ref());
     let head = match facet {
         Some(facet) => format!(
@@ -3113,7 +3155,8 @@ fn portable_link_html(link: &ClassifiedLink, snapshot: &Snapshot, portable: &Por
         ),
         None => format!("<span class=\"zt-link-addr\">{address}</span>"),
     };
-    let body = format!("{head}<span class=\"zt-link-title\">{title}</span>");
+    // An untitled Connection root shows its address alone, as in the live page.
+    let body = if title.is_empty() { head } else { format!("{head}<span class=\"zt-link-title\">{title}</span>") };
     match (inside, facet.is_some()) {
         (true, true) => {
             format!("<a class=\"zt-link\" href=\"#/card/{route}\" title=\"{address}\">{body}</a>")
@@ -3644,7 +3687,8 @@ mod tests {
 
     /// One Map for every tree role: a Connection tree's stations become Map cards keyed by
     /// coordinate, each on the colour of its home tree; two trees never share a colour in one view,
-    /// a tree keeps its colour across views, and the tree's own Cards are plum.
+    /// a tree keeps its colour across views, and the tree's own Cards wear the Literature colour
+    /// (docs/connection-trees-free-proposal.md D6).
     #[test]
     fn a_connection_tree_maps_onto_the_card_map_coloured_by_home_tree() {
         let Some(value) = connections_js(
@@ -3687,13 +3731,70 @@ mod tests {
         assert_eq!(value["links"], json!([["~3/1"], ["~3/2|a"], 2]), "a neutral connection runs both ways");
         assert_eq!(value["roles"], json!(["connection", "literature", "literature", "connection", "literature"]));
         assert_eq!(value["own"][0], value["own"][2]);
-        assert_eq!(value["own"][1], value["own"][2], "a native Card wears its tree's own plum");
+        assert_eq!(value["own"][1], value["own"][2], "a native Card wears its tree's own colour");
         assert_eq!(value["apart"], 3, "three home trees, three colours");
         assert_eq!(value["stable"], true);
         assert_eq!(value["gloss"], "why");
         assert_eq!(value["missing"], "missing");
         assert_eq!(value["focus"], json!(["~3/1", ["~3/2|a"], ["~3/2", "~3/2|a"]]));
         assert_eq!(value["trees"], json!(["~3", "Hart1995", "topic", "connection"]));
+    }
+
+    /// D6 and D4 of docs/connection-trees-free-proposal.md: a Connection tree's own hue is the
+    /// Literature hue (the OKLCH hue of `--lit`, about 36°), the palette for mounted home trees keeps
+    /// away from it, and the projection rules choose the lines the Map draws: those of the focus and
+    /// the hovered Card, or every line with the Crossings switch, each keyed once; the exits of an
+    /// address by tree; a tooltip that names the tree and the hops; an untitled tree by its handle;
+    /// several Cards typed into one Mount, each once.
+    #[test]
+    fn connection_trees_wear_the_literature_colour_and_project_onto_the_tree_read() {
+        let Some(value) = connections_js(
+            "(() => {
+               const crossings = {
+                 '~2': { tree: '~2', title: '', untitled: true, exits: { 'B/1': 2 }, lines: [
+                   { kind: 'structure', from: 'B/1', to: 'B/3', from_coord: '~2/1', to_coord: '~2/3', edge: 'direct', hops: 1 },
+                   { kind: 'connection', from: 'B/3', to: 'B/2', from_coord: '~2/3', to_coord: '~2/1|a', direction: 'directed', relation_label: '依赖', connection_id: 'c1' },
+                 ] },
+                 '~5': { tree: '~5', title: '路线', exits: { 'B/1': 1 }, lines: [
+                   { kind: 'structure', from: 'B/2', to: 'B/4', from_coord: '~5/1', to_coord: '~5/1|a', edge: 'side', hops: 0 },
+                 ] },
+               };
+               const keys = (lines) => lines.map((l) => l.key);
+               return {
+                 hue: C.OWN_HUE, palette: C.PALETTE, own: C.treeHue('~9'),
+                 all: C.projectionLines(crossings).length,
+                 unique: new Set(keys(C.projectionLines(crossings))).size,
+                 focus: C.visibleCrossings(crossings, 'B/3', null, false).map((l) => l.tree + ' ' + l.kind),
+                 hover: C.visibleCrossings(crossings, 'B/9', 'B/4', false).map((l) => l.tree),
+                 whole: C.visibleCrossings(crossings, 'B/9', null, true).length,
+                 exits: C.exitsAt(crossings, 'B/1'),
+                 said: C.projectionLines(crossings).map(C.crossingText),
+                 label: [C.treeLabel({ tree: '~2', title: '', untitled: true }), C.treeLabel({ tree: '~5', title: '路线' })],
+                 lanes: C.crossingIndex({ '~7': { tree: '~7', lines: [{ kind: 'connection', from: 'X', to: 'Y', connection_id: 'a' }, { kind: 'connection', from: 'Y', to: 'X', connection_id: 'b' }, { kind: 'structure', from: 'X', to: 'Z', from_coord: '~7/1', to_coord: '~7/2' }] } }).all.map((l) => l.lane),
+                 indexed: C.visibleCrossings(C.crossingIndex(crossings), 'B/3', null, false).length,
+                 mount: C.mountTargets(' A/1, B/2;C/3  A/1\\n~3#2，D'),
+               };
+             })()",
+        ) else {
+            return;
+        };
+        assert_eq!(value["hue"], 36, "the Literature hue");
+        assert_eq!(value["own"], 36, "every Connection tree wears it");
+        let palette: Vec<i64> = value["palette"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+        assert!(palette.iter().all(|hue| (hue - 36).abs() > 30 && (hue - 36 + 360) % 360 > 30), "no home hue beside the Literature hue: {palette:?}");
+        assert_eq!(value["all"], 3);
+        assert_eq!(value["unique"], 3, "each line keyed once");
+        assert_eq!(value["focus"], json!(["~2 structure", "~2 connection"]));
+        assert_eq!(value["hover"], json!(["~5"]), "the hovered Card's lines are drawn too");
+        assert_eq!(value["whole"], 3, "the Crossings switch draws every line");
+        assert_eq!(value["exits"], json!([{ "tree": "~2", "n": 2 }, { "tree": "~5", "n": 1 }]));
+        assert_eq!(value["said"][0], "In ~2: ~2/3 stands after ~2/1 · through 1 station outside this tree");
+        assert_eq!(value["said"][1], "In ~2: ~2/3 → ~2/1|a · 依赖");
+        assert_eq!(value["said"][2], "In ~5 · 路线: ~5/1|a stands a Side branch of ~5/1");
+        assert_eq!(value["label"], json!(["~2 (untitled)", "路线"]));
+        assert_eq!(value["mount"], json!(["A/1", "B/2", "C/3", "~3#2", "D"]));
+        assert_eq!(value["lanes"], json!([0, 1, 0]), "two assertions over one pair lie side by side");
+        assert_eq!(value["indexed"], 2, "the index answers what the crossings answer");
     }
 
     #[test]
@@ -4242,7 +4343,11 @@ mod tests {
         let changed = dialog.find("show(answer);").expect("a renewed plan replaces the old one");
         assert!(changed > dialog.find("ZtLock.answer(answer) === 'applied'").expect("applied check"));
         // Every Lock route is reached only through the dialog; nothing else confirms a Lock.
-        assert_eq!(APP_JS.matches("plan_hash: ").count(), 1, "one place sends a plan hash");
+        // The Lock dialog and the two deletes (a Card, a whole tree) send a plan hash; no other place
+        // confirms a Lock.
+        assert_eq!(APP_JS.matches("plan_hash: ").count(), 3, "the Lock dialog and the two deletes send a plan hash");
+        assert_eq!(APP_JS.matches("api('delete', { at: ").count(), 4, "each delete plans, then confirms with its plan hash");
+        assert_eq!(APP_JS.matches("confirm: plan.confirm, plan_hash: plan.plan_hash })").count(), 2);
         assert!(APP_JS.contains("path: 'lock', verb: 'Lock tree'"));
         assert!(APP_JS.contains("path: 'unlock', verb: 'Unlock tree'"));
         assert!(APP_JS.contains("path: 'lock/note', verb: 'Change note'"));

@@ -1306,6 +1306,58 @@ pub(crate) fn delete_hosts(
     Ok(())
 }
 
+/// The state a delete plan binds itself to beyond its lines (docs/connection-trees-free-proposal.md
+/// §6, Astra round 2): the text of every Card it deletes, every row of every Connection tree whose
+/// root it deletes (stations with their slots and glosses, connections with their last revision),
+/// the Topic-side mounts beside the Topic Cards it deletes, and the stations elsewhere that it turns
+/// into Missing mounts with their connections. A connection or gloss written between the preview
+/// and the confirmation changes this state, so the old confirmation is refused as stale.
+pub(crate) fn delete_state(conn: &Connection, delete_set: &BTreeSet<String>) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for address in delete_set {
+        let Ok(card) = crate::load_card(conn, address) else { continue };
+        out.push(format!("card {address} {}", card.text));
+        if !installed(conn) {
+            continue;
+        }
+        let card_id = card_id_of_row(conn, card.row_id)?;
+        let mut hosts: Vec<String> = Vec::new();
+        if let Some(handle) = Handle::parse(address).filter(|h| h.local.is_none())
+            && let Some(tree) = tree_by_num(conn, handle.tree)?
+        {
+            hosts.push(tree.tree_id.clone());
+        }
+        let mut rows: Vec<Placement> = Vec::new();
+        for host in &hosts {
+            rows.extend(placements_of_host(conn, host)?);
+        }
+        rows.extend(placements_of_card(conn, &card_id)?);
+        rows.extend(attachments_of_anchor(conn, &card_id)?);
+        rows.sort_by(|a, b| a.placement_id.cmp(&b.placement_id));
+        rows.dedup_by(|a, b| a.placement_id == b.placement_id);
+        for p in &rows {
+            out.push(format!(
+                "placement {} {} {} {:?} {} {:?} {:?}",
+                p.placement_id, p.host_tree_key, p.card_id, p.parent_id, p.edge.id(), p.ordinal, p.gloss
+            ));
+            let mut edges: Vec<(String, i64)> = conn
+                .prepare_cached(
+                    "SELECT connection_id, updated_at_rev FROM placement_edges
+                     WHERE tree_id = ?2 AND (from_placement_id = ?1 OR to_placement_id = ?1)",
+                )?
+                .query_map([&p.placement_id, &p.host_tree_key], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            edges.sort();
+            for (id, rev) in edges {
+                out.push(format!("connection {id} {rev}"));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 /// Whether a keep-root delete of `root` has host data to remove even when no Card goes.
 pub(crate) fn keep_root_has_host_work(conn: &Connection, root: &str) -> Result<bool> {
     let Some(handle) = Handle::parse(root).filter(|h| h.local.is_none()) else {

@@ -86,7 +86,8 @@
     const inboundCount = (address) => new Set([...(refers.get(address) || []), ...(uses.get(address) || [])]).size;
     const summaries = data.cards.map((card) => {
       const { text, html, bibtex, hubs, broken, models, model, ...summary } = card;
-      return { ...summary, tree: data.tree.id, workspace: data.tree.workspace, inbound: inboundCount(card.address), lock: null, pinned_by: [] };
+      // A mounted Card of a Connection-tree export names its own Workspace in every answer.
+      return { ...summary, tree: data.tree.id, workspace: card.workspace || data.tree.workspace, inbound: inboundCount(card.address), lock: null, pinned_by: [] };
     });
     const search = data.cards.map((card) => {
       const text = visibleText(card.text);
@@ -98,7 +99,7 @@
   function reference(ix, address) {
     const card = ix.byAddress.get(address);
     const title = card ? card.title : ix.outside.get(address)?.title ?? '';
-    return { address, title, workspace: card ? ix.data.tree.workspace : null, lock: null, pinned_by: [] };
+    return { address, title, workspace: card ? card.workspace || ix.data.tree.workspace : null, lock: null, pinned_by: [] };
   }
 
   function outbound(ix, card) {
@@ -152,7 +153,8 @@
     const answer = {
       address,
       tree: ix.data.tree.id,
-      workspace: ix.data.tree.workspace,
+      // A mounted Card of a Connection-tree export names its own Workspace; the others share the tree's.
+      workspace: card.workspace || ix.data.tree.workspace,
       kind: card.kind,
       type: card.type,
       term: card.term ?? null,
@@ -265,7 +267,7 @@
       emphasis: card.emphasis ?? null,
       level: card.level ?? null,
       form: card.form ?? null,
-      workspace: ix.data.tree.workspace,
+      workspace: card.workspace || ix.data.tree.workspace,
       tree: ix.data.tree.id,
       tree_title: ix.data.tree.title,
       field,
@@ -312,7 +314,7 @@
         placement_id: s.station, coord: s.coord, card_id: missing ? `missing:${s.station}` : s.address, edge: s.edge, parent_id: s.parent || null, ordinal,
         gloss: s.gloss || null, host: ct.handle, host_workspace: ix.data.tree.workspace,
         status: missing ? 'missing' : 'live', home_address: s.address, home_role: role(s.address),
-        home_workspace: ix.data.tree.workspace, title: s.title, origin: s.origin || 'mount',
+        home_workspace: (ix.byAddress.get(s.address) || {}).workspace || ix.data.tree.workspace, title: s.title, origin: s.origin || 'mount',
         can_edit_card: false, can_edit_placement: false, citation: `[[${s.address}]]`,
         bookmark: `place:${s.station}`, offline_state: missing ? (s.detail || 'Missing mount (deleted in archive)') : 'in-package',
       };
@@ -331,7 +333,9 @@
     });
     const native = placements.filter((p) => p.origin === 'native' && p.edge !== 'root').length;
     const tree = {
-      tree: ct.handle, tree_id: ct.handle, title: ix.data.tree.title, workspace: ix.data.tree.workspace, purpose: ct.purpose || null,
+      // An untitled root (its title is its own handle) reads as untitled offline too (D2).
+      tree: ct.handle, tree_id: ct.handle, title: ix.data.tree.title === ct.handle ? '' : ix.data.tree.title, untitled: ix.data.tree.title === ct.handle,
+      workspace: ix.data.tree.workspace, purpose: ct.purpose || null,
       root_placement_id: placements.length ? placements[0].placement_id : null, placements, total_placements: placements.length,
       connections, mounted: placements.length - 1 - native, native, missing: placements.filter((p) => p.status === 'missing').length,
       locked: false, can_edit_tree: false, counts: `${placements.length - 1 - native} mounted · ${native} native · ${connections.length} connections`,

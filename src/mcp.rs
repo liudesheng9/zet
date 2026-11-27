@@ -578,12 +578,13 @@ fn call_tool(name: &str, args: &Value, scope: &mut crate::scope::WriteScope) -> 
         ),
         "delete_card" => {
             let into = optional_string(args, "into")?;
-            let outcome = ops::delete(
+            let outcome = ops::delete_reviewed(
                 &root,
                 ACCESS,
                 &string_arg(args, "at")?,
                 (!into.is_empty()).then_some(into.as_str()),
                 args.get("confirm").and_then(Value::as_str),
+                args.get("plan_hash").and_then(Value::as_str),
             )?;
             Ok(plan_or_done(outcome))
         }
@@ -646,12 +647,19 @@ fn call_tool(name: &str, args: &Value, scope: &mut crate::scope::WriteScope) -> 
 /// A plan that still needs confirmation says so plainly; nothing has changed.
 fn plan_or_done(outcome: Outcome) -> Value {
     match outcome {
-        Outcome::Confirm { confirm, lines } => json!({
-            "applied": false,
-            "confirm": confirm,
-            "plan": lines,
-            "next": format!("nothing changed yet; call again with confirm = \"{confirm}\" to apply"),
-        }),
+        Outcome::Confirm { confirm, lines, plan_hash } => {
+            let mut value = json!({
+                "applied": false,
+                "confirm": confirm,
+                "plan": lines,
+                "next": format!("nothing changed yet; call again with confirm = \"{confirm}\" to apply"),
+            });
+            if let Some(hash) = plan_hash {
+                value["plan_hash"] = json!(hash);
+                value["next"] = json!(format!("nothing changed yet; call again with confirm = \"{confirm}\" and this plan_hash to apply exactly this plan"));
+            }
+            value
+        }
         Outcome::Done(mut value) => {
             value["applied"] = json!(true);
             value
@@ -1618,11 +1626,12 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "delete_card",
             "Delete card",
-            "Delete an agent Card and all its successors; deleting a tree root deletes the whole tree. The plan lists every Link from a Card that stays to a Card that goes (`links that will break`). When you delete a Card whose content now lives in another Card (a merged Model part), pass `into` with that Card: each of those Links is re-pointed to it, so none breaks. Returns a plan first; confirm with the text it names (`delete`, or the root's address).",
+            "Delete an agent Card and all its successors; deleting a tree root deletes the whole tree. The plan lists every Link from a Card that stays to a Card that goes (`links that will break`). When you delete a Card whose content now lives in another Card (a merged Model part), pass `into` with that Card: each of those Links is re-pointed to it, so none breaks. Returns a plan first with its `plan_hash`; confirm with the text it names (`delete`, or the root's address) and pass the plan_hash back, so the delete applies only while it removes exactly what the plan showed.",
             json!({
                 "at": at,
                 "into": { "type": "string", "description": "A Card that stays and now holds the deleted Card's content: every Link to a deleted Card is re-pointed to it." },
                 "confirm": confirm,
+                "plan_hash": { "type": "string", "description": "The plan_hash of the plan you confirm; a plan that changed since is refused as stale." },
             }),
             &["at"],
             false,
@@ -1836,8 +1845,8 @@ fn connection_tool_definitions() -> Vec<Value> {
             json!({"at": s("The Topic Card.")}),
             &["at"], true, false),
         tool("list_connection_trees", "List Connection trees",
-            "List the Connection trees (关联树, `~n`): each with its title, Workspace, optional shelf tag `purpose`, counts (mounted, native, missing, connections), whether it is locked and whether you may edit it.",
-            json!({"workspace": {"type": "string", "enum": ["human", "agent", "all"]}, "purpose": s("Only trees with this shelf tag."), "query": s("Only trees whose title or purpose contains this text.")}),
+            "List the Connection trees (关联树, `~n`): each with its root's title (empty and `untitled: true` when the root has none), Workspace, optional shelf tag `purpose`, counts (mounted, native, missing, connections), whether it is locked and whether you may edit it. `sort`: `number` (default) or `recent` (newest first).",
+            json!({"workspace": {"type": "string", "enum": ["human", "agent", "all"]}, "purpose": s("Only trees with this shelf tag."), "query": s("Only trees whose title, handle or purpose contains this text."), "sort": {"type": "string", "enum": ["number", "recent"]}}),
             &[], true, false),
         tool("get_connection_tree", "Read a Connection tree",
             "Read one Connection tree: its root and its stations in outline order (each with placement_id, coord such as `~7/2|a`, card_id, home_address, home_role, home_workspace, host_workspace, status live|missing, origin mount|native, title, gloss, can_edit_card, can_edit_placement; a mounted tree root is one `portal` station and its home tree is never expanded), and its tree connections (placement_edges) with provenance \"In this tree · ~n\" and a sentence for each directed assertion. Coordinates change when the tree is reorganized; placement_id and connection_id never do.",
@@ -1856,16 +1865,16 @@ fn connection_tool_definitions() -> Vec<Value> {
             json!({"at": s("The Card (address or handle)."), "scope": {"type": "string", "enum": ["card", "unit"]}, "depth": {"type": "integer", "minimum": 1, "maximum": 3}, "max_nodes": {"type": "integer", "minimum": 1, "maximum": 2000}, "include_terms": {"type": "boolean"}, "kinds": {"type": "array", "items": {"type": "string"}, "description": "Relation kinds that count as dependence; default [\"rests-on\"]."}, "overlay_tree": s("A Connection tree to compare.")}),
             &["at"], true, false),
         tool("create_connection_tree", "Create a Connection tree",
-            "Create a Connection tree (关联树) with just a title: a working space where Cards from anywhere are mounted, arranged on a Folgezettel spine (`~n/1`, `~n/2`, Side branches `~n/2|a`) and connected. Answers its root handle `~n` (citable as [[~n]]) and its root placement. `purpose` is a short shelf tag only.",
-            json!({"title": s("The tree's title."), "body": s("Optional framing text (Markdown)."), "purpose": s("Optional shelf tag, at most 32 characters."), "workspace": {"type": "string", "enum": ["human", "agent"], "description": "Default: agent (you may write only the agent Workspace)."}, "op_key": op_key}),
-            &["title"], false, false),
+            "Create a Connection tree (关联树): a working space where any Cards from anywhere are mounted, arranged freely on a Folgezettel spine (`~n/1`, `~n/2`, Side branches `~n/2|a`) and connected, in any arrangement (it need not follow the Cards' home trees). The root is an ordinary Card with no special meaning: its title and body are optional (a root without a title is stored with its handle as its title and listed as untitled). Answers its root handle `~n` (citable as [[~n]]) and its root placement. `purpose` is a short shelf tag only.",
+            json!({"title": s("Optional title of the root Card."), "body": s("Optional text of the root Card (Markdown)."), "purpose": s("Optional shelf tag, at most 32 characters."), "workspace": {"type": "string", "enum": ["human", "agent"], "description": "Default: agent (you may write only the agent Workspace)."}, "op_key": op_key}),
+            &[], false, false),
         tool("edit_connection_tree", "Edit a Connection tree's shelf tag",
             "Set or clear (null) the shelf tag `purpose` of a Connection tree. Its title and framing text are its root Card's text: edit them with edit_card at `~n`.",
             json!({"tree": s("`~7`."), "purpose": {"type": ["string", "null"]}, "op_key": op_key}),
             &["tree"], false, false),
         tool("place_card", "Mount a Card",
-            "Mount one existing Card (any Card of either Workspace, locked or not, including a Literature root or another Connection tree's root, which stays one portal station) into a Connection tree you may edit, as the Direct or Side successor of a station; or, with edge `attach` and anchor_at, beside a Topic Card as a Topic-side mount `<loc>+k` that takes no `|a` slot and rewrites no Link. The mounted Card is never written. A Card stands at most once in a tree: mounting it again answers its station.",
-            json!({"host": s("The Connection tree (`~7`)."), "parent_coord": s("The parent station's coordinate, such as `~7/2`."), "parent_placement_id": s("Or the parent station's placement_id."), "edge": {"type": "string", "enum": ["direct", "side", "attach"]}, "anchor_at": s("For edge attach: the Topic Card to mount beside."), "target_at": s("The Card to mount (an address or handle)."), "card_id": s("Or the Card's identity."), "gloss": s("Optional positional gloss: one plain line, at most 240 characters, no Links."), "before": s("Insert before this sibling (a Side successor or a Topic-side mount)."), "gloss_updates": gloss_updates, "confirm": confirm, "op_key": op_key}),
+            "Mount existing Cards (any Card of either Workspace, locked or not, including a Literature root or another Connection tree's root, which stays one portal station) into a Connection tree you may edit, as the Direct or Side successor of a station; or, with edge `attach` and anchor_at, beside a Topic Card as a Topic-side mount `<loc>+k` that takes no `|a` slot and rewrites no Link. Pass `target_at` for one Card, or `targets` for a set of Cards at once: with edge direct they form a Direct chain after the parent in the given order (the parent's old Direct successor continues after the last), with edge side each becomes the next Side branch (before `before` when given); one transaction and one gloss review; the answer lists `placed` and `already_placed`. The mounted Card is never written. A Card stands at most once in a tree: mounting it again answers its station.",
+            json!({"host": s("The Connection tree (`~7`)."), "parent_coord": s("The parent station's coordinate, such as `~7/2`."), "parent_placement_id": s("Or the parent station's placement_id."), "edge": {"type": "string", "enum": ["direct", "side", "attach"]}, "anchor_at": s("For edge attach: the Topic Card to mount beside."), "target_at": s("The Card to mount (an address or handle)."), "targets": {"type": "array", "items": {"type": "string"}, "maxItems": 500, "description": "Several Cards to mount in this order (addresses, Citation keys or handles); not with edge attach."}, "card_id": s("Or the Card's identity."), "gloss": s("Optional positional gloss: one plain line, at most 240 characters, no Links."), "before": s("Insert before this sibling (a Side successor or a Topic-side mount)."), "gloss_updates": gloss_updates, "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash, "op_key": op_key}),
             &[], false, false),
         tool("create_connection_card", "Write a native Card in a Connection tree",
             "Write a new Idea, Event or Finding Card whose home is the Connection tree, at a new station. It gets a permanent handle `~n#k` ([[~7#4]]) that survives reordering, promotion and the tree's deletion. The ordinary write gate applies; an Event or Finding cites its real source, never the tree. Model, Hub, Term and Cited Cards are not authored natively (native_structure_required): mount them instead.",
@@ -1901,16 +1910,16 @@ fn connection_tool_definitions() -> Vec<Value> {
             &["connection_id"], false, true),
         tool("extract_branch", "Copy a branch into a new Connection tree",
             "Copy one station and its branch into a new Connection tree: the stations (fresh placement IDs; native Cards stay at home and become mounts in the copy) and every connection with both endpoints inside (fresh IDs). The original tree is unchanged; boundary connections are listed and stay behind. Returns a plan first; confirm with `extract`.",
-            json!({"source_tree": s("`~7`."), "root_placement_id": s("The top station of the branch."), "title": s("The new tree's title."), "purpose": s("Optional shelf tag."), "workspace": {"type": "string", "enum": ["human", "agent"]}, "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash, "op_key": op_key}),
-            &["source_tree", "root_placement_id", "title"], false, false),
+            json!({"source_tree": s("`~7`."), "root_placement_id": s("The top station of the branch."), "title": s("Optional title of the new tree's root Card."), "purpose": s("Optional shelf tag."), "workspace": {"type": "string", "enum": ["human", "agent"]}, "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash, "op_key": op_key}),
+            &["source_tree", "root_placement_id"], false, false),
         tool("promote_card", "Promote a native Card into a Topic tree",
             "Move the home of a native Connection-tree Card (`~7#4`) to a free Location of a Topic tree in the same Workspace. Only its home changes: [[~7#4]] keeps resolving to it (also after the tree is deleted), and its station, gloss, children and connections stay. A Topic that already mounts the Card needs duplicate_resolution \"detach\". Returns a plan first; confirm with `promote`.",
             json!({"at": s("The native Card (`~7#4`)."), "card_id": s("Or its identity."), "to": s("The free Topic Location, such as `3/6`."), "destination_topic": s("Optional check: the Topic number."), "duplicate_resolution": {"type": "string", "enum": ["detach"]}, "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash, "op_key": op_key}),
             &["to"], false, true),
         tool("seed_connection_tree", "Seed a Connection tree",
             "Create a Connection tree once from a Hub Card's members, a saved Spread, a Dependency Lens prerequisite order, or an ordered list of selected Cards: one Direct chain of mounts, each Card once, in the previewed order. Seeding creates no tree connection. Returns a plan first; confirm with `seed`.",
-            json!({"from": {"type": "string", "enum": ["hub", "spread", "dependencies", "search"]}, "source_params": {"type": "object", "description": "hub: {at}; spread: {name | id}; dependencies: {at, scope?, depth?, order?: [addresses]}; search: {cards: [addresses in order]}."}, "title": s("The new tree's title."), "purpose": s("Optional shelf tag."), "workspace": {"type": "string", "enum": ["human", "agent"]}, "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash, "op_key": op_key}),
-            &["from", "source_params", "title"], false, false),
+            json!({"from": {"type": "string", "enum": ["hub", "spread", "dependencies", "search"]}, "source_params": {"type": "object", "description": "hub: {at}; spread: {name | id}; dependencies: {at, scope?, depth?, order?: [addresses]}; search: {cards: [addresses in order]}."}, "title": s("Optional title of the new tree's root Card."), "purpose": s("Optional shelf tag."), "workspace": {"type": "string", "enum": ["human", "agent"]}, "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash, "op_key": op_key}),
+            &["from", "source_params"], false, false),
         tool("review_source", "Mark a mounted source reviewed",
             "Owner action on a locked host: record that the current version of a mounted Card that differs from its lock-time version was reviewed. The reviewed fingerprint you were shown must still be current. It never changes the Lock seal.",
             json!({"placement_id": s("The station."), "reviewed_fp": s("The current fingerprint you reviewed."), "lock_id": {"type": "integer", "description": "The Lock the review was shown under; a different active Lock refuses the review."}, "note": s("Optional note.")}),

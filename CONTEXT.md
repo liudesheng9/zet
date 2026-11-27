@@ -102,7 +102,7 @@ A Literature Card and all Regular Cards whose Location starts with `<citation-ke
 _Avoid_: Reference tree
 
 **Connection tree**:
-关联树. An authored Folgezettel tree `~<n>` in which a person or agent mounts Cards from anywhere in the archive, arranges them on a spine (`~7/1`, `~7/2`, Side branches `~7/2|a`), writes native Cards in it (`~7#4`), and records Tree connections between any two of its stations. It starts with only a title; a short shelf tag `purpose` is optional metadata. Each Card stands in it at most once. Its root Card `~7` is citable as `[[~7]]`. Its number is never reused. See docs/multi-tree-coordinates-proposal.md.
+关联树. An authored Folgezettel tree `~<n>` in which a person or agent mounts any Cards, or any set of Cards at once, from anywhere in the archive, arranges them freely on a spine (`~7/1`, `~7/2`, Side branches `~7/2|a`) whatever their home trees are, writes native Cards in it (`~7#4`), and records Tree connections between any two of its stations. Its root Card `~7` has no special meaning: unlike a Literature root (the source's metadata) or a Topic root (a Topic), it is an ordinary Card that may hold a title, a body, or nothing (an untitled root is stored with its handle as its title and reads as untitled). A short shelf tag `purpose` is optional metadata. Each Card stands in it at most once. The root is citable as `[[~7]]`. Its number is never reused. There are meant to be many more Connection trees than Literature trees. See docs/multi-tree-coordinates-proposal.md and docs/connection-trees-free-proposal.md.
 _Avoid_: Reading tree, working tree, relation tree, graph tree
 
 **Card identity**:
@@ -133,6 +133,10 @@ _Avoid_: Link (a Link is authored inside a Card body), edge
 
 **Missing mount**:
 A station whose Card was deleted at its Home. It keeps its coordinate, gloss, children and Tree connections; a new Card at the old Location never revives it; its host's owner repairs it by rebinding (deciding every connection) or detaching it.
+
+**Projection**:
+The part of a Connection tree that lies in the plane of the Topic or Literature tree being read (docs/connection-trees-free-proposal.md D4): its stations whose Cards have their home in that tree, a structure line from each of them to its nearest such ancestor in the Connection tree (with the number of stations outside the plane between them), its Tree connections between two such stations, and its exits, where it goes on outside the plane. The root station is the tree itself and is in no plane. The Map draws the projection as Crossings.
+_Avoid_: Overlay (the Dependency Lens overlay is another view), copy
 
 **Dependency Lens**:
 A read-only, revision-bound view of the authored reasoning Links (`rests-on` by default) of one Card or one Model/Math unit across books: prerequisites, dependents, cycles, reach-in diagnostics and the exact invoking sentence of every edge. A Connection tree's connections may be overlaid for comparison but never enter the closure or the seed order.
