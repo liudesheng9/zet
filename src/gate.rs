@@ -665,6 +665,12 @@ struct Facts {
     level: String,
     /// The design types of the empirical model a part belongs to (EM5 reads them).
     design: String,
+    /// The owning model's mathematical unit form (when the Card or its Model Card is a math unit;
+    /// propagated so FM1–FM6 skip mathematical units and their parts).
+    math_form: Option<String>,
+    /// Whether this Model Card owns parts in the archive (distinguishes unbuilt Digest-stage heads
+    /// from built heads for FM1).
+    has_parts: bool,
     terms: Option<String>,
     targets: BTreeSet<String>,
     term: TermFacts,
@@ -693,6 +699,8 @@ impl Facts {
             category: "idea".to_string(),
             level: String::new(),
             design: String::new(),
+            math_form: None,
+            has_parts: false,
             terms: None,
             targets: BTreeSet::new(),
             term: TermFacts::default(),
@@ -821,6 +829,14 @@ fn entry(candidate: &Candidate, parsed: &crate::ParsedCard, facts: &Facts) -> Va
     if !facts.design.is_empty() {
         value["design"] = json!(facts.design);
     }
+    if let Some(form) = candidate.form {
+        value["form"] = json!(form.id());
+    } else if let Some(form) = &facts.math_form {
+        value["form"] = json!(form);
+    }
+    if facts.has_parts {
+        value["has_parts"] = json!(true);
+    }
     // The resolved type fields travel with the entry, so a later rule that reads one needs no
     // second candidate family (R0097). The current rules read none of them.
     if let Some(emphasis) = candidate.emphasis {
@@ -828,9 +844,6 @@ fn entry(candidate: &Candidate, parsed: &crate::ParsedCard, facts: &Facts) -> Va
     }
     if let Some(hub_level) = candidate.hub_level {
         value["hub_level"] = json!(hub_level.id());
-    }
-    if let Some(form) = candidate.form {
-        value["form"] = json!(form.id());
     }
     // A Term Card's exact name travels with the checked entry (S07, #149): the pending T rules
     // read it, and the current rules still ignore it.
@@ -935,7 +948,49 @@ fn gather(
         let body = crate::parse_card_text(&card.text).map(|parsed| parsed.body).unwrap_or_default();
         facts.design = zt_check::empirical::design_of(&body).join(",");
     }
-    facts.terms = term_table(conn, candidate, parsed, head.as_deref(), facts.book.as_deref())?;
+    // Propagate the owning model head's MathForm onto parts so FM1–FM6 distinguish Level 2
+    // formal economic models from mathematical units (whose parts carry `form: None`).
+    facts.math_form = if let Some(form) = candidate.form {
+        Some(form.id().to_string())
+    } else if let Some(head) = &head
+        && candidate.address != *head
+        && let Ok(card) = crate::load_card(conn, head)
+    {
+        card.form.map(|f| f.id().to_string())
+    } else {
+        None
+    };
+    let is_formal_model = facts.level == "formal" && facts.math_form.is_none();
+    if is_formal_model && candidate.card_type == CardType::Model && candidate.facet.is_none() {
+        // Count only parts whose nearest filed head is `candidate.address`, excluding any
+        // descendants filed under a nested Model Card below `candidate.address` (H5).
+        let prefix = format!("{}|", candidate.address);
+        let mut stmt = conn.prepare(
+            "SELECT location, card_type, model_facet FROM cards WHERE substr(location, 1, length(?1)) = ?1",
+        )?;
+        let rows: HashMap<String, (CardType, bool)> = stmt
+            .query_map([&prefix], |row| {
+                let loc: String = row.get(0)?;
+                let ct: String = row.get(1)?;
+                let has_facet: bool = row.get::<_, Option<String>>(2)?.is_some();
+                Ok((loc, (CardType::from_stored(&ct), has_facet)))
+            })?
+            .collect::<std::result::Result<HashMap<_, _>, _>>()?;
+        facts.has_parts = rows.iter().any(|(loc, (ct, has_facet))| {
+            if *ct != CardType::Model || !*has_facet {
+                return false;
+            }
+            let found = crate::model::find_head(crate::parent_location(loc), |addr| {
+                if addr == candidate.address {
+                    Some((CardType::Model, false))
+                } else {
+                    rows.get(addr).copied()
+                }
+            });
+            found.as_deref() == Some(candidate.address.as_str())
+        });
+    }
+    facts.terms = term_table(conn, candidate, parsed, head.as_deref(), is_formal_model, facts.book.as_deref())?;
     facts.term = term_facts(conn, candidate, parsed)?;
     facts.category = category(conn, candidate, parsed, &facts)?;
     Ok(facts)
@@ -1090,21 +1145,86 @@ fn load_optional(conn: &Connection, address: &str) -> Result<Option<Card>> {
     .map_err(Into::into)
 }
 
-/// The applicable term table: a model's setting Card (the first Side successor of its Model Card,
-/// `<head>|a`) for a model, else the Book's `术语表` Card (a Side successor of `<key>/1`) for a
-/// Card in a Literature tree. Absent when the archive has no such Card; the proposed text itself
-/// when that Card is the one being written.
+/// The applicable term table (`P2b-1`): for a Level 2 formal model, reads ONLY its notation Card
+/// `<head>|a|a` (`符号表与读法`, following one `沿用 [[…]]` binding when present; no legacy
+/// `<head>|a` fallback). For a mathematical unit or non-formal model, checks `<head>|a|a` notation
+/// card first then `<head>|a` (`前提`). For a non-model Card in a Literature tree, reads the Book's
+/// `术语表` Card (a Side successor of `<key>/1`).
 fn term_table(
     conn: &Connection,
     candidate: &Candidate,
     parsed: &crate::ParsedCard,
     head: Option<&str>,
+    is_formal_model: bool,
     book: Option<&str>,
 ) -> Result<Option<String>> {
-    let mut addresses = Vec::new();
+    let body_at = |address: &str| -> Result<Option<String>> {
+        if address == candidate.address {
+            return Ok(Some(parsed.body.clone()));
+        }
+        let Some(card) = load_optional(conn, address)? else {
+            return Ok(None);
+        };
+        Ok(Some(crate::parse_card_text(&card.text)?.body))
+    };
     if let Some(head) = head {
-        addresses.push(format!("{head}|a"));
-    } else if let Some(book) = book {
+        if is_formal_model {
+            let notation = format!("{head}|a|a");
+            let is_notation_at = |address: &str| -> Result<Option<String>> {
+                if address == candidate.address {
+                    let is_not = candidate
+                        .facet
+                        .as_ref()
+                        .is_some_and(|f| f.id().starts_with("符号"))
+                        || parsed.title.trim_start().starts_with("符号")
+                        || parsed.body.contains("统一用语")
+                        || parsed.body.contains("术语表");
+                    return Ok(is_not.then(|| parsed.body.clone()));
+                }
+                let Some(card) = load_optional(conn, address)? else {
+                    return Ok(None);
+                };
+                let parsed_card = crate::parse_card_text(&card.text)?;
+                let is_not = card
+                    .facet
+                    .as_ref()
+                    .is_some_and(|f| f.id().starts_with("符号"))
+                    || parsed_card.title.trim_start().starts_with("符号")
+                    || parsed_card.body.contains("统一用语")
+                    || parsed_card.body.contains("术语表");
+                Ok(is_not.then_some(parsed_card.body))
+            };
+            if let Some(nb) = is_notation_at(&notation)? {
+                if !zt_check::text::term_table(&nb).is_empty() {
+                    return Ok(Some(nb));
+                }
+                for borrowed in zt_check::formal::borrowed_notation_targets(&nb) {
+                    if let Some(bb) = body_at(&borrowed)?
+                        && !zt_check::text::term_table(&bb).is_empty()
+                    {
+                        return Ok(Some(bb));
+                    }
+                }
+            }
+            // Also follow directly imported notation cards from the head's **引入** section (H6).
+            if let Some(head_body) = body_at(head)?
+                && let Some(imports_sec) = zt_check::formal::section(&head_body, "引入")
+            {
+                for occ in zt_check::text::link_occurrences(&imports_sec) {
+                    if occ.form == zt_check::text::LinkForm::Ordinary
+                        && let Some(imp_body) = is_notation_at(occ.target)?
+                        && !zt_check::text::term_table(&imp_body).is_empty()
+                    {
+                        return Ok(Some(imp_body));
+                    }
+                }
+            }
+            return Ok(None);
+        }
+        return body_at(&format!("{head}|a"));
+    }
+    let mut addresses = Vec::new();
+    if let Some(book) = book {
         let pattern = format!("{book}/1|%");
         let mut statement =
             conn.prepare("SELECT COALESCE(location, citation_key) FROM cards WHERE location LIKE ?1 ORDER BY location")?;
@@ -1115,7 +1235,7 @@ fn term_table(
     }
     for address in addresses {
         if address == candidate.address {
-            if parsed.title.trim_start().starts_with("术语表") || head.is_some() {
+            if parsed.title.trim_start().starts_with("术语表") {
                 return Ok(Some(parsed.body.clone()));
             }
             continue;
@@ -1124,7 +1244,7 @@ fn term_table(
             continue;
         };
         let card_parsed = crate::parse_card_text(&card.text)?;
-        if head.is_some() || card_parsed.title.trim_start().starts_with("术语表") {
+        if card_parsed.title.trim_start().starts_with("术语表") {
             return Ok(Some(card_parsed.body));
         }
     }
@@ -1772,30 +1892,43 @@ mod write_gate_tests {
         .expect("head");
         let head = crate::load_card(&conn, "0/1").expect("head");
         crate::model::set_level(&conn, &head, Some(Level::Formal)).expect("formal");
-        let facet = Facet::parse("设定").expect("facet");
-        let part = crate::model::Part {
-            facet,
+        let setting_part = crate::model::Part {
+            facet: Facet::parse("设定").expect("facet"),
             emphasis: None,
         };
-        let setting = "# 设定\n\n**术语表**\n\n| 术语 | 不用 | 意思 | 首次定义 |\n|---|---|---|---|\n| 均衡 | 平衡 | 稳定状态 | 1 |\n";
+        let notation_part = crate::model::Part {
+            facet: Facet::parse("符号表与读法").expect("facet"),
+            emphasis: None,
+        };
         crate::insert_card(
             &mut conn,
             "0/1|a",
             false,
             Workspace::Agent,
             CardType::Model,
-            Some(&part),
-            setting,
+            Some(&setting_part),
+            "# 设定：基准环境\n\n**起点**\n- 原始设定。\n\n**设定**\n模型设定。\n",
         )
-        .expect("setting Card with a term table");
+        .expect("setting Card");
+        let notation = "# 符号表与读法\n\n**怎样读卡片上的记号**\n记号说明。\n\n| 符号 | 含义 | 首次出现 |\n|---|---|---|\n| $x$ | 产量 | [[0/1|a]] |\n\n**统一用语**\n\n| 术语 | 不用 |\n|---|---|\n| 均衡 | 平衡 |\n";
+        crate::insert_card(
+            &mut conn,
+            "0/1|a|a",
+            false,
+            Workspace::Agent,
+            CardType::Model,
+            Some(&notation_part),
+            notation,
+        )
+        .expect("notation Card with a term table");
         change(&mut conn, "gate.agent.R6", "block").expect("block R6");
         let uses = Candidate::create(
             "0/1|b",
             Kind::Regular,
             Workspace::Agent,
-            "# 设定\n\n这里的平衡来自策略互补。\n",
+            "# 设定：策略互补\n\n这里的平衡来自策略互补。\n",
             CardType::Model,
-            Some(&part),
+            Some(&setting_part),
         );
         let refusal = refusal(check_proposed(&conn, &uses).expect_err("R6 blocks"));
         assert!(has_rule(&refusal, "R6"), "{refusal:?}");

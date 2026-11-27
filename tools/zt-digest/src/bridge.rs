@@ -247,6 +247,9 @@ fn read_retry(zt: &mut Option<Zt>, calls: &[Value]) -> std::result::Result<Vec<V
     for attempt in 0..2 {
         if zt.is_none() || attempt == 1 {
             *zt = None;
+            if attempt == 1 {
+                crate::zt::evict_pooled();
+            }
             match crate::zt::start() {
                 Ok(started) => *zt = Some(started),
                 Err(e) => return Err(format!("{e:#}")),

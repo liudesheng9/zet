@@ -910,6 +910,14 @@ impl Check {
                 crate::empirical::rules(&facet, address, &authored_body, &designs, faults);
             }
         }
+        // FM1 to FM6 (docs/formal-models-proposal.md §5.5): every Level 2 formal economic model
+        // (excluding mathematical units which carry `form`).
+        let is_model_head = ps_eq(&text(prop(card, "type")), "model") && facet.is_empty();
+        let has_math_form = !text(prop(card, "form")).is_empty();
+        let has_parts = prop(card, "has_parts").and_then(Value::as_bool).unwrap_or(false);
+        if ps_eq(&level, "formal") && !has_math_form && (is_model_head || !facet.is_empty()) {
+            crate::formal::rules(&facet, address, &authored_body, is_model_head, has_parts, faults);
+        }
         // R15 to R17: a formal model's Derivation part with an explanation, or any one with --require-explain.
         if derivation && !ps_eq(&level, "concept") {
             let has = order.iter().any(|name| name == "思路" || name == "解读");
@@ -2913,6 +2921,31 @@ pub fn is_orphan(address: &str, category: &str, inbound: &[String]) -> bool {
             .any(|from| !from.is_empty() && from != address)
 }
 
+/// Checks rendered Markdown lines (such as a structure or index Card bullet) using the exact
+/// R2 sentence-splitting, UTF-16, link-stripping, and base length rules of [`Check`] (non-derivation).
+pub fn line_r2_faults(rendered: &str) -> Vec<String> {
+    let body = utf16_form(rendered);
+    let mut faults = Vec::new();
+    for line in prose_lines(&body) {
+        if DOCUMENT_LINE.is_match(&line.text) {
+            continue;
+        }
+        let line_text = BRIDGE_LABEL.replace(&line.text, "").into_owned();
+        for sentence in split_sentences(&line_text) {
+            let m = measure(&sentence);
+            let limit = if m.words { 25 } else { 40 };
+            if m.size > limit {
+                faults.push(from_utf16_form(&format!(
+                    "({} {} > {limit}) {sentence}",
+                    m.size,
+                    m.unit()
+                )));
+            }
+        }
+    }
+    faults
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -4752,5 +4785,29 @@ mod tests {
         topic["parent"] = json!("45/1");
         let blockers = CheckReport::of(Check::new(Limits::default(), false, "").report(&[topic])).blockers;
         assert!(blockers > 20, "the Topic Idea Card keeps the Idea rules: {blockers}");
+    }
+
+    #[test]
+    fn line_r2_faults_matches_rendered_structure_and_index_bullets() {
+        // Single short sentence with [[address]] (0 prose width) fits.
+        assert!(line_r2_faults("- [[K/1|a]]（形式模型）：企业边界由剩余控制权决定。").is_empty());
+        // Two-sentence bullet: first sentence <= 40 chars, second sentence <= 40 chars -> fits.
+        assert!(
+            line_r2_faults("- [[K/1|a]]（形式模型）：企业边界由剩余控制权决定。 依赖它的模型：[[K/2|a]]、[[K/3|a]]。")
+                .is_empty()
+        );
+        // Without a sentence boundary after `shows`, `依赖它的模型：…` stays in sentence 1 and counts.
+        let joined = "- [[K/1|a]]（形式模型）：企业边界由剩余控制权与专用性投资和事后谈判效率共同决定 依赖它的模型：[[K/2|a]]、[[K/3|a]]。";
+        assert_eq!(line_r2_faults(joined).len(), 1);
+        // Visible Term-link label [[label@addr]] counts as prose, while ordinary [[addr]] does not.
+        let with_term = "- [[K/1|a]]（形式模型）：[[不完全契约下的专用性投资与事后重新谈判效率损失和治理成本机制@K/9]]决定企业边界。";
+        let plain_addr = "- [[K/1|a]]（形式模型）：[[K/9]]决定边界。";
+        assert_eq!(line_r2_faults(with_term).len(), 1);
+        assert!(line_r2_faults(plain_addr).is_empty());
+        // Index bullet with group label + trailing arrow link.
+        let idx_ok = "- 第 1 组（一）：简单模型决定企业边界。 → [[K/1]]";
+        let idx_long = "- 第 2 组（二）：简单模型用敲竹杠扭曲、搜寻摩擦与纵向一体化的治理成本共同决定企业边界和组织模式。 → [[K/2]]";
+        assert!(line_r2_faults(idx_ok).is_empty());
+        assert_eq!(line_r2_faults(idx_long).len(), 1);
     }
 }

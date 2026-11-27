@@ -52,18 +52,64 @@ function Run([string[]]$CommandArgs) {
 function Save($Name, $Value) { ConvertTo-Json -InputObject @($Value) -Depth 64 | Set-Content -LiteralPath (Join-Path $Drive $Name) -Encoding utf8 }
 function Load($Name) { $p = Join-Path $Drive $Name; if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64 } }
 function Reply($Value, $Detail = $null) { Send-StepLine -Line $Value -Detail $Detail -Name $LineName -Out $Work }
-function Fail($Step, $Reason, $Detail = $null) { Send-StepFail -Step $Step -Reason $Reason -Name $LineName -Out $Work -Detail $Detail }
+function Fail($Step, $Reason, $Detail = $null, $Extra = $null) { Send-StepFail -Step $Step -Reason $Reason -Name $LineName -Out $Work -Detail $Detail -Extra $Extra }
+function Planning-Stop($RunResult) {
+    if ($RunResult -and $RunResult.json) {
+        $code = ''
+        if ("$($RunResult.json.code)" -in @('card_locked', 'scope_refused')) { $code = "$($RunResult.json.code)" }
+        elseif ("$($RunResult.json.error)" -in @('card_locked', 'scope_refused')) { $code = "$($RunResult.json.error)" }
+        if ($code) {
+            $ref = if ($RunResult.json.refusal) { $RunResult.json.refusal } else { $RunResult.json }
+            return @{
+                code = $code
+                message = if ($ref.message) { "$($ref.message)" } elseif ($RunResult.json.message) { "$($RunResult.json.message)" } else { "$($RunResult.tail)" }
+                tree = "$($ref.tree)"
+                lock_id = $ref.lock_id
+                refusal = $ref
+            }
+        }
+    }
+    return $null
+}
+function Fail-PlanningStop([string]$Where, $StopObj, $Detail = $null) {
+    $code = if ($StopObj.code) { "$($StopObj.code)" } else { 'card_locked' }
+    Fail $Where "${code}: $($StopObj.message)" $Detail @{ code = $code; message = "$($StopObj.message)"; tree = "$($StopObj.tree)"; lock_id = $StopObj.lock_id }
+}
+function Validate-DoneBatch($RunResult, [object[]]$ExpectedUnits) {
+    if (-not $RunResult -or -not $RunResult.json -or $RunResult.json.kind -ne 'ledger_done_batch' -or -not ($RunResult.json.results -is [array])) {
+        return @{ ok = $false; map = @{}; stop_reason = '' }
+    }
+    if ("$($RunResult.json.stop_reason)" -ne '') {
+        return @{ ok = $false; map = @{}; stop_reason = "$($RunResult.json.stop_reason)" }
+    }
+    $map = @{}
+    foreach ($r in @($RunResult.json.results | Where-Object { $_ -and $_.unit -and $null -ne $_.token })) {
+        $map["$($r.unit):$($r.token)"] = $r
+    }
+    foreach ($u in @($ExpectedUnits)) {
+        if (-not $map.ContainsKey("$($u.id):$($u.token)")) {
+            return @{ ok = $false; map = $map; stop_reason = '' }
+        }
+    }
+    return @{ ok = $true; map = $map; stop_reason = '' }
+}
+function Reconcile-Units([object[]]$TargetUnits) {
+    $ids = (@($TargetUnits | ForEach-Object { "$($_.id)" }) -join ',')
+    $s = Run @('ledger', 'status', '-Out', $Out, '-Units', $ids)
+    $map = @{}
+    if ($s.json -and $s.json.units -is [array]) {
+        foreach ($u in @($s.json.units | Where-Object { $_ -and $_.id })) { $map["$($u.id)"] = $u }
+    }
+    return $map
+}
 function Fail-Unit($Unit, [string]$Cause) {
     $fault = @{ schema_version = 1; unit = $Unit.id; input_hash = $Unit.input_hash; cause = $Cause.Substring(0, [Math]::Min(400, $Cause.Length)) } | ConvertTo-Json -Compress
     Run @('ledger', 'fail', '-Out', $Out, '-Unit', $Unit.id, '-Token', "$($Unit.token)", '-Fault', $fault) | Out-Null
 }
-# The one unit of a layer this step asked for; any other unit `next` hands out is released at once.
-function Claim-One([string]$Layer, [string]$Pattern, [string]$Owner) {
-    $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', $Layer, '-Take', '1', '-Owner', $Owner, '-Wait', '60', '-Lease', '7200')
-    foreach ($x in @($claim.json.units | Where-Object { $_.id -notlike $Pattern })) {
-        Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $x.id, '-Release') | Out-Null
-    }
-    @($claim.json.units | Where-Object { $_.id -like $Pattern }) | Select-Object -First 1
+# The one unit of a layer this step asked for, selected by literal prefix inside SQLite.
+function Claim-One([string]$Layer, [string]$Prefix, [string]$Owner) {
+    $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', $Layer, '-Prefix', $Prefix, '-Take', '1', '-Owner', $Owner, '-Wait', '60', '-Lease', '7200')
+    @($claim.json.units | Where-Object { $_ -and "$($_.id)".StartsWith($Prefix) }) | Select-Object -First 1
 }
 
 # v3 (atkinson2015lectures, 2026-11-02): a manager told to run "entries 232 through 239 (0-based)" of a job list ran the
@@ -104,15 +150,19 @@ switch ($Step) {
                 Run @('ledger', 'reopen', '-Out', $Out, '-Units', $u.id, '-Reason', 'the Cited list was read again; list-finish writes it under a new claim') | Out-Null
             }
         }
-        $unit = if ($HasLedger) { Claim-One 'cited' 'cited/book@*' 'cited list' } else { $null }
+        $unit = if ($HasLedger) { Claim-One 'cited' 'cited/book@' 'cited list' } else { $null }
         if ($unit) {
             $a = Run @('cited', '-Step', 'apply', '-Staging', $Out, '-Token', "$($unit.token)", '-Apply')
+            $aStop = Planning-Stop $a
+            if ($aStop) { Fail-PlanningStop 'apply' $aStop @{ unit = $unit; refusal = $aStop.refusal }; break }
             if (-not $a.json -or $a.json.ok -ne $true) { Fail-Unit $unit "the Cited list apply failed: $($a.tail)"; Fail 'apply' $a.tail; break }
             $c = Run @('ledger', 'done', '-Out', $Out, '-Unit', $unit.id, '-Token', "$($unit.token)", '-Outputs', (Join-Path $Work 'apply.json'))
             if ($c.code -ne 0) { Fail-Unit $unit "the Cited list completion was refused: $($c.tail)"; Fail 'done' $c.tail; break }
             $state = 'done'
         } else {
             $a = Run @('cited', '-Step', 'apply', '-Staging', $Out, '-Apply')
+            $aStop = Planning-Stop $a
+            if ($aStop) { Fail-PlanningStop 'apply' $aStop @{ refusal = $aStop.refusal }; break }
             if (-not $a.json -or $a.json.ok -ne $true) { Fail 'apply' $a.tail; break }
             $state = 'unclaimed'
         }
@@ -127,48 +177,58 @@ switch ($Step) {
             if ($la.applied -eq $true -and [int]$la.rows -eq 0) { Reply @{ ok = $true; jobs = 0; no_list = $true } @{ list = $la }; break }
         }
         if ($HasLedger) {
-            # A start begins the branch: a Cited Card claim still held belongs to a stopped run. Release it.
-            $status = Run @('ledger', 'status', '-Out', $Out, '-Layer', 'citedcards')
-            foreach ($u in @($status.json.units | Where-Object { $_.state -eq 'claimed' })) {
-                Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $u.id, '-Release') | Out-Null
+            # A start begins the branch: release any Cited Card claim a stopped run held in one command.
+            $rel = Run @('ledger', 'reclaim', '-Out', $Out, '-Layer', 'citedcards', '-All', '-Release')
+            if ($rel.code -ne 0) { Fail 'release' $rel.tail; break }
+            if ($rel.json -and (@($rel.json.blocked).Count -or @($rel.json.skipped).Count)) {
+                $first = @(@($rel.json.blocked) + @($rel.json.skipped))[0]
+                Fail 'release' "$($first.unit): $($first.reason)"; break
             }
         }
         $planArgs = @('cited-cards', '-Step', 'plan', '-Staging', $Out)
         if ($PerJob -gt 0) { $planArgs += @('-PerJob', "$PerJob") }
         $plan = Run $planArgs
+        $pStop = Planning-Stop $plan
+        if ($pStop) { Fail-PlanningStop 'plan' $pStop @{ refusal = $pStop.refusal }; break }
         if (-not $plan.json -or $plan.json.ok -ne $true) { Fail 'plan' $plan.tail; break }
         $units = @(); $settled = @()
         $jobArgs = @('cited-cards', '-Step', 'jobs', '-Staging', $Out)
         if ($HasLedger) {
-            # v3 (atkinson2015lectures, 2026-11-02): one claim takes at most 64 units, and a book with about 400 jobs
-            # would run one claim's worth. The start claims page after page until a page holds no job unit; the book
-            # unit is claimed by finish, once every job is done, so a page that hands it out releases it at once.
-            for ($page = 1; $page -le 40; $page++) {
-                $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'citedcards', '-Take', '64', '-Owner', 'cited cards', '-Lease', '7200')
-                foreach ($x in @($claim.json.units | Where-Object { $_ -and $_.id -notlike 'citedcards/t*' })) {
-                    Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $x.id, '-Release') | Out-Null
-                }
-                $got = @($claim.json.units | Where-Object { $_ -and $_.id -like 'citedcards/t*' })
-                if (-not $got.Count) { break }
-                $units += $got
-            }
-            # A restarted branch keeps its drafts (atkinson2015lectures, 2026-11-02: the DeepSeek Desktop stalled after
-            # 267 of 398 drafts). The check of the drafts on disk decides: a claimed job whose rows are all ready
-            # completes at once and is never written again.
+            # Claim every ready Cited Card job unit in one transaction without touching citedcards/book@*.
+            $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'citedcards', '-Prefix', 'citedcards/t', '-All', '-Owner', 'cited cards', '-Lease', '7200')
+            if ($claim.code -ne 0 -or -not $claim.json) { Fail 'claim' $claim.tail; break }
+            $units = @($claim.json.units | Where-Object { $_ -and "$($_.id)".StartsWith('citedcards/t') })
+            # A restarted branch keeps its drafts: settle all already-ready jobs in one batch command.
             if ($units.Count) {
                 Run @('cited-cards', '-Step', 'check', '-Staging', $Out) | Out-Null
                 $readyPath = Join-Path $Out 'cited-cards\check\readiness.json'
                 if (Test-Path -LiteralPath $readyPath) {
                     $rows = @((Get-Content -LiteralPath $readyPath -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64).rows)
-                    $open = @()
+                    $candidates = @(); $open = @()
                     foreach ($u in $units) {
                         $id = "$($u.inputs.job.id)"
                         $own = @($rows | Where-Object { "$($_.job)" -eq $id })
-                        if ($own.Count -and -not @($own | Where-Object { $_.status -ne 'ready' }).Count) {
-                            $d = Run @('ledger', 'done', '-Out', $Out, '-Unit', $u.id, '-Token', "$($u.token)", '-Outputs', $readyPath)
-                            if ($d.code -eq 0 -and $d.json -and $d.json.state -eq 'done') { $settled += $id; continue }
+                        if ($own.Count -and -not @($own | Where-Object { $_.status -ne 'ready' }).Count) { $candidates += $u }
+                        else { $open += $u }
+                    }
+                    if ($candidates.Count) {
+                        Save 'settle.json' $candidates
+                        $db = Run @('ledger', 'done', '-Out', $Out, '-UnitsFile', (Join-Path $Drive 'settle.json'), '-Outputs', $readyPath)
+                        $valid = Validate-DoneBatch $db $candidates
+                        if ($valid.ok) {
+                            foreach ($u in $candidates) {
+                                $r = $valid.map["$($u.id):$($u.token)"]
+                                if ($r.status -eq 'done' -or $r.ledger_state -eq 'done') { $settled += "$($u.inputs.job.id)" }
+                                else { $open += $u }
+                            }
+                        } else {
+                            $states = Reconcile-Units $candidates
+                            foreach ($u in $candidates) {
+                                $st = $states["$($u.id)"]
+                                if ($st -and ($st.state -eq 'done' -or $st.state -eq 'noop')) { $settled += "$($u.inputs.job.id)" }
+                                elseif ($st -and $st.state -eq 'claimed' -and [int64]$st.token -eq [int64]$u.token) { $open += $u }
+                            }
                         }
-                        $open += $u
                     }
                     $units = $open
                 }
@@ -190,38 +250,84 @@ switch ($Step) {
         if (-not $check.json -or $check.json.ok -ne $true) { Fail 'check' $check.tail; break }
         $done = @(); $failed = @(); $late = @()
         $readiness = Join-Path $Out 'cited-cards\check\readiness.json'
-        foreach ($u in @(Load 'units.json')) {
-            if (-not $u) { continue }
-            $d = Run @('ledger', 'done', '-Out', $Out, '-Unit', $u.id, '-Token', "$($u.token)", '-Outputs', $readiness)
-            if ($d.code -eq 0 -and $d.json -and $d.json.state -eq 'done') { $done += $u.inputs.job.id }
-            elseif ("$($d.tail)" -match 'stale_claim') { $late += $u }
-            else { $failed += $u.inputs.job.id; Fail-Unit $u "the job $($u.inputs.job.id) is not ready: $($d.tail)" }
-        }
-        # v3: every job is claimed at once, so a job may outlast its claim's lease. Its claim is taken back (reclaim
-        # makes the unit ready under a new token), claimed again and completed the same way.
-        if ($late.Count) {
-            foreach ($u in $late) { Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $u.id) | Out-Null }
-            $again = @{}
-            for ($page = 1; $page -le 40; $page++) {
-                $c = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'citedcards', '-Take', '64', '-Owner', 'cited cards finish', '-Lease', '3600')
-                $wanted = 0
-                foreach ($x in @($c.json.units | Where-Object { $_ })) {
-                    if (@($late | Where-Object { $_.id -eq $x.id }).Count) { $again[$x.id] = $x; $wanted++ }
-                    else { Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $x.id, '-Release') | Out-Null }
+        $heldUnits = @(Load 'units.json' | Where-Object { $_ -and $_.id })
+        if ($heldUnits.Count) {
+            $db = Run @('ledger', 'done', '-Out', $Out, '-UnitsFile', (Join-Path $Drive 'units.json'), '-Outputs', $readiness)
+            $valid = Validate-DoneBatch $db $heldUnits
+            if (-not $valid.ok) {
+                $states = Reconcile-Units $heldUnits
+                $stillClaimed = @()
+                foreach ($u in $heldUnits) {
+                    $st = $states["$($u.id)"]
+                    if ($st -and ($st.state -eq 'done' -or $st.state -eq 'noop')) { $done += $u.inputs.job.id }
+                    elseif ($st -and ($st.state -ne 'claimed' -or [int64]$st.token -ne [int64]$u.token)) { $late += $u }
+                    else { $stillClaimed += $u }
                 }
-                if (-not $wanted) { break }
+                if ($stillClaimed.Count) {
+                    Fail 'done' "unreadable or incomplete batch done reply for $($stillClaimed.Count) unit(s): $($db.tail)" @{ done = $done; late = $late; remaining = $stillClaimed; raw = $db.tail }
+                    break
+                }
+            } else {
+                foreach ($u in $heldUnits) {
+                    $r = $valid.map["$($u.id):$($u.token)"]
+                    if ($r.status -eq 'done' -or $r.ledger_state -eq 'done') { $done += $u.inputs.job.id }
+                    elseif ($r.status -eq 'stale_claim') { $late += $u }
+                    else {
+                        $cause = if ($r.cause) { "$($r.cause)" } else { "$($db.tail)" }
+                        $failed += $u.inputs.job.id; Fail-Unit $u "the job $($u.inputs.job.id) is not ready: $cause"
+                    }
+                }
+            }
+        }
+        # Reclaim expired claims (token-fenced), re-claim ONLY actually reclaimed IDs, and complete them in one batch.
+        if ($late.Count) {
+            Save 'late-units.json' $late
+            $relLate = Run @('ledger', 'reclaim', '-Out', $Out, '-UnitsFile', (Join-Path $Drive 'late-units.json'))
+            $reclaimedIds = @($relLate.json.reclaimed | Where-Object { $_ -and $_.unit } | ForEach-Object { "$($_.unit)" })
+            $again = @{}
+            $retryRes = @{}
+            $db2Ok = $true
+            if ($reclaimedIds.Count) {
+                Save 'late-ids.json' $reclaimedIds
+                $c = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'citedcards', '-IdsFile', (Join-Path $Drive 'late-ids.json'), '-All', '-Owner', 'cited cards finish', '-Lease', '3600')
+                $reclaimed = @($c.json.units | Where-Object { $_ -and $_.id })
+                foreach ($x in $reclaimed) { $again["$($x.id)"] = $x }
+                if ($reclaimed.Count) {
+                    Save 'late-reclaimed.json' $reclaimed
+                    $db2 = Run @('ledger', 'done', '-Out', $Out, '-UnitsFile', (Join-Path $Drive 'late-reclaimed.json'), '-Outputs', $readiness)
+                    $v2 = Validate-DoneBatch $db2 $reclaimed
+                    $db2Ok = $v2.ok
+                    if ($v2.ok) { $retryRes = $v2.map }
+                    else {
+                        $st2 = Reconcile-Units $reclaimed
+                        foreach ($x in $reclaimed) {
+                            $st = $st2["$($x.id)"]
+                            if ($st -and ($st.state -eq 'done' -or $st.state -eq 'noop')) {
+                                $retryRes["$($x.id):$($x.token)"] = [pscustomobject]@{ unit = $x.id; token = $x.token; status = 'done'; ledger_state = 'done' }
+                            }
+                        }
+                    }
+                }
             }
             foreach ($u in $late) {
-                $x = $again[$u.id]
+                $x = $again["$($u.id)"]
                 if (-not $x) { $failed += $u.inputs.job.id; continue }
-                $d = Run @('ledger', 'done', '-Out', $Out, '-Unit', $x.id, '-Token', "$($x.token)", '-Outputs', $readiness)
-                if ($d.code -eq 0 -and $d.json -and $d.json.state -eq 'done') { $done += $u.inputs.job.id }
-                else { $failed += $u.inputs.job.id; Fail-Unit $x "the job $($u.inputs.job.id) is not ready: $($d.tail)" }
+                $r = $retryRes["$($x.id):$($x.token)"]
+                if ($r -and ($r.status -eq 'done' -or $r.ledger_state -eq 'done')) { $done += $u.inputs.job.id }
+                elseif (-not $db2Ok) {
+                    Fail 'done' "unreadable late-recovery batch done reply for $($x.id)" @{ done = $done; failed = $failed; late = $late }
+                    break
+                } else {
+                    $cause = if ($r -and $r.cause) { "$($r.cause)" } else { 'reclaimed job is not ready' }
+                    $failed += $u.inputs.job.id; Fail-Unit $x "the job $($u.inputs.job.id) is not ready: $cause"
+                }
             }
         }
-        $bu = if ($HasLedger) { Claim-One 'citedcards' 'citedcards/book@*' 'cited cards book' } else { $null }
+        $bu = if ($HasLedger) { Claim-One 'citedcards' 'citedcards/book@' 'cited cards book' } else { $null }
         if ($bu) {
             $a = Run @('cited-cards', '-Step', 'apply', '-Staging', $Out, '-Token', "$($bu.token)", '-Apply')
+            $aStop = Planning-Stop $a
+            if ($aStop) { Fail-PlanningStop 'apply' $aStop @{ done = $done; failed = $failed; refusal = $aStop.refusal }; break }
             if ($a.json -and $a.json.complete -eq $true) {
                 $c = Run @('ledger', 'done', '-Out', $Out, '-Unit', $bu.id, '-Token', "$($bu.token)", '-Outputs', (Join-Path $Out 'cited-cards\report.json'))
                 $bookState = if ($c.code -eq 0) { 'done' } else { 'failed' }
@@ -230,6 +336,8 @@ switch ($Step) {
         } else {
             # A job that is not ready leaves the book unit blocked: the ready prefix is still published.
             $a = Run @('cited-cards', '-Step', 'apply', '-Staging', $Out, '-Apply')
+            $aStop = Planning-Stop $a
+            if ($aStop) { Fail-PlanningStop 'apply' $aStop @{ done = $done; failed = $failed; refusal = $aStop.refusal }; break }
             # A resume finds the book unit already done in an earlier invocation (live 2026-11-13, bergin2026exchange):
             # nothing is claimable, and the ledger's own state answers.
             $bookState = if ($a.json -and $a.json.complete -eq $true -and -not $HasLedger) { 'done' } elseif ($HasLedger) {

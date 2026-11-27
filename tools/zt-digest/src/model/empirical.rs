@@ -160,13 +160,21 @@ pub(crate) fn plan_faults(plan: &Value, tables: Option<&Value>) -> Vec<String> {
                 }
                 if has_cell && let Some(tables) = tables {
                     let c = &p["cell"];
-                    if tables::cell(tables, &s(&c["table"]), &s(&c["row"]), &s(&c["col"])).is_none() {
-                        faults.push(format!(
+                    match tables::cell(tables, &s(&c["table"]), &s(&c["row"]), &s(&c["col"])) {
+                        None => faults.push(format!(
                             "{id}: cell {} / {} / {} is not in tables.json (read its table label, row label and column head there)",
                             s(&c["table"]),
                             s(&c["row"]),
                             s(&c["col"])
-                        ));
+                        )),
+                        Some(found) if found["unresolved"] == true => faults.push(format!(
+                            "{id}: cell {} / {} / {} holds '{}' which could not be parsed cleanly as a numeric estimate (unresolved cell); verify the cell format or fix the source table",
+                            s(&c["table"]),
+                            s(&c["row"]),
+                            s(&c["col"]),
+                            s(&found["text"])
+                        )),
+                        Some(_) => {}
                     }
                 }
                 if line != "side" {
@@ -287,7 +295,7 @@ pub(crate) fn estimate_lines(part: &Value, tables: Option<&Value>, spec: &str) -
     let c = &part["cell"];
     let found = tables.and_then(|t| tables::cell(t, &s(&c["table"]), &s(&c["row"]), &s(&c["col"])));
     match found {
-        Some(cell) => {
+        Some(cell) if cell["unresolved"] != true && truthy(&cell["value"]) => {
             let mut lines = vec![format!(
                 "- 估计量：[[{spec}]]{of}，{} {}（{} 行）。",
                 s(&cell["table"]),
@@ -322,6 +330,13 @@ pub(crate) fn estimate_lines(part: &Value, tables: Option<&Value>, spec: &str) -
             }
             lines.join("\n")
         }
+        Some(cell) => format!(
+            "- 估计量：[[{spec}]]{of}，{} {}（{} 行）。\n- 值：待写（原单元格「{}」未能解析，请核对原表）。\n- 不确定性：待写（标准误、t 值、置信区间或显著性，原书未写明时写 原书未写明）。",
+            s(&cell["table"]),
+            s(&cell["col"]),
+            s(&cell["row"]),
+            s(&cell["text"])
+        ),
         None if truthy(&part["figure"]) => format!(
             "- 估计量：[[{spec}]]{of}，{}。\n- 值：待写（从图和原文抄录）。\n- 不确定性：待写（置信区间或标准误，原书未写明时写 原书未写明）。",
             s(&part["figure"])
@@ -527,12 +542,12 @@ pub(crate) fn head_sections(plan: &Value, resolve: &dyn Fn(&str) -> Result<Strin
         let c = &p["cell"];
         let found = tables.and_then(|t| tables::cell(t, &s(&c["table"]), &s(&c["row"]), &s(&c["col"])));
         let (value, uncertainty, place) = match &found {
-            Some(cell) => (
+            Some(cell) if cell["unresolved"] != true && truthy(&cell["value"]) => (
                 s(&cell["value"]),
                 if truthy(&cell["se"]) { format!("{} {}", paren_label(cell), s(&cell["se"])) } else { "表中没有给出".into() },
                 format!("{} {}", s(&cell["table"]), s(&cell["col"])),
             ),
-            None => ("见估计卡".into(), "见估计卡".into(), if truthy(&p["figure"]) { s(&p["figure"]) } else { "原书正文".into() }),
+            _ => ("见估计卡".into(), "见估计卡".into(), if truthy(&p["figure"]) { s(&p["figure"]) } else { "原书正文".into() }),
         };
         let title = table_cell(&s(&p["title"]));
         rows.push(format!("| [[{at}]] {title} | {value} | {uncertainty} | [[{spec}]] {place} |"));
@@ -784,5 +799,13 @@ mod tests {
         let body = "规模大的企业更要社交技能。\n\n**估计**\n- 估计量：[[K/5|c|s0]] 中 β，表 2 第 (1) 列。\n- 值：0.014。\n- 标准误：0.004。\n\n**量级**\n概率高 3.5 个百分点，约 25%。\n\n来源：[[K]] §5.2";
         assert_eq!(unfaithful("估计：规模", body, &source), [".004", "25"]);
         assert!(unfaithful("数据", body, &source).is_empty());
+    }
+
+    #[test]
+    fn an_unresolved_cell_is_a_plan_fault() {
+        let text = "表 2：奇异单元格\n\n<table><tr><td></td><td>(1)</td></tr><tr><td>Log(Employment)</td><td>0.12 to 0.34</td></tr></table>";
+        let weird_tables = json!({ "tables": tables::extract(text, "sections/s12.md") });
+        let faults = plan_faults(&plan(), Some(&weird_tables)).join("\n");
+        assert!(faults.contains("unresolved cell"), "{faults}");
     }
 }

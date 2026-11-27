@@ -33,7 +33,8 @@ use serde_json::{Map, Value, json};
 /// block (`text::broken_display`), so the same authored text is decided differently than under 6.
 /// 8 (2026-11-08, docs/empirical-models-proposal.md §5.5): the parts of an empirical model (level 3)
 /// take EM1 to EM5, so the same authored text is decided differently than under 7.
-pub const RULE_VERSION: &str = "9";
+/// 10 (2026-11-26, docs/formal-models-proposal.md §5.5): Level 2 formal models take FM1 to FM6.
+pub const RULE_VERSION: &str = "10";
 
 /// The version of the published diagnostic shape: the eight fields of
 /// `core::Diagnostic::to_json` and the `block`/`advise` and `local`/`graph`
@@ -47,7 +48,8 @@ pub const DIAGNOSTIC_SCHEMA: &str = "1";
 /// 3 (issue #184): a Literature note takes its own row for R2–R12, I1, I2, I4, I7 and L1–L3, so
 /// the same authored text is decided differently in a Literature tree than in a Topic tree, and
 /// the signatures carry that fact.
-pub const APPLICABILITY_VERSION: &str = "4";
+/// 5 (2026-11-26, docs/formal-models-proposal.md §5.5): FM1–FM6 carry the formal level/part/math_form signature.
+pub const APPLICABILITY_VERSION: &str = "5";
 
 /// The effective policy came from the archive that would decide the write.
 pub const POLICY_SOURCE_ARCHIVE: &str = "archive";
@@ -486,7 +488,7 @@ mod tests {
     #[test]
     fn a_client_with_the_old_applicability_contract_is_refused() {
         let served = Contract::served(&PolicySet::new(), &Limits::default(), archive());
-        assert_eq!(served.applicability_version, "4");
+        assert_eq!(served.applicability_version, APPLICABILITY_VERSION);
         assert!(
             served.version_gaps().is_empty(),
             "the current client shares the current service's contract"
@@ -496,7 +498,7 @@ mod tests {
         let gaps = old_service.version_gaps();
         assert_eq!(gaps.len(), 1, "{gaps:?}");
         assert!(
-            gaps[0].contains("applicability_version: this zt-check uses 4"),
+            gaps[0].contains(&format!("applicability_version: this zt-check uses {APPLICABILITY_VERSION}")),
             "{gaps:?}"
         );
         assert!(gaps[0].contains("says 3"), "{gaps:?}");

@@ -732,6 +732,7 @@ fn done_state(chunk: &Chunk, results: Vec<Value>) -> Result<ChunkState> {
 pub(crate) fn stop_of(code: &str) -> (&'static str, i32) {
     match code {
         "card_locked" => ("card_locked", lockcheck::LOCKED_EXIT),
+        "scope_refused" => ("scope_refused", lockcheck::LOCKED_EXIT),
         "card_check" => ("card_check", STOP_EXIT),
         "write_conflict" => ("stale_base", STOP_EXIT),
         "check_incomplete" => ("check_incomplete", STOP_EXIT),
@@ -903,13 +904,14 @@ fn finish(
             // The archive's typed refusal is the step's last line, so a caller reads the same
             // JSON it reads from every other step and never matches English text (R0409).
             if stop.code == "card_locked"
+                || stop.code == "scope_refused"
                 || stop.code == "card_check"
                 || stop.code == "stale_base"
                 || stop.code == "check_incomplete"
             {
                 util::print_line(&canon::canonical_json(&stop.detail))?;
             }
-            eprintln!("zt-digest term-link: {}", stop.message);
+            crate::util::emit_err(&format!("zt-digest term-link: {}", stop.message));
             Ok(stop.exit)
         }
         None => Ok(0),
@@ -1390,7 +1392,7 @@ fn stop_stale(
     util::write_atomic(&ps::join(&work, APPLY), &ps::json_pretty(&report))?;
     util::write_atomic(&ps::join(&work, APPLY_MD), &report_md(&report))?;
     util::print_line(&canon::canonical_json(&report["summary"]))?;
-    eprintln!("zt-digest term-link: {message}");
+    crate::util::emit_err(&format!("zt-digest term-link: {message}"));
     Ok(STOP_EXIT)
 }
 

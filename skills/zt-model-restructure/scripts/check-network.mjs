@@ -61,8 +61,8 @@ export function analyse(m, L) {
       // The latest block among everything this card rests on decides where it can stand.
       const premises = edges.filter((x) => x.kind === 'rests-on' && x.from_block === e.from_block).flatMap((x) => (x.pairs || []).filter((p) => p.from === card).map(() => x.to_block))
       const latest = premises.sort((a, b) => at.get(b) - at.get(a))[0] || e.to_block
-      // A setting is a primitive: it rests on nothing derived later, so the relation is reversed.
-      if (/^设定/.test(facetOf.get(card) || '')) {
+      // A setting (or assumption/definition/criterion) is a primitive: it rests on nothing derived later.
+      if (/^(?:设定|假设|定义|判据|均衡定义|解概念)/.test(facetOf.get(card) || '')) {
         return `${card} is a setting: a setting rests on nothing derived later, so this relation is reversed. If the later card (in ${byId.get(latest).head}, chapter ${name(latest)}) works with the setting's variable or definition, let it rest on ${card} and let the setting only point to it; keep it in the setting part. A derived fact the setting states moves to the card that derives it`
       }
       return `move ${card} after its latest premise: file it under ${byId.get(latest).head} (chapter ${name(latest)}) or later, with every card that rests on it`
@@ -77,9 +77,9 @@ export function analyse(m, L) {
     .map((b) => (!b.lead ? { block: b.id, why: 'missing' } : [...b.lead].length < LEAD_MIN ? { block: b.id, why: 'short', lead: b.lead } : null))
     .filter(Boolean)
     .map((l) => ({ ...l, fix: l.why === 'missing' ? `give ${byId.get(l.block).head} a **直觉** section: its first sentence opens the block` : `the 直觉 of ${byId.get(l.block).head} opens with "${l.lead}"; state the mechanism in its first sentence (${LEAD_MIN}+ characters)` }))
-  const isResult = (c) => /^结果/.test(c.facet || '')
-  // An empirical model's results are 估计 cards, and its 数据, 假说, 设计 and 规格 blocks hold none by nature; the
-  // board counts only 结果 cards so far (docs/empirical-models-proposal.md §11 P5), so the advice says nothing there.
+  const isResult = (c) => /^(?:结果|基准|校准|数值实验)/.test(c.facet || '')
+  // An empirical model's results are 估计 cards, and its 数据, 假说, 设计 and 规格 blocks hold none by nature;
+  // in Level 2 formal models, chapters holding 结果 / 基准 / 校准 / 数值实验 are valid result-level chapters (formal-models-proposal.md §9).
   const empty = m.level === 'empirical' ? [] : chapters.filter((b) => !b.children.some(isResult)).map((b) => ({ block: b.id, fix: `chapter ${name(b.id)} has no result card (facet 结果：…): its block shows no result` }))
   const parts = (m.build && m.build.parts) || []
   // One move per Card, however many later blocks it rests on.
@@ -104,12 +104,31 @@ export function analyse(m, L) {
     for (const c of tree.children[id] || []) walk(c, d + 1)
   }
   tree.roots.forEach((r) => walk(r, 0))
+  // Level 2 formal models: check formal Layer 1 faults and Result card required sections (**陈述**/**为什么**/**依据**; Astra M4).
+  const formal = []
+  if (m.level === 'formal' && !m.form && m.build) {
+    for (const k of ['formal_shape', 'setting_dependency', 'criterion_unbound', 'result_unbound', 'proof_unbound', 'experiment_unbound', 'symbol_uncovered']) {
+      for (const f of m.build[k] || []) formal.push({ kind: k, card: f.address, fix: f.fix })
+    }
+    const partByAddr = new Map((m.parts || []).map((p) => [p.address, p]))
+    for (const b of chapters) {
+      for (const c of b.children || []) {
+        if (!/^结果/.test(c.facet || '')) continue
+        const body = partByAddr.get(c.address)?.body
+        if (!body) continue
+        const missing = ['陈述', '为什么', '依据'].filter((sec) => !new RegExp(`^\\*\\*${sec}\\*\\*`, 'm').test(body))
+        if (missing.length) {
+          formal.push({ kind: 'result_sections', card: c.address, fix: `${c.address} (${c.facet}) lacks required sections: ${missing.map((s) => '**' + s + '**').join(', ')}` })
+        }
+      }
+    }
+  }
   const threads = { head: layout.ribbons.length * 2 + 3 }
   return {
-    parent: tree.parent, lines, forward, moves, unanchored, parts, leads, empty,
+    parent: tree.parent, lines, forward, moves, unanchored, parts, leads, empty, formal,
     shape: { blocks: blocks.length, depth, width: Math.round(lay.width), fits: lay.width <= 520 },
     threads,
-    ok: !forward.length && !unanchored.length && !parts.length && !leads.length,
+    ok: !forward.length && !unanchored.length && !parts.length && !leads.length && !formal.length,
   }
 }
 
@@ -123,7 +142,7 @@ async function main() {
   if (process.argv.includes('--json')) { console.log(JSON.stringify(r, null, 1)); process.exitCode = r.ok ? 0 : 1; return }
   console.log(`network of ${head}: ${r.shape.blocks} blocks, ${r.shape.depth} layers, ${r.shape.width}px wide${r.shape.fits ? '' : ' (scaled down on the board)'}, ${r.threads.head} paths with the Model Card open`)
   for (const l of r.lines) console.log('  ' + l)
-  for (const [k, list] of [['forward', r.moves], ['unanchored', r.unanchored], ['parts', r.parts], ['lead', r.leads], ['advice', r.empty]]) {
+  for (const [k, list] of [['forward', r.moves], ['unanchored', r.unanchored], ['parts', r.parts], ['lead', r.leads], ['formal', r.formal || []], ['advice', r.empty]]) {
     for (const f of list) console.log(`${k}: ${f.fix}`)
   }
   console.log(r.ok ? 'network: clean' : 'network: faults above')

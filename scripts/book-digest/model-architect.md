@@ -20,34 +20,55 @@ The chapter's endnotes in `context.md` are source text: use a definition the bod
 
 ## Decide the level
 
-- `formal` (level 2): the book states the model in mathematics: symbols, equations, a derivation, a proposition with a proof, or a numerical example that needs algebra.
-- `concept` (level 1): the book states the model in words or a diagram: a mechanism, a typology, a framework, a verbal argument, or a formal model it only cites.
+- `formal` (level 2): the source builds an economic or econometric object and establishes claims from stated primitives, maintained restrictions, and an explicit criterion (an equilibrium definition, solution concept, optimization problem, dynamical law, or identification criterion). Constructive examples (e.g. Spence 1973), phase-diagram arguments, and illustrative numerical exercises can justify claims inside Level 2 — absence of numbered propositions never demotes a model to `concept`.
+- `concept` (level 1): the book states the model in words or a diagram without building and checking formal claims: a mechanism, a typology, a framework, a verbal argument, or a formal model it only cites.
 - `LEVEL` overrides. Do not lower a model that has Derivation parts to `concept` unless `LEVEL` is `concept`.
+- Mathematical units (`form` in `definition`, `axiom`, `theorem`, `proposition`, `lemma`, `corollary`): follow `model-architect-math.md`.
 - If the model is already built and needs nothing, write `{"model": "<MODEL>", "status": "skip"}`.
 
-## The structure
+## The structure (Level 2 formal economic model — unified design, docs/formal-models-proposal.md)
 
-- **Main line**: the derivation in build order. The first main-line part is the setting (facet `设定`): the agents, the timing, the information, and (for a formal model) the symbol table and the term table.
-- **An econometric framework writes its whole estimation system in the setting part.** When the model is an identification or estimation framework (IV and 2SLS, a judge or examiner design, a control function, a system of equations, an estimator built from regressions), the setting part states every equation the estimation runs, each as a display formula with the source's number: the structural (second-stage) equation **and** every first stage, reduced form and auxiliary regression, and for a joint or extended system every equation of that system. A reader must see the whole system before the first chapter. A chapter derives from these equations and points to them; it never introduces one. When the source states an equation only in words ("the same framework applies to positive feedback"), write it out in the source's notation and say in the part's `spec` that it is supplied.
-- **Side part** (`line: "side"`, `of`): an example, a case, or a variant beside one step.
-- **Off part** (`line: "off"`): outside the build: a correspondence, a limit, a history.
-- **Derivation part** (`derive: true`, facet starting with `推导`): one step of the derivation, from `from` (or its premises) to `to`. Put one wherever the book skips or compresses algebra that a reader must check. Estimate `steps`, the lines of algebra (one equation and its reason per line). A step longer than twice `MaxSteps` lines becomes a **chain**: consecutive Derivation parts, each starting from the `to` of the one before (the script links them). Choose the cut results yourself: name each intermediate result in `to`. Do not shorten the derivation to save Cards.
-- **Shared part** (`take`): a building block of another model that this model uses: import it instead of writing a copy. The compiler writes it as a line of the Model Card's **引入** section. A take is one Card (`单卡`); add `"block": true` to take the Card with every part under its Side successors and the parts of its home model they rest on (`整块`: a setting tree, a result with its proof). For a part of a model planned earlier in this batch, write `<that model>#<id>`; for a block of another book, write its address (`context.md` lists them under 其他书的构件). A take names one part (a Card with a facet: a setting, a definition, a result), never a Model Card itself: to use an earlier model of this book, take the part you use (its address in that Model Card's 结构 list), or refer to the model with a Link in prose. `validate` refuses a take of a Model Card.
-- Every premise of a part is a member: an earlier main-line part, a shared part, or a side part. A premise outside the model is a fault: take it in (`take`), or move the Card in (`move`, only an agent Card of this book that belongs to no model). When this model changes one assumption of a borrowed block, take the block and add one part that states only the change and rests on the borrowed Card (a variant: `specializes` or `relaxes`); never restate a part of a model. Restate only a premise that is no part of any model. A tree root is never a premise.
-- A **concept model** has at most four parts, often none (`设定`, `机制` core, `结论`, `例子` aside), and no Derivation parts.
-- Mark one to three parts `core`; detail and Derivation parts are `aside`.
-- A part of a formal model holds at most 24 sentences and 800 characters of prose. Plan two parts where one statement will not fit.
+Every Level 2 formal economic model follows ONE canonical structure (no legacy flat main-line derivations, no symbol tables inside `设定`, no non-canonical facets):
+
+1. **Six nonexclusive `claim_objects` (required, 1+)** + optional descriptive `family_tags`:
+   - `choice-optimum`, `strategic-allocation`, `market-equilibrium`, `dynamics-limit`, `representation-comparison`, `identification`.
+   - `market-equilibrium`, `strategic-allocation`, and `identification` require at least one `判据` / `均衡定义` / `解概念` part.
+2. **15 canonical `FormalRole` facet prefixes** (every new part MUST start with one):
+   - `设定` (`设定` or `设定：…`): `<head>|a` (`main[0]`) is the setting root; additional setting blocks and variant/regime settings stand as Side children under `<head>|a` (or under the setting block they refine). NEVER file maintained settings or assumptions under a chapter.
+   - `符号表与读法`: `<head>|a|a` (the FIRST `side` child of `<head>|a`, unless imported via `take` or bound by `borrows_notation`). Holds the symbol table (`| 符号 | 含义 | 首次出现 |`) and `**统一用语**` (`| 术语 | 不用 |`); `zt` and `zt-check` read R6 terms exclusively here (with 1-hop `沿用 [[…]]`). Never put symbol/term tables in `设定`.
+   - `假设`: bare `假设`, alphanumeric/prime labels (`假设 1`, `假设 A2`, `假设 1′`), or a single balanced parenthesized source label (`假设 (B)`, `假设（A1）`), filed inside the setting tree beside the block it restricts.
+   - `定义`: primitive or derived object definition (in setting tree if primitive, or chapter Side if derived).
+   - `判据` / `均衡定义` / `解概念` (three canonical display spellings for Criterion; never `规划`): what qualifies a candidate as a solution, with `**作用域**`.
+   - `第 k 章` (`第 k 章：…`): stands on `main` after `<head>|a` (intuition spine).
+   - `基准` (`基准：…`): reference benchmark (chapter Side or setting branch).
+   - `结果` (`结果：…`, preserving source kind & label such as `结果：命题 1 …`, `结果：定理 2 …`, or unnumbered claim): stands on `line: "side", of: "<chapter_id>"`. Every `结果` MUST declare:
+     - `source_kind` (`proposition` | `theorem` | `lemma` | `corollary` | `unnumbered`) + `source_label` (required whenever `source_kind != "unnumbered"`),
+     - `logical_force` (`necessary` | `sufficient` | `iff` | `existence` | `uniqueness` | `existence-uniqueness` | `characterization` | `comparative-statics` | `equivalence` | `identification` | `conjecture` | `numerical-finding`),
+     - `justifications[]` (1+ objects `{force, location, ref, extra_assumptions?}` where `force` is `proof` | `constructive` | `diagrammatic` | `heuristic` | `illustration` | `numerical` | `conjectural` | `omitted`, `location` is `local` | `external` | `supplied`, and non-inline `local` refs point to a Side proof root `of` this `结果`).
+   - `推导` (`推导：…`, `derive: true`): checkable algebraic step on a Side proof branch under a `结果` or `基准` (`line: "side"` with mutually exclusive `of` for branch root or `after` for Direct continuation). Must specify math `to` (`$$...$$`) and `steps` ≤ twice `MaxSteps`.
+   - `论证` (`论证：…`, `derive: false`): non-algebraic proof step (verbal proof, constructive example, phase-diagram argument) on a Side proof branch (`of` / `after`). Mixed routes (`推导 → 论证 → 推导`) are supported.
+   - `边界` (`边界：…`): result-level caveat, hypothesis role, counterexample, special case, or approximation limit (`line: "side"` under `结果`/`假设`/`判据`).
+   - `校准` (`校准：…`): parameter table with per-row provenance (`assigned` | `external-estimate` | `moment-matched`) and mapping notes.
+   - `数值实验` (`数值实验：…`): quantitative simulation / IRF / counterfactual resting on `校准` or `设定`.
+   - `例示` (`例示：…`): pedagogical example illustrating a result (`line: "side"`).
+   - `局限` (`局限：…`): whole-model scope limitation on `line: "off"`.
+3. **Flat `parts[]` placement invariants:**
+   - Every `line: "side"` part sets **exactly one** of `of` (branch root) or `after` (Direct continuation inside a Side branch; target must be a local `side` part; at most one continuation per predecessor; no cycles).
+   - Plain `of` and `after` edges establish placement ONLY and never imply an intellectual Link unless `kind` is explicitly set; use `rests` for premises (`依赖`). No proof step may rest on its own `结果` or on a later step in the same branch.
+4. **Pinned `inventory.json`:** Read `<DIR>\inventory.json` (extracted deterministically during `brief`). Pin `inventory_ref` / `inventory_refs` on substantive claims/assumptions/proofs, settle every accepted obligation via an owning part or explicit `dispositions[]`, and preserve exact equation `\tag{n}` and printed labels.
+5. **An econometric identification/estimation framework** writes its whole system in the setting tree (each equation as display math with source numbers) before Chapter 1.
+6. **Shared part (`take`):** import another model's building block (`单卡` or `"block": true` for `整块`) instead of copying it (`**引入**`). Never take a Model Card itself.
+7. **Concept models (`level: "concept"`):** at most four non-take parts (`设定`, `机制`, `结论`, `例子`), no Derivation parts.
+8. **Size & emphasis:** mark key results/crux steps `core`; detail and Derivation parts `aside`. Each part holds at most 24 sentences and 800 characters of prose.
 
 ## Design the explanations of each chain
 
-A reader can check every line of a Derivation part but cannot see why the chain goes that way or what its results mean. DeepSeek writes three kinds of text in the model's own conversation after the build: 思路 (the part's idea, and on the chain's first part the route of the whole chain), 说明 (one line under a step a reader may not see at once) and 解读 (what the result means, the check it gives, and what the next part does with it). You design that text: what each section says is your judgement, not the writer's.
-
-For every chain of Derivation parts (the run of consecutive Derivation parts on the main line), add ONE entry to `plan.json`'s `explain` array:
+For every maximal contiguous algebraic chain of `推导` (`derive: true`) parts along any Side proof branch (breaking at non-Derivation cards such as `论证`, so `D1 → W2 → D3` yields two 1-card runs `["D1"]` and `["D3"]`), add ONE entry to `plan.json`'s `explain` array:
 
 | Field | What you decide |
 | --- | --- |
-| `chain` | the chain's part ids in build order: `["D1", "D2"]` |
-| `route` | the whole chain's route: the key move and why it works, and why the obvious route fails when the book says so. The first part's 思路 states it |
+| `chain` | the maximal contiguous `推导` run's part ids in branch order: `["D1", "D2"]` |
+| `route` | the run's route: the key move and why it works, and why the obvious route fails when the book says so. The first part's 思路 states it |
 | `parts[].id` | the part this design describes |
 | `parts[].shows` | what this part shows, in one phrase, for its 思路 |
 | `parts[].notes` | the steps that must get a 说明 line and the kind of choice each makes: a case split, an approximation, a change of variable, a limit, or a step a reader may not see at once. One short line; leave it empty when every step is mechanical |
@@ -58,12 +79,12 @@ For every chain of Derivation parts (the run of consecutive Derivation parts on 
   {"chain": ["D1", "D2"], "route": "先求还款上限，再把上限代入参与约束；直接比较还款与项目价值看不出上限。",
    "parts": [
      {"id": "D1", "shows": "还款不超过清算价值", "notes": "第 2 步分情形讨论清算与不清算", "meaning": "还款上限由清算价值决定"},
-     {"id": "D2", "shows": "融资条件", "notes": "", "meaning": "项目价值超过成本时投资者参与；下一张命题用它"}
+     {"id": "D2", "shows": "融资条件", "notes": "", "meaning": "项目价值超过成本时投资者参与；下一张结果卡用它"}
    ]}
 ]
 ```
 
-The compiler writes the chain position line into 思路 itself. Do not write Card text in the design: the writer sets the wording from it and from the derivation it wrote. A chain without an entry is a plan fault (`validate` and `plan-status` refuse the plan), so a missing design is never left to the writer.
+The compiler writes the chain position line into 思路 itself. A `推导` chain without an entry is a plan fault (`validate` and `plan-status` refuse the plan).
 
 ## Existing parts
 
@@ -71,34 +92,47 @@ An earlier build may have left parts. List every part filed under the Model Card
 
 ## plan.json
 
-Write `<DIR>\plan.json` (UTF-8). Example:
+Write `<DIR>\plan.json` (UTF-8 without BOM). Example:
 
 ```json
 {
   "model": "Key/4|a",
   "level": "formal",
+  "claim_objects": ["strategic-allocation", "choice-optimum"],
+  "family_tags": ["financial-contracting"],
   "title": "融资模型：清算价值决定企业能融到多少",
-  "card": "问题：企业家何时能融到 K-w。概要：投资者只认清算价值……关联：保留对照 GHM 的链接。",
-  "symbols": [["$K$", "项目所需投资"], ["$L$", "资产在时点 1 的清算价值"]],
+  "card": "问题：企业家何时能融到 K-w。原语与判据：两期三方融资博弈与子博弈精炼均衡。主要结果：命题 1 融资条件。",
+  "symbols": [["$K$", "项目所需投资", "S0"], ["$L$", "资产在时点 1 的清算价值", "S0"], ["$P$", "可承诺还款上限", "S0"]],
   "terms": [["清算", "卖资产", "变卖资产"]],
   "parts": [
-    {"id": "S", "line": "main", "facet": "设定", "emphasis": "core", "title": "设定：企业家、投资者与三个时点",
+    {"id": "S0", "line": "main", "facet": "设定", "emphasis": "core", "title": "设定：企业家、投资者与三个时点",
      "spec": "参与者、时点、信息结构", "src": ["sections/s05.md:120-160"]},
-    {"id": "A", "line": "main", "facet": "假设", "title": "假设：现金流不可验证，只有清算可强制",
-     "spec": "两条假设及各自的作用", "rests": [["S", "用到参与者与时点"]], "src": ["sections/s05.md:161-175"]},
-    {"id": "D1", "line": "main", "derive": true, "facet": "推导：还款上限一", "title": "推导：时点 1 的还款不超过清算价值",
-     "from": "(5.5)", "to": "$$P\\le L$$", "steps": 5, "rests": [["A", "用到不可验证"]], "src": ["sections/s05.md:176-190"]},
-    {"id": "D2", "line": "main", "derive": true, "facet": "推导：还款上限二", "title": "推导：得到融资条件 (5.10)",
-     "to": "$$y_1+fy_2+(1-f)L>K \\quad (5.10)$$", "steps": 6},
-    {"id": "P", "line": "main", "facet": "命题", "emphasis": "core", "title": "命题：清算价值够大时才能融资",
-     "spec": "命题与条件", "rests": [["D2", "用到 (5.10)"]]},
-    {"id": "E", "line": "side", "of": "P", "kind": "illustrates", "why": "数值代入命题", "facet": "数值例子", "emphasis": "aside",
-     "title": "例子：L=6 时企业能融资", "spec": "代入书中例 1 的数字", "chart": "柱状图：L 与 K-w", "src": ["sections/s05.md:200-212"]},
+    {"id": "N", "line": "side", "of": "S0", "facet": "符号表与读法", "title": "符号表与读法：本模型的符号与术语",
+     "src": ["sections/s05.md:120-160"]},
+    {"id": "A1", "line": "side", "of": "S0", "facet": "假设 1：现金流不可验证", "title": "假设 1：现金流不可验证，只有清算可强制",
+     "spec": "不可验证性与清算可强制性", "rests": [["S0", "用到参与者与时点"]], "src": ["sections/s05.md:161-175"]},
+    {"id": "CR", "line": "side", "of": "S0", "facet": "解概念：子博弈精炼均衡", "title": "解概念：两期融资博弈的子博弈精炼均衡",
+     "spec": "参与约束与激励相容条件", "rests": [["S0", "设定"], ["A1", "不可验证"]], "src": ["sections/s05.md:161-175"]},
+    {"id": "C1", "line": "main", "facet": "第 1 章：清算价值与融资上限", "title": "第 1 章：清算价值决定可承诺还款与融资条件",
+     "spec": "本章直觉：投资者只认清算价值", "rests": [["CR", "在子博弈精炼均衡下分析"]], "src": ["sections/s05.md:176-199"]},
+    {"id": "R1", "line": "side", "of": "C1", "facet": "结果：命题 1 融资条件", "emphasis": "core",
+     "title": "结果：命题 1，清算价值够大时企业才能融资",
+     "spec": "命题 1 的精确条件与融资不等式 (5.10)",
+     "source_kind": "proposition", "source_label": "Proposition 1", "logical_force": "iff",
+     "criterion": "CR", "assumptions": ["A1"],
+     "justifications": [{"force": "proof", "location": "local", "ref": "D1"}],
+     "rests": [["CR", "在均衡下"], ["A1", "不可验证"]], "src": ["sections/s05.md:190-199"]},
+    {"id": "D1", "line": "side", "of": "R1", "derive": true, "facet": "推导：还款上限一", "title": "推导：时点 1 的还款不超过清算价值",
+     "from": "(5.5)", "to": "$$P\\le L$$", "steps": 5, "rests": [["CR", "参与约束"], ["A1", "不可验证"]], "src": ["sections/s05.md:176-185"]},
+    {"id": "D2", "line": "side", "after": "D1", "derive": true, "facet": "推导：还款上限二", "title": "推导：得到融资条件 (5.10)",
+     "to": "$$y_1+fy_2+(1-f)L>K \\quad (5.10)$$", "steps": 6, "src": ["sections/s05.md:186-195"]},
+    {"id": "E1", "line": "side", "of": "R1", "kind": "illustrates", "why": "数值代入命题 1", "facet": "例示：L=6 时的融资可行性",
+     "emphasis": "aside", "title": "例示：L=6 时企业能融资", "spec": "代入书中例 1 的数字", "chart": "柱状图：L 与 K-w", "src": ["sections/s05.md:200-212"]},
     {"id": "G", "take": "Key/3|b|a|2", "use": "对应：剩余控制权即清算权"},
-    {"id": "H", "line": "off", "facet": "历史", "emphasis": "aside", "title": "历史：抵押贷款的来历", "spec": "书中的历史段落"}
+    {"id": "L1", "line": "off", "facet": "局限：单期清算抽象", "emphasis": "aside", "title": "局限：不考虑多期再谈判", "spec": "模型抽象边界", "src": ["sections/s05.md:213-220"]}
   ],
   "merge": [],
-  "notes": ["Key/7|c 讨论本模型的假设，应链接 A。"],
+  "notes": ["Key/7|c 讨论本模型的假设，应链接 A1。"],
   "explain": [
     {"chain": ["D1", "D2"], "route": "先求还款上限，再把上限代入参与约束。",
      "parts": [
@@ -112,26 +146,30 @@ Write `<DIR>\plan.json` (UTF-8). Example:
 | Field | Meaning |
 | --- | --- |
 | `title` | optional new title for the Model Card |
-| `card` | required: what the Model Card must say: the question, the summary, the outside links to keep. The Model Card job and a concept model's setting carry nothing else |
-| `symbols` | formal: every symbol, `[symbol, meaning]` or `[symbol, meaning, first part]` |
-| `terms` | formal: each term, then the words the Cards must not use for it |
+| `claim_objects` | required (formal): 1+ of `choice-optimum`, `strategic-allocation`, `market-equilibrium`, `dynamics-limit`, `representation-comparison`, `identification` |
+| `family_tags` | optional descriptive tags (never structural) |
+| `card` | required: what the Model Card must say: the question, primitives & criterion, headline results, outside links to keep |
+| `symbols` | formal: every symbol `[symbol, meaning, first_part_id]` (written into `<head>|a|a` `符号表与读法`, unless borrowed via `borrows_notation` / `take`) |
+| `terms` | formal: each term, then the words the Cards must not use for it (written into `<head>|a|a` `**统一用语**`) |
 | `id` | your id for the part, unique in the plan |
 | `line` | `main`, `side`, or `off` (default `main`) |
-| `facet`, `emphasis`, `title` | the part's facet (at most 32 characters), `core` or `aside`, and a title that states one claim (at most 80 characters) |
-| `spec` | what the part must state, in a few words: DeepSeek writes it from the source |
+| `facet`, `emphasis`, `title` | canonical `FormalRole` facet (at most 32 characters), `core` or `aside`, and a title that states one claim (at most 80 characters) |
+| `spec` | what the part must state, in a few words: DeepSeek writes it from the source (optional on `符号表与读法` and `derive: true`) |
 | `rests` | premises: `[ref, why]` or `[ref, why, kind]`; `ref` is an id, `<model>#<id>`, or an address; `kind` is `rests` (default), `substitutes`, `illustrates`, `contrasts`, `relaxes`, `corresponds`, or `objects` |
-| `of`, `kind`, `why` | a side part: the part it stands beside, and the relation to it |
-| `derive`, `from`, `to`, `steps` | a Derivation part: its start, its result equation (with the book's number), and its estimated lines |
-| `src` | **required** for every part this build writes: the source lines you reviewed for it, `file:from-to`, relative to the staging folder; the script copies them into the job and records them in the model's source-review artifact |
+| `of`, `after`, `kind`, `why` | a `side` part sets **exactly one** of `of` (branch root) or `after` (Direct continuation of a local `side` part); plain `of`/`after` are placement-only unless `kind` is set |
+| `source_kind`, `source_label`, `logical_force`, `justifications`, `criterion`, `assumptions` | required claim metadata on every `结果` part (multi-justification schema) |
+| `inventory_ref`, `inventory_refs`, `dispositions` | pinned `inventory.json` obligation accounting |
+| `derive`, `from`, `to`, `steps` | a Side `推导` part: its start, its result equation in math (`$$...$$`, preserving `\tag{n}`), and its estimated lines |
+| `src` | **required** for every part this build writes: the source lines you reviewed for it, `file:from-to`, relative to the staging folder |
 | `chart` | the chart the part needs, in a few words; DeepSeek draws it |
-| `figure` | the book's own figure the part shows, by its label, e.g. `2.F.1` or `IV` (the brief's `## 图` lists them, and `figures.json` in the staging folder holds every one); the script hands DeepSeek the figure's Markdown to paste. Prefer a book figure to a `chart` that redraws it; add a `chart` only for what the book does not draw |
+| `figure` | the book's own figure the part shows, by its label, e.g. `2.F.1` or `IV` (prefer book figures over redrawn charts) |
 | `existing`, `refill` | keep an existing part (and rewrite its body) |
 | `move` | move an outside agent Card into the range at this place |
-| `take`, `use`, `block` | import a shared part (an **引入** line), with one line on what this model uses from it; `block: true` imports it with its block (整块) |
+| `take`, `use`, `block` | import a shared part (an **引入** line); `block: true` imports it with its block (整块) |
 | `merge` | `[{"from": address, "into": id}]` |
-| `divisions` | optional: the model's parts (分部), `[{"name": "第一部分 构件", "start": id}]`, each starting at a main-line part; the compiler writes them as the Model Card's **分部** section, and the GUI shows each as a range of blocks (see "Divide a long model into parts") |
+| `divisions` | optional: the model's parts (分部), `[{"name": "第一部分 构件", "start": id}]`, each starting at a main-line part (when ≥ 5 chapters) |
 | `notes` | Cards outside the model that should link a new part, or that misstate the model |
-| `explain` | the design of every chain of Derivation parts: the chain's route and each part's shows, notes and meaning (see "Design the explanations of each chain") |
+| `explain` | the design of every maximal contiguous Side `推导` chain: route and each part's shows, notes and meaning |
 | `source_review` | the reviewed outcome of a part whose source does not simply support it (see "Review the source") |
 | `source_faults` | the source's own faults you observed (see below) |
 
@@ -190,7 +228,7 @@ Report only what you saw in this book's text now. Do not repeat a fault from an 
 
 ## Check the plan
 
-Run `<COMPILER> -Step validate -Work "<WORK>" -Plan "<DIR>\plan.json" <LIMITS>`. It prints one fault per line and then `faults: N`. Fix the plan until it prints `faults: 0`. Finish one model before you start the next.
+Run `<COMPILER> -Step validate -Work "<WORK>" -Plan "<DIR>\plan.json" -Staging "<OUT>" <LIMITS>` (when `<WORK>` sits inside `<OUT>`, `-Staging` is also auto-discovered from `manifest.json`). It prints one fault per line and then `faults: N`. Fix the plan until it prints `faults: 0`. Finish one model before you start the next.
 
 ## Report
 

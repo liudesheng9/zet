@@ -57,7 +57,11 @@ From the Literature-note pilot (#189), the one-conversation card cycle (#191) an
 
 ## Provider limit in a digest (the owner, 2026-11-05)
 
-> **2026-11-12 (the owner):** every job runs on OpenCode Go again (`ZT_DRIVE_MODEL`, zt-workflow-lib v17). The Desktop fails over between the OpenCode Go accounts; when every account is limited, switch the one value to the official source, reinstall, stop and resume. The section below is the history of why the official source was used.
+> **2026-11-12 (the owner):** every job runs on OpenCode Go again (`ZT_DRIVE_MODEL`, zt-workflow-lib v17). The Desktop fails over between the OpenCode Go accounts; when every account is limited, switch the one value to the official source, reinstall, stop and resume.
+>
+> **2026-11-22 (the owner, bridge with the OpenCode Go key pool):** the deepseek MCP bridge serves every `opencode-go/*` model from a pool of OpenCode Go API keys. The bridge chooses the key for each request and spreads conversations over keys and workspaces by the strategy the owner sets in the Desktop (Settings, OpenCode Go). A workflow, a manager or an operator never picks, pins or switches a key, and plans no work around particular keys. The one source decision is `ZT_DRIVE_MODEL`: `opencode-go/deepseek-v4.1-flash` (the default) or the official `deepseek-official/deepseek-flash`. `deepseek_opencode` (status only) tells whether the pool can serve now (`can_serve_new_conversation`, free keys, the soonest return of a limited key); when it cannot, switch the one value to the official source, reinstall, stop and resume. Every installed ZT digest (econ, history, math, figure-explain) uses only tools and arguments the pool bridge offers, and passes the model as `provider/model`.
+>
+> The section below is the history of why the official source was used.
 
 Digests run on the official source (`deepseek-official/deepseek-flash`) with the protocol's limit, eight managers of eight jobs. OpenCode Go answered `429 ... overloaded` with 59 writers started at once and still on about one job in eight with two managers, and a retry in the same conversation recovered only some of them. A stage must never hold a pool slot while it waits for another stage: Events and Findings waited for the digest with `-Wait 600`, so they now run after it.
 

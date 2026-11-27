@@ -27,6 +27,7 @@ use crate::link::{LinkBody, LinkForm};
 use crate::{Card, CardType};
 
 pub(crate) mod empirical;
+pub(crate) mod formal;
 
 /// Which part of its model a Model part presents: a short, one-line label.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -1321,12 +1322,25 @@ pub(crate) fn structure_in(
     let mut build = build;
     build["parts"] = json!(part_faults(build["order"].as_array().map_or(&[][..], Vec::as_slice), body_of(&head)));
     let imports = imports_report(&head, &expanded, &build, by_address, inbound, &title);
+    let badge_mode = |model_addr: &str| -> BadgeMode {
+        let Some(card) = by_address.get(model_addr) else {
+            return BadgeMode::None;
+        };
+        if card.level == Some(Level::Empirical) {
+            BadgeMode::Empirical
+        } else if card.form.is_none() && card.level == Some(Level::Formal) {
+            BadgeMode::Formal
+        } else {
+            BadgeMode::None
+        }
+    };
     let (blocks, block_edges) = blocks_report_with(
         &head,
         build["order"].as_array().map_or(&[][..], Vec::as_slice),
         &relations,
         &body_of,
         imports.as_array().map_or(&[][..], Vec::as_slice),
+        &badge_mode,
     );
     let lent = lent_report(&head, &members, by_address, inbound, &title);
     Some(json!({
@@ -1457,9 +1471,18 @@ fn lent_report(
 /// The parts (range blocks) come from the head's `**分部**` section: `- <name>：[[<main part>]] 起`.
 /// Each block's `lead` is the first sentence of its card's `**直觉**`, the line its tray opens with.
 /// `block_edges` aggregates the relations between Cards of different blocks by block pair and kind.
+/// Which board badge renderer governs a block, dispatched by the owning model's level and form
+/// (proposal §10) rather than calling `empirical::badge` unconditionally.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BadgeMode {
+    Empirical,
+    Formal,
+    None,
+}
+
 #[cfg(test)]
 pub(crate) fn blocks_report<'b>(head: &str, order: &[Value], relations: &[Value], body_of: &dyn Fn(&str) -> &'b str) -> (Vec<Value>, Vec<Value>) {
-    blocks_report_with(head, order, relations, body_of, &[])
+    blocks_report_with(head, order, relations, body_of, &[], &|_| BadgeMode::None)
 }
 
 /// `blocks_report` with the model's `imports` (#209): each import's shared Cards make their own
@@ -1473,7 +1496,9 @@ pub(crate) fn blocks_report_with<'b>(
     relations: &[Value],
     body_of: &dyn Fn(&str) -> &'b str,
     imports: &[Value],
+    badge_mode: &dyn Fn(&str) -> BadgeMode,
 ) -> (Vec<Value>, Vec<Value>) {
+    let own_mode = badge_mode(head);
     let head_body = body_of(head);
     let s = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
     let mains: Vec<&Value> = order.iter().filter(|e| e["line"] == "main").collect();
@@ -1532,7 +1557,7 @@ pub(crate) fn blocks_report_with<'b>(
         let children: Vec<Value> = members[i]
             .iter()
             .filter(|e| s(e, "address") != at && (if chaptered { e["line"] != "main" && is_child(&s(e, "address"), &at) } else { true }))
-            .map(|e| child_value(e, &members[i], body_of))
+            .map(|e| child_value(e, &members[i], body_of, own_mode))
             .collect();
         let kind = if i == 0 && s(h, "facet").starts_with("设定") { "setting" } else { "chapter" };
         blocks.push(json!({
@@ -1545,7 +1570,7 @@ pub(crate) fn blocks_report_with<'b>(
         let children: Vec<Value> = members[aside]
             .iter()
             .filter(|e| is_child(&s(e, "address"), head))
-            .map(|e| child_value(e, &members[aside], body_of))
+            .map(|e| child_value(e, &members[aside], body_of, own_mode))
             .collect();
         blocks.push(json!({
             "id": format!("b{aside}"), "head": head, "title": "旁注", "facet": null, "emphasis": null,
@@ -1554,7 +1579,14 @@ pub(crate) fn blocks_report_with<'b>(
     }
     if !members[shared].is_empty() {
         let tops = |e: &&&Value| !members[shared].iter().any(|m| under(&s(e, "address"), &s(m, "address")));
-        let children: Vec<Value> = members[shared].iter().filter(tops).map(|e| child_value(e, &members[shared], body_of)).collect();
+        let children: Vec<Value> = members[shared]
+            .iter()
+            .filter(tops)
+            .map(|e| {
+                let home_mode = e["home"].as_str().map(badge_mode).unwrap_or(BadgeMode::None);
+                child_value(e, &members[shared], body_of, home_mode)
+            })
+            .collect();
         blocks.insert(0, json!({
             "id": format!("b{shared}"), "head": head, "title": "共用前提", "facet": null, "emphasis": null,
             "kind": "shared", "part": null, "members": members[shared].len(), "chaptered": chaptered, "children": children,
@@ -1563,6 +1595,7 @@ pub(crate) fn blocks_report_with<'b>(
     for (k, import) in groups.iter().enumerate().rev() {
         let b = shared + 1 + k;
         let cards = &members[b];
+        let import_mode = import["home"].as_str().map(badge_mode).unwrap_or(BadgeMode::None);
         let own = cards.iter().filter(|e| e["premise"] != json!(true)).copied().collect::<Vec<_>>();
         let tops = own
             .iter()
@@ -1572,12 +1605,24 @@ pub(crate) fn blocks_report_with<'b>(
             .iter()
             .map(|e| {
                 let at = s(e, "address");
-                let proof = own.iter().map(|o| s(o, "address")).filter(|o| *o != at && in_block(o, &at)).collect::<Vec<_>>();
+                let facet = e["facet"].as_str().unwrap_or_default();
+                let proof: Vec<String> = if import_mode == BadgeMode::Formal
+                    && matches!(formal::role_of(facet), Some(formal::FormalRole::Result | formal::FormalRole::Benchmark))
+                {
+                    formal::proof_route_addresses(&at, body_of(&at), &own).into_iter().map(str::to_string).collect()
+                } else {
+                    own.iter().map(|o| s(o, "address")).filter(|o| *o != at && in_block(o, &at)).collect()
+                };
+                let badge = match import_mode {
+                    BadgeMode::Empirical => empirical::badge(facet, body_of(&at)),
+                    BadgeMode::Formal => formal::badge(facet, body_of(&at), proof.len()),
+                    BadgeMode::None => None,
+                };
                 json!({
                     "address": at, "title": e["title"], "facet": e["facet"], "emphasis": e["emphasis"],
                     "derivation": e["derivation"] == json!(true),
                     "proof": if proof.is_empty() { Value::Null } else { json!({"first": proof[0], "steps": proof.len(), "addresses": proof}) },
-                    "badge": empirical::badge(e["facet"].as_str().unwrap_or_default(), body_of(&at)),
+                    "badge": badge,
                 })
             })
             .collect::<Vec<_>>();
@@ -1706,21 +1751,36 @@ fn is_child(address: &str, parent: &str) -> bool {
 }
 
 /// A block's child: the part, and the chain filed under it as its proof.
-fn child_value<'b>(e: &Value, block: &[&Value], body_of: &dyn Fn(&str) -> &'b str) -> Value {
+/// Dispatches board badges by owning model level/form (`BadgeMode`) and, for Level 2 formal
+/// results/benchmarks, counts ONLY `Derivation` and `Argument` Cards on the proof route.
+fn child_value<'b>(e: &Value, block: &[&Value], body_of: &dyn Fn(&str) -> &'b str, mode: BadgeMode) -> Value {
     let at = e["address"].as_str().unwrap_or_default();
-    let proof: Vec<&str> = block
+    let facet = e["facet"].as_str().unwrap_or_default();
+    let all_descendants: Vec<&str> = block
         .iter()
         .filter_map(|m| m["address"].as_str())
         .filter(|a| a.len() > at.len() && a.starts_with(at) && a.as_bytes()[at.len()] == b'|')
         .collect();
+    let proof: Vec<&str> = if mode == BadgeMode::Formal
+        && matches!(formal::role_of(facet), Some(formal::FormalRole::Result | formal::FormalRole::Benchmark))
+    {
+        formal::proof_route_addresses(at, body_of(at), block)
+    } else {
+        all_descendants.clone()
+    };
+    let badge = match mode {
+        BadgeMode::Empirical => empirical::badge(facet, body_of(at)),
+        BadgeMode::Formal => formal::badge(facet, body_of(at), proof.len()),
+        BadgeMode::None => None,
+    };
     json!({
         "address": at, "title": e["title"], "facet": e["facet"], "emphasis": e["emphasis"],
         "derivation": e["derivation"] == json!(true),
         "proof": if proof.is_empty() { Value::Null } else { json!({"first": proof[0], "steps": proof.len(), "addresses": proof}) },
-        // An empirical card's strip on the board: an estimate's value, a table's size, a variant's change.
-        "badge": empirical::badge(e["facet"].as_str().unwrap_or_default(), body_of(at)),
-        // A variant's own variants, filed under it, are rungs of the ladder too.
-        "chain_badges": chain_badges(e, block, &proof, body_of),
+        "descendants": all_descendants,
+        "badge": badge,
+        // A variant's own variants, filed under it, are rungs of the ladder too (empirical).
+        "chain_badges": if mode == BadgeMode::Empirical { chain_badges(e, block, &proof, body_of) } else { Value::Null },
     })
 }
 
@@ -2067,9 +2127,15 @@ fn build_report(
             if card.facet.as_ref().is_some_and(is_derivation) {
                 value["derivation"] = json!(true);
             }
-            // An empirical model names each part's role (proposal §5.1), read from its facet.
+            // An empirical or Level 2 formal model names each part's role, read from its facet.
             if level == Some(Level::Empirical) {
                 if let Some(role) = card.facet.as_ref().and_then(|facet| empirical::role_of(facet.id())) {
+                    value["role"] = json!(role.id());
+                }
+            } else if level == Some(Level::Formal)
+                && by_address.get(head).and_then(|c| c.form).is_none()
+            {
+                if let Some(role) = card.facet.as_ref().and_then(|facet| formal::role_of(facet.id())) {
                     value["role"] = json!(role.id());
                 }
             }
@@ -2162,6 +2228,49 @@ fn build_report(
                         read.target
                     ),
                 }));
+            }
+        }
+    }
+    let is_math_unit_early = by_address.get(head).and_then(|c| c.form).is_some();
+    let is_formal_model_early = !is_math_unit_early && level == Some(Level::Formal);
+    // For Level 2 formal economic models, detect forward rests-on Links within Side proof routes
+    // (e.g. D1 resting on later D2 in the same Direct continuation chain D1 -> D2; M1 isolation).
+    fn side_chain_root(addr: &str) -> &str {
+        if let Some((prefix, last)) = addr.rsplit_once('|')
+            && !last.is_empty()
+            && last.chars().all(|c| c.is_ascii_digit())
+        {
+            prefix
+        } else {
+            addr
+        }
+    }
+    if is_formal_model_early {
+        for step in &in_range {
+            if main.contains(step) {
+                continue;
+            }
+            let Some(&here) = position.get(step) else {
+                continue;
+            };
+            let my_root = side_chain_root(step);
+            let mut seen = BTreeSet::new();
+            for read in rests_on(step) {
+                if let Some(&there) = position.get(&read.target)
+                    && there > here
+                    && side_chain_root(&read.target) == my_root
+                    && seen.insert(read.target.clone())
+                {
+                    forward.push(json!({
+                        "from": step,
+                        "to": read.target,
+                        "note": read.note,
+                        "fix": format!(
+                            "`{step}` rests on `{}`, which comes later in the same Side branch: reorder or remove the circular dependency",
+                            read.target
+                        ),
+                    }));
+                }
             }
         }
     }
@@ -2339,9 +2448,33 @@ fn build_report(
             &empirical::PartView { facet: &facet, title: &titled, body: &body, rests_on: &rests },
         )
     });
-    // Derivation chains: runs of Derivation parts that follow each other in the build order
-    // (a part beside a step does not break a run). One long step may take several
-    // Derivation parts; a chain shows which, between which two members.
+    // The Level 2 formal role rules (docs/formal-models-proposal.md §5.5): applied to every
+    // Level 2 formal economic model (excluding mathematical units which carry `form`).
+    let head_body = parsed.get(head).map_or("", |p| p.body.as_str());
+    let is_math_unit = by_address.get(head).and_then(|c| c.form).is_some();
+    let is_formal_model = !is_math_unit && level == Some(Level::Formal);
+    let formal_roles = is_formal_model.then(|| {
+        let facet = |at: &str| by_address.get(at).and_then(|card| card.facet.as_ref().map(|f| f.id().to_string()));
+        let body = |at: &str| parsed.get(at).map(|parsed| parsed.body.clone()).unwrap_or_default();
+        let rests = |at: &str| rests_on(at).into_iter().map(|read| read.target).collect::<Vec<_>>();
+        let titled = |at: &str| title(at);
+        formal::faults(
+            head,
+            head_body,
+            &main,
+            &in_range,
+            &members,
+            &formal::PartView {
+                facet: &facet,
+                title: &titled,
+                body: &body,
+                rests_on: &rests,
+            },
+        )
+    });
+    // Derivation chains (proposal §5.2 & §12 F4): one authoritative enumerator covering both
+    // main/shared runs (legacy) and maximal contiguous `推导` runs along Side proof branches
+    // (breaking at any non-Derivation card such as `论证`).
     let derivation_at = |at: &str| by_address[at].facet.as_ref().is_some_and(is_derivation);
     let mut chains = Vec::new();
     let mut run: Vec<String> = Vec::new();
@@ -2370,9 +2503,60 @@ fn build_report(
     if !run.is_empty() {
         chains.push(chain(&run, after.take(), None));
     }
+    // Side-branch maximal contiguous Derivation runs (`X → X|1 → X|2`, breaking at `论证` etc.),
+    // scoped to Level 2 formal economic models (M1 isolation).
+    let side_derivations: Vec<String> = if is_formal_model {
+        order
+            .iter()
+            .filter(|(at, line, _)| *line == "side" && derivation_at(at))
+            .map(|(at, _, _)| at.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if !side_derivations.is_empty() {
+        let side_set: BTreeSet<&str> = side_derivations.iter().map(String::as_str).collect();
+        let known_order: BTreeSet<&str> = order.iter().map(|(at, _, _)| at.as_str()).collect();
+        let split_num = |a: &str| -> Option<(String, u64)> {
+            let (prefix, last_seg) = a.rsplit_once('|')?;
+            last_seg.parse::<u64>().ok().map(|n| (prefix.to_string(), n))
+        };
+        let prev_direct = |a: &str| -> Option<String> {
+            split_num(a).map(|(p, n)| if n > 1 { format!("{p}|{}", n - 1) } else { p })
+        };
+        let next_direct = |a: &str| -> String {
+            match split_num(a) {
+                Some((p, n)) => format!("{p}|{}", n + 1),
+                None => format!("{a}|1"),
+            }
+        };
+        for start in &side_derivations {
+            if prev_direct(start).is_some_and(|p| side_set.contains(p.as_str())) {
+                continue;
+            }
+            let mut branch_run = vec![start.clone()];
+            let mut at = next_direct(start);
+            while side_set.contains(at.as_str()) && !branch_run.contains(&at) {
+                branch_run.push(at.clone());
+                at = next_direct(&at);
+            }
+            let branch_after = prev_direct(start)
+                .or_else(|| start.rsplit_once('|').map(|(p, _)| p.to_string()));
+            let branch_before = known_order.contains(at.as_str()).then_some(at);
+            chains.push(json!({
+                "parts": branch_run,
+                "length": branch_run.len(),
+                "after": branch_after,
+                "before": branch_before,
+                "line": "side",
+            }));
+        }
+    }
     json!({
         "level": level.map(Level::id),
         "level_number": level.map(Level::number),
+        "claim_objects": if is_formal_model { formal::claim_objects_of(head_body) } else { Vec::new() },
+        "family_tags": if is_formal_model { formal::family_tags_of(head_body) } else { Vec::new() },
         "setting": setting,
         "order": order_values,
         "chains": chains,
@@ -2392,12 +2576,20 @@ fn build_report(
             && import_target.is_empty()
             && import_cycle.is_empty(),
         "evidence_bound": roles.as_ref().map(|roles| roles.is_empty() && beyond_level.is_empty()),
+        "formal_structured": formal_roles.as_ref().map(|roles| roles.is_empty()),
         "beyond_level": beyond_level,
         "empirical_shape": roles.as_ref().map_or_else(Vec::new, |roles| roles.shape.clone()),
         "estimate_unbound": roles.as_ref().map_or_else(Vec::new, |roles| roles.estimate_unbound.clone()),
         "spec_unbound": roles.as_ref().map_or_else(Vec::new, |roles| roles.spec_unbound.clone()),
         "test_unbound": roles.as_ref().map_or_else(Vec::new, |roles| roles.test_unbound.clone()),
         "variable_uncovered": roles.as_ref().map_or_else(Vec::new, |roles| roles.variable_uncovered.clone()),
+        "formal_shape": formal_roles.as_ref().map_or_else(Vec::new, |roles| roles.formal_shape.clone()),
+        "setting_dependency": formal_roles.as_ref().map_or_else(Vec::new, |roles| roles.setting_dependency.clone()),
+        "criterion_unbound": formal_roles.as_ref().map_or_else(Vec::new, |roles| roles.criterion_unbound.clone()),
+        "result_unbound": formal_roles.as_ref().map_or_else(Vec::new, |roles| roles.result_unbound.clone()),
+        "proof_unbound": formal_roles.as_ref().map_or_else(Vec::new, |roles| roles.proof_unbound.clone()),
+        "experiment_unbound": formal_roles.as_ref().map_or_else(Vec::new, |roles| roles.experiment_unbound.clone()),
+        "symbol_uncovered": formal_roles.as_ref().map_or_else(Vec::new, |roles| roles.symbol_uncovered.clone()),
     })
 }
 

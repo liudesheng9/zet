@@ -40,22 +40,27 @@ Each line names a part by what it does and links the main-line card it starts at
 ## Result card (Side branch of a chapter)
 
 ```
-One sentence: the result, no formula.
+One sentence: the economic claim in plain words, matching the source's exact logical force.
 
-**结果**
+**陈述**
+- 出处与力度：命题 1（原文 §5.2）；力度：characterization。
+- 条件与作用域：依赖 [[假设 1]]、[[均衡定义：…]]。
 The exact statement, with the original formulas and equation numbers.
 
 **为什么**
 One to three sentences of intuition: why it holds, what it means.
 
-**证明**
-证明见下面的推导分支，从 [[first proof card]] 读起。
-依赖 [[last proof card]] 的结果。
+**依据**
+- 局部证明：证明见 [[first proof card]] 起；依赖 [[last proof card]]。
+- （若另有外部引证或启发式）外部证明：见原文引证 [4]；启发式推导：见 [[heuristic root]]（额外假设：…）。
 
 来源：[[citationKey]] §x
 ```
 
-- Title and facet start with `结果：`; give each a specific label (`结果：进入临界值唯一`, never `结果：结论`).
+- Title and facet start with `结果：`; give each a specific label (`结果：命题 1 进入临界值唯一`, never `结果：结论`).
+- Multi-justification honesty: local `推导`/`论证` routes, external citations (`[4]`, online supplement), heuristics with explicit extra assumptions, or `原文未证`.
+- Proof branches under `结果` / `基准` may mix `推导` (algebraic chains) and `论证` (`目标` / `**依据**` / `**论证**` / `**结论**`).
+- Non-theorem outputs use `基准：`, `校准：` (`**起点**` / `**参数与出处**` / `**映射说明**`), `数值实验：` (`**实验设定**` / `**数值结果**` / `**边界**`); result-level caveats use `边界：`; whole-model limits use `局限：` off the main line.
 
 ## Derivation card (proof chain)
 

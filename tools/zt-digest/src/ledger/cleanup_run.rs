@@ -70,28 +70,92 @@ pub(super) fn settle_ops(resources: &[Value], open: &BTreeSet<String>, run_open:
     ops
 }
 
-/// `-Step plan`: the evidence sweep and the plan file. A results file left from an earlier plan is removed,
-/// so apply can never read an answer to another plan.
-pub(super) fn plan(p: &Prepared) -> Result<Value> {
+struct PlanPreview {
+    ops: Vec<Value>,
+    deletes: usize,
+    workspaces: usize,
+    swept: Value,
+}
+
+fn compute_plan(p: &Prepared) -> Result<PlanPreview> {
     let answers = p.out.join("answers");
-    let swept = if answers.is_dir() { resource_sweep_evidence(p, &answers.to_string_lossy())? } else { json!({"recorded":0,"missing":0}) };
+    let swept = if answers.is_dir() {
+        resource_sweep_evidence(p, &answers.to_string_lossy())?
+    } else {
+        json!({"recorded":0,"missing":0})
+    };
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let resources = recorded_resources(&conn, None)?;
     let open = units_that_can_still_run(&conn)?;
     drop(conn);
     let ops = settle_ops(&resources, &open, !open.is_empty());
+    let count = |name: &str| ops.iter().filter(|op| op["op"] == json!(name)).count();
+    let deletes = count("delete");
+    let workspaces = count("settle_workspace");
+    Ok(PlanPreview { ops, deletes, workspaces, swept })
+}
+
+/// `-Step plan`: the evidence sweep and the plan file. A results file left from an earlier plan is removed,
+/// so apply can never read an answer to another plan.
+pub(super) fn plan(p: &Prepared) -> Result<Value> {
+    let preview = compute_plan(p)?;
     let (plan, results) = files(p)?;
     if results.exists() {
         std::fs::remove_file(&results)?;
     }
-    std::fs::write(&plan, serde_json::to_string_pretty(&ops)?)?;
-    let count = |name: &str| ops.iter().filter(|op| op["op"] == json!(name)).count();
+    util::write_atomic(&plan, &serde_json::to_string_pretty(&preview.ops)?)?;
     Ok(json!({
         "schema_version":1,"kind":"cleanup_plan",
         "plan_file":plan.to_string_lossy(),"results_file":results.to_string_lossy(),
-        "deletes":count("delete"),"workspaces":count("settle_workspace"),
-        "evidence_recorded":swept["recorded"],"evidence_fenced":swept["fenced"],"evidence_missing":swept["missing"]
+        "deletes":preview.deletes,"workspaces":preview.workspaces,
+        "evidence_recorded":preview.swept["recorded"],"evidence_fenced":preview.swept["fenced"],"evidence_missing":preview.swept["missing"]
     }))
+}
+
+/// `-Step settle-empty`: computes the cleanup plan read-only first; if zero DeepSeek ops are needed,
+/// writes the empty plan + empty results atomically and applies cleanup in one process. When any
+/// DeepSeek op is pending, preserves existing files and returns `ok: false, code: "pending_deepseek_ops"`.
+pub(super) fn settle_empty(p: &Prepared, owner: &str) -> Result<(bool, Value)> {
+    let preview = compute_plan(p)?;
+    if !preview.ops.is_empty() {
+        return Ok((
+            false,
+            json!({
+                "schema_version": 1,
+                "ok": false,
+                "code": "pending_deepseek_ops",
+                "deletes": preview.deletes,
+                "workspaces": preview.workspaces,
+                "ops": preview.ops.len(),
+                "evidence_recorded": preview.swept["recorded"],
+                "evidence_fenced": preview.swept["fenced"],
+                "evidence_missing": preview.swept["missing"]
+            }),
+        ));
+    }
+    let (plan_file, results_file) = files(p)?;
+    util::write_atomic(&plan_file, "[]")?;
+    util::write_atomic(&results_file, r#"{"ok":true,"results":[]}"#)?;
+    let applied = apply(p, owner)?;
+    Ok((
+        true,
+        json!({
+            "schema_version": 1,
+            "ok": true,
+            "plan": {
+                "schema_version": 1,
+                "kind": "cleanup_plan",
+                "plan_file": plan_file.to_string_lossy(),
+                "results_file": results_file.to_string_lossy(),
+                "deletes": 0,
+                "workspaces": 0,
+                "evidence_recorded": preview.swept["recorded"],
+                "evidence_fenced": preview.swept["fenced"],
+                "evidence_missing": preview.swept["missing"]
+            },
+            "cleanup": applied
+        }),
+    ))
 }
 
 /// The result answers its op: the same op on the same id or folder, in plan order.
@@ -107,12 +171,14 @@ fn answers(op: &Value, result: &Value) -> bool {
 /// `-Step apply`: record every provider fact, then settle the ready cleanup units.
 pub(super) fn apply(p: &Prepared, owner: &str) -> Result<Value> {
     let (plan_file, results_file) = files(p)?;
-    let ops: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(&plan_file).context("no settle plan: run cleanup-run -Step plan first")?)?;
-    let answered: Value = serde_json::from_str(
-        &std::fs::read_to_string(&results_file).context("no settle results: the bridge's deepseek_settle has not run on this plan")?,
-    )?;
-    let results = answered["results"].as_array().cloned().unwrap_or_default();
-    if answered["ok"] != json!(true) || results.len() != ops.len() || ops.iter().zip(&results).any(|(op, result)| !answers(op, result)) {
+    let ops_val = util::read_json(&plan_file).context("no settle plan: run cleanup-run -Step plan first")?;
+    let ops = ops_val.as_array().context("settle plan must be a JSON array")?;
+    let answered = util::read_json(&results_file)
+        .context("no settle results: the bridge's deepseek_settle has not run on this plan")?;
+    let results = answered["results"]
+        .as_array()
+        .context("settle results must contain a `results` array")?;
+    if answered["ok"] != json!(true) || results.len() != ops.len() || ops.iter().zip(results).any(|(op, result)| !answers(op, result)) {
         bail!("settle results do not answer the plan op for op; run the plan again");
     }
     let resources = recorded_resources(&connect(&p.out.join("ledger.sqlite3"), false)?, None)?;
@@ -139,7 +205,7 @@ pub(super) fn apply(p: &Prepared, owner: &str) -> Result<Value> {
     let (mut gone, mut absent, mut removed, mut kept) = (0, 0, 0, 0);
     let mut failed: Vec<Value> = Vec::new();
     let mut strays: Vec<Value> = Vec::new();
-    for result in &results {
+    for result in results {
         match result["op"].as_str() {
             Some("delete") => {
                 let id = field(result, "session_id")?;
@@ -241,5 +307,101 @@ mod tests {
         assert!(answers(&op, &json!({"op":"settle_workspace","cwd":"d:\\run","status":"kept"})));
         assert!(!answers(&op, &json!({"op":"settle_workspace","cwd":"D:\\Other"})));
         assert!(!answers(&json!({"op":"delete","session_id":"a"}), &json!({"op":"delete","session_id":"b"})));
+    }
+
+    fn test_prepared() -> (tempfile::TempDir, Prepared) {
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::fs::canonicalize(dir.path()).unwrap();
+        let contract = json!({
+            "variant": "econ",
+            "citation_key": "K",
+            "archive_identity": {"id": "0123456789abcdef0123456789abcdef", "path": "D:\\box"},
+            "source": {"kind": "md", "path": "src.md", "sha256": "abc"},
+            "group_manifest_hash": "def",
+            "options": {"no_figures": false},
+            "contracts": {},
+            "groups": [{"n": 1, "anchor": "K/1"}],
+        });
+        let hash = canon::hash_value(&contract);
+        let p = Prepared { out, contract, hash };
+        initialize(&p, true).unwrap();
+        (dir, p)
+    }
+
+    #[test]
+    fn settle_empty_preserves_pending_ops_and_settles_when_empty() {
+        let (_dir, p) = test_prepared();
+        let db = p.out.join("ledger.sqlite3");
+        let conn = connect(&db, true).unwrap();
+        let ws = p.out.join("jobs").to_string_lossy().to_string();
+        let cid = "sess-pending-1";
+        let pending_progress = json!({
+            "resources": [{
+                "owner": "digest/g001@1",
+                "workspace": {"path": ws},
+                "workspace_removed": null,
+                "conversations": [{"id": cid, "delete": null}]
+            }]
+        });
+        conn.execute(
+            "UPDATE units SET progress_json=?1 WHERE layer='cleanup'",
+            [pending_progress.to_string()],
+        ).unwrap();
+        drop(conn);
+
+        // Non-empty pending ops: returns settled=false without writing settle-plan.json
+        let (settled, res) = settle_empty(&p, "cleanup-run").unwrap();
+        assert!(!settled);
+        assert_eq!(res["ok"], json!(false));
+        assert_eq!(res["code"], json!("pending_deepseek_ops"));
+        assert!(res["ops"].as_u64().unwrap() > 0);
+        assert!(!p.out.join("cleanup").join(PLAN).exists());
+
+        // Clear pending op (mark deleted + workspace removed) and settle empty cleanup plan
+        let settled_progress = json!({
+            "resources": [{
+                "owner": "digest/g001@1",
+                "workspace": {"path": ws},
+                "workspace_removed": true,
+                "conversations": [{"id": cid, "delete": "confirmed"}]
+            }]
+        });
+        let conn = connect(&db, true).unwrap();
+        conn.execute(
+            "UPDATE units SET progress_json=?1 WHERE layer='cleanup'",
+            [settled_progress.to_string()],
+        ).unwrap();
+        drop(conn);
+
+        let (settled, res) = settle_empty(&p, "cleanup-run").unwrap();
+        assert!(settled, "{res}");
+        assert_eq!(res["ok"], json!(true));
+        assert!(p.out.join("cleanup").join(PLAN).exists());
+        assert!(p.out.join("cleanup").join(RESULTS).exists());
+    }
+
+    #[test]
+    fn apply_accepts_bom_prefixed_results_and_rejects_missing_results_array() {
+        let (_dir, p) = test_prepared();
+        let folder = p.out.join("cleanup");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(PLAN), "[]").unwrap();
+
+        // Missing results array must error cleanly rather than panicking or passing
+        std::fs::write(folder.join(RESULTS), r#"{"ok":true}"#).unwrap();
+        let err = apply(&p, "cleanup-run").err().unwrap().to_string();
+        assert!(err.contains("results"), "{err}");
+
+        // Non-array results
+        std::fs::write(folder.join(RESULTS), r#"{"ok":true,"results":"bad"}"#).unwrap();
+        let err = apply(&p, "cleanup-run").err().unwrap().to_string();
+        assert!(err.contains("results"), "{err}");
+
+        // BOM-prefixed valid empty results succeeds
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend_from_slice(br#"{"ok":true,"results":[]}"#);
+        std::fs::write(folder.join(RESULTS), bom).unwrap();
+        let res = apply(&p, "cleanup-run").unwrap();
+        assert_eq!(res["kind"], json!("cleanup_run"));
     }
 }

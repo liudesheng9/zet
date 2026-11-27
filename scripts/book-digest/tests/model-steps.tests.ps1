@@ -1,4 +1,4 @@
-#Requires -Version 7.5
+﻿#Requires -Version 7.5
 <#
 .SYNOPSIS
   The model layer's deterministic steps (model-steps.ps1, #177): one script call runs a whole chain and prints
@@ -56,7 +56,7 @@ switch -Regex ($cmd) {
         }
         Emit @{ schema_version = 1; units = @() }
     }
-    '^ledger reclaim' { Emit @{ schema_version = 1; unit = 'models/g001-m0000@1'; state = 'ready'; released = $true } }
+    '^ledger reclaim' { Emit @{ schema_version = 1; reclaimed = @(@{ unit = 'models/g001-m0000@1'; state = 'ready'; released = $true }); blocked = @(); skipped = @() } }
     '^ledger next' {
         if ($env:MS_NO_UNITS -eq '1') { Emit @{ schema_version = 1; layer = 'models'; units = @() } }
         if ($env:MS_RENAMED -eq '1') { Emit @{ schema_version = 1; layer = 'models'; units = '(3 units claimed)' } }
@@ -72,6 +72,10 @@ switch -Regex ($cmd) {
         Emit @{ schema_version = 1; held = @($list.Split(',') | ForEach-Object { $i = $_.LastIndexOf(':'); @{ unit = $_.Substring(0, $i); token = [int]$_.Substring($i + 1) } }); released = @(); renewals = 3; seconds = 0 }
     }
     '^finish-batch' {
+        if ($env:MS_FINISH_LOCK -eq '1') {
+            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = 'finish_batch'; units = 2; done = 0; failed = 1; not_run = 1; stop_reason = 'card_locked'; code = 'card_locked'; error = 'card_locked'; message = 'the Literature tree Key is locked by the owner'; refusal = @{ code = 'card_locked'; tree = 'Key'; lock_id = 'lk-m1'; message = 'the Literature tree Key is locked by the owner' }; results = @(@{ unit = 'models/g001-m0000@1'; token = 1; status = 'failed'; code = 'card_locked' }, @{ unit = 'models/g002-m0001@1'; token = 1; status = 'not_run' }) })
+            exit 2
+        }
         $null = $flat -match ' -Units (\S+)'; $list = $Matches[1]
         $results = @($list.Split(',') | ForEach-Object { $i = $_.LastIndexOf(':'); @{ unit = $_.Substring(0, $i); token = [int]$_.Substring($i + 1); status = 'done'; disposition = 'verified' } })
         Emit @{ schema_version = 1; kind = 'finish_batch'; units = $results.Count; done = $results.Count; results = $results }
@@ -137,7 +141,7 @@ $start = Step (@('-Step', 'start', '-CitationKey', 'Key', '-Take', '8', '-Owner'
 $env:MS_STALE = ''
 Assert ($start.json -and $start.json.ok -eq $true -and $start.json.claimed -eq 3 -and $start.json.units -eq 3 -and $start.json.models -eq 3 -and $start.json.batches -eq 2 -and $start.json.plan -eq 'concept:3|c;formal:2|c') "start: three Model units claimed and the block's three models named ($($start.text))"
 $callsText = Get-Content -LiteralPath $calls -Raw
-Assert ($callsText -match 'ledger status -Out .* -Layer models' -and $callsText -match 'ledger reclaim -Out .* -Unit models/g001-m0000@1 -Release') 'start: a stopped run''s claim is released before the new plan'
+Assert ($callsText -match 'ledger reclaim -Out .* -Layer models -All -Release') 'start: stopped Model claims are released in one command before the new plan'
 Assert ($callsText -match 'ledger next .* -Layer models -Take 8 -Owner models block 1 -Lease 7200 -Brief') 'start: one claim carries the owner and the two-hour lease'
 Assert ($callsText -match 'list-models -Staging .* -All -CitationKey Key') 'start: the listing is the book''s (one command)'
 $models = Get-Content -Raw (Join-Path $out 'models\drive\models.json') | ConvertFrom-Json
@@ -217,6 +221,10 @@ $finish = Step (@('-Step', 'finish', '-Units', 'models/g001-m0000@1:1,models/g00
 $finishCalls = Get-Content -LiteralPath $calls -Raw
 Assert ($finish.json -and $finish.json.ok -eq $true -and $finish.json.done -eq 2 -and $finish.json.gate_complete -eq $true -and -not $finish.json.failed) "finish: both units complete and the gate settles ($($finish.text))"
 Assert ($finishCalls -match 'finish-batch -Out .* -Units models/g001-m0000@1:1,models/g002-m0001@1:1' -and $finishCalls -notmatch 'model-finish ') 'finish: one finish-batch command runs each unit''s own verifier'
+$env:MS_FINISH_LOCK = '1'
+$lockedFinish = Step (@('-Step', 'finish', '-Units', 'models/g001-m0000@1:1,models/g002-m0001@1:1') + $common)
+$env:MS_FINISH_LOCK = ''
+Assert ($lockedFinish.json -and $lockedFinish.json.ok -eq $false -and $lockedFinish.json.code -eq 'card_locked' -and $lockedFinish.json.unit -eq 'models/g001-m0000@1' -and $lockedFinish.json.tree -eq 'Key' -and $lockedFinish.json.lock_id -eq 'lk-m1') "finish: a typed Lock from finish-batch stops with ok:false and refusal metadata ($($lockedFinish.text))"
 
 # 6. a step whose command fails is one ok:false line, never a half-written step.
 $env:MS_FAIL = 'plan-status'

@@ -669,7 +669,7 @@ fn term_rows(body: &str, compatibility: bool) -> Vec<TermRow> {
     let mut kept: HashMap<String, usize> = HashMap::new();
     let mut in_table = false;
     for line in body.split('\n') {
-        if line.contains("术语表") {
+        if line.contains("术语表") || line.contains("统一用语") {
             in_table = true;
             continue;
         }
@@ -706,7 +706,7 @@ pub(crate) fn read_terms(body: &str) -> Terms {
     let mut kept: HashMap<String, usize> = HashMap::new();
     let mut in_table = false;
     for line in body.split('\n') {
-        if line.contains("术语表") {
+        if line.contains("术语表") || line.contains("统一用语") {
             in_table = true;
             continue;
         }

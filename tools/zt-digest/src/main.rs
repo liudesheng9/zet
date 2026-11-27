@@ -26,6 +26,7 @@
 mod args;
 mod audit;
 mod backfill;
+mod batch_runner;
 mod figure_explain;
 mod bridge;
 mod calls;
@@ -145,25 +146,38 @@ fn main() {
     let mut argv = std::env::args().skip(1);
     let tool = argv.next().unwrap_or_default();
     let rest: Vec<String> = argv.collect();
+    if tool.eq_ignore_ascii_case("batch") {
+        let code = match batch_runner::cli(&rest) {
+            Ok(code) => code,
+            Err(error) => {
+                eprintln!("zt-digest batch: {error:#}");
+                1
+            }
+        };
+        std::process::exit(code);
+    }
     // A run on a copy of the box names it in its staging folder (zt-box.txt, zt_check::mcp::boxpin):
     // every child `zt mcp` of this process then serves that box, never the live one.
     if let Err(error) = zt_check::mcp::boxpin::apply(&rest) {
         eprintln!("zt-digest {tool}: {error:#}");
         std::process::exit(1);
     }
+    std::process::exit(run_one(&tool, &rest));
+}
+
+pub(crate) fn run_one(tool: &str, rest: &[String]) -> i32 {
     // R269: a write-capable step gives its child `zt mcp` long edit patience; a read
-    // or a precheck keeps the ordinary short bound. Set once, before the one client
-    // of this process starts.
-    zt_check::mcp::child_edit_patience(if util::writes_cards(&tool, &rest) {
+    // or a precheck keeps the ordinary short bound.
+    zt_check::mcp::child_edit_patience(if util::writes_cards(tool, rest) {
         util::WRITE_EDIT_PATIENCE_SECONDS
     } else {
         0
     });
     // R318: the invocation's staging folder ties its archive active-run marker to one run.
-    zt::note_invocation(&rest);
+    zt::note_invocation(rest);
     // docs/literature-only-digest-design.md: a digest step writes only the book's Literature tree.
     // The Topic-tree, hub and register tools (idea-grow's) keep the open scope.
-    zt_check::mcp::scope::set_literature_only(literature_scope(&tool, &rest));
+    zt_check::mcp::scope::set_literature_only(literature_scope(tool, rest));
     let dispatch = || match tool.to_ascii_lowercase().as_str() {
         "call" => calls::cli(&rest, false),
         "open-call" => calls::cli(&rest, true),
@@ -231,68 +245,76 @@ fn main() {
                         .and_then(|v| v["version"].as_str().map(str::to_string))
                         .unwrap_or_default()
                 };
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "zt_digest": env!("CARGO_PKG_VERSION"),
-                        "base": version(include_str!("../../../scripts/book-digest/workflow/zt-digest-base.blueprint.json")),
-                        "econ": version(include_str!("../../../scripts/book-digest/workflow/zt-econ-digest.blueprint.json")),
-                        "math": version(include_str!("../../../scripts/book-digest/workflow/zt-math-digest.blueprint.json")),
-                        "history": version(include_str!("../../../scripts/book-digest/workflow/zt-history-digest.blueprint.json")),
-                    })
-                );
+                let json = serde_json::json!({
+                    "zt_digest": env!("CARGO_PKG_VERSION"),
+                    "base": version(include_str!("../../../scripts/book-digest/workflow/zt-digest-base.blueprint.json")),
+                    "econ": version(include_str!("../../../scripts/book-digest/workflow/zt-econ-digest.blueprint.json")),
+                    "math": version(include_str!("../../../scripts/book-digest/workflow/zt-math-digest.blueprint.json")),
+                    "history": version(include_str!("../../../scripts/book-digest/workflow/zt-history-digest.blueprint.json")),
+                });
+                util::print_line(&util::compact(&json))?;
             } else {
-                println!("zt-digest {}", env!("CARGO_PKG_VERSION"));
+                util::print_line(&format!("zt-digest {}", env!("CARGO_PKG_VERSION")))?;
             }
             Ok(0)
         }
         _ => {
-            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, grow, service-wait, audit, card, coverage, model, model-context, list-models, hub, register, join, topic-home, bridge, math, event, finding, gate,
-       terms, term-cards, term-link, term-pilot, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, pilot, publish, resolve, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, cleanup-run, model-deps, finish-batch");
+            util::emit_err("usage: zt-digest <tool> [-Name value ...]\ntools: call, grow, service-wait, audit, card, coverage, model, model-context, list-models, hub, register, join, topic-home, bridge, math, event, finding, gate,\n       terms, term-cards, term-link, term-pilot, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, pilot, publish, resolve, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, cleanup-run, model-deps, finish-batch, batch");
             Ok(2)
         }
     };
     // A pure-read step whose read set saw the archive revision change reads it again (util::CHANGING_VIEW_WAITS).
     let result = util::retry_changing_view(
-        util::rereads_on_changing_view(&tool, &rest),
+        util::rereads_on_changing_view(tool, rest),
         &util::CHANGING_VIEW_WAITS,
         |seconds| std::thread::sleep(std::time::Duration::from_secs(seconds)),
         dispatch,
     );
     match result {
-        Ok(code) => std::process::exit(code),
+        Ok(code) => code,
         Err(error) => {
             // R338: a step whose own write the archive refused with its typed Lock refusal answers
             // that refusal as its last stdout line and exits 2, so the Workflow stops the affected
             // write stage without reading the refusal as a provider fault or matching English text.
-            if let Some(code) = crate::lockcheck::stopped_exit(&tool, &error) {
-                std::process::exit(code);
+            if let Some(code) = crate::lockcheck::stopped_exit(tool, &error) {
+                return code;
             }
-            eprintln!("zt-digest {tool}: {error:#}");
-            std::process::exit(1);
+            util::emit_err(&format!("zt-digest {tool}: {error:#}"));
+            1
         }
     }
 }
 
-/// The tools that compose Topic trees, hubs and the register (zt-idea-grow's, and the hand tools
-/// beside them). Every other tool is a digest step and runs in the Literature scope, Organize's
-/// survey and apply included: a digest's Organize merges no Topic and moves no Topic Card.
-const OPEN_TOOLS: &[&str] = &[
-    "open-call", "grow", "hub", "register", "gate", "join", "topic-home", "publish", "resolve", "pilot",
-    "restate", "snapshot-topics", "service-wait", "list-models", "version", "--version", "-v",
-];
+/// Returns true if `arg` enables `-Open` (`-Open`, `-Open:true`, `-Open:$true`, `-Open=true`).
+pub(crate) fn is_open_flag(arg: &str) -> bool {
+    if arg.eq_ignore_ascii_case("-Open") {
+        return true;
+    }
+    if let Some((name, val)) = util::split_flag_arg(arg)
+        && name.eq_ignore_ascii_case("-Open")
+    {
+        let v = val.trim().trim_start_matches('$');
+        return v.eq_ignore_ascii_case("true") || v == "1";
+    }
+    false
+}
 
 /// Whether this invocation runs in the Literature scope: every digest step, the helper `call`, and
 /// `organize-apply` unless given `-Open` (a Topic merge run by hand or by a later idea-grow round).
 /// `open-call` is the helper in the open scope, a command of its own that no digest job's approval
 /// allows (docs/agent-write-scope-proposal.md, D10).
+const OPEN_TOOLS: &[&str] = &[
+    "open-call", "grow", "hub", "register", "gate", "join", "topic-home", "publish", "resolve", "pilot",
+    "restate", "snapshot-topics", "service-wait", "list-models", "version", "--version", "-v",
+];
+
 fn literature_scope(tool: &str, rest: &[String]) -> bool {
     let tool = tool.to_ascii_lowercase();
     if tool == "call" {
         return true;
     }
     if tool == "organize-apply" {
-        return !rest.iter().any(|a| a.eq_ignore_ascii_case("-Open"));
+        return !rest.iter().any(|a| is_open_flag(a));
     }
     !OPEN_TOOLS.contains(&tool.as_str())
 }
@@ -318,5 +340,7 @@ mod scope_tests {
         assert!(!literature_scope("open-call", &["-".into()]));
         assert!(literature_scope("organize-apply", &["-Work".into(), "w".into()]));
         assert!(!literature_scope("organize-apply", &["-Work".into(), "w".into(), "-Open".into()]));
+        assert!(!literature_scope("organize-apply", &["-Work".into(), "w".into(), "-Open:true".into()]));
+        assert!(!literature_scope("organize-apply", &["-Work".into(), "w".into(), "-Open:$true".into()]));
     }
 }

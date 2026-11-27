@@ -62,12 +62,19 @@ pub fn find(argv: &[String], cwd: Option<&Path>) -> Result<Option<Pin>> {
     Ok(found)
 }
 
-fn same(a: &str, b: &str) -> bool {
-    // One separator per step: a JSON-escaped command can name `D:\\box\\config` (live run 2026-10-26, grow5).
+pub fn same(a: &str, b: &str) -> bool {
+    // One separator per step: a JSON-escaped command can name `D:\\box\\config` (live run 2026-10-26, grow5),
+    // while preserving a leading UNC prefix `\\server\share`.
     let norm = |s: &str| {
         let t = s.trim().trim_end_matches(['\\', '/']).replace('/', "\\").to_ascii_lowercase();
+        let (prefix, rest) = if let Some(stripped) = t.strip_prefix("\\\\") {
+            ("\\\\", stripped)
+        } else {
+            ("", t.as_str())
+        };
         let mut out = String::with_capacity(t.len());
-        for c in t.chars() {
+        out.push_str(prefix);
+        for c in rest.chars() {
             if !(c == '\\' && out.ends_with('\\')) {
                 out.push(c);
             }
@@ -142,6 +149,8 @@ mod tests {
         assert!(same(r"D:\\zt-pilot-172\\config", r"D:\zt-pilot-172\config"));
         assert!(same("D://box//config/", r"d:\box\config"));
         assert!(!same(r"D:\box\config", r"D:\box2\config"));
+        assert!(same(r"\\server\share\\box", r"\\server\share\box"));
+        assert!(!same(r"\\server\share", r"\server\share"));
     }
 
     #[test]

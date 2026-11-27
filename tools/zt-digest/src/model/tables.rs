@@ -28,11 +28,20 @@ static CELL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)<t([dh])([^>]
 static COLSPAN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)colspan\s*=\s*"?(\d+)"#).unwrap());
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
 static VALUE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*([-−–]?\s*\d[\d,]*(?:\.\d+)?|[-−–]?\.\d+)\s*(%?)\s*(\\?[*†‡](?:\\?[*†‡])*)?\s*(?:[\(\[]\s*([-−–]?\d[\d,]*(?:\.\d+)?|[-−–]?\.\d+)\s*[\)\]])?\s*(\\?[*†‡](?:\\?[*†‡])*)?\s*$").unwrap()
+    Regex::new(r"^\s*([-−–]?\s*(?:\d[\d,]*(?:\.\d+)?|\.\d+)(?:[eE][+\-−–]?\d+)?)\s*(%?)\s*(\\?[*†‡](?:\\?[*†‡])*)?\s*(?:[\(\[]\s*([-−–]?\s*(?:\d[\d,]*(?:\.\d+)?|\.\d+)(?:[eE][+\-−–]?\d+)?)\s*[\)\]])?\s*(\\?[*†‡](?:\\?[*†‡])*)?\s*$").unwrap()
 });
-static PAREN_ONLY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*[\(\[]\s*([-−–]?\d[\d,]*(?:\.\d+)?|[-−–]?\.\d+)\s*[\)\]]\s*$").unwrap());
-static NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[-−–]?\d[\d,]*(?:\.\d+)?|[-−–]?\.\d+").unwrap());
+static PAREN_ONLY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*[\(\[]\s*([-−–]?\s*(?:\d[\d,]*(?:\.\d+)?|\.\d+)(?:[eE][+\-−–]?\d+)?)\s*[\)\]]\s*$").unwrap()
+});
+static BARE_SE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*[\(\[]?\s*([-−–]?\s*(?:\d[\d,]*(?:\.\d+)?|\.\d+)(?:[eE][+\-−–]?\d+)?)\s*[\)\]]?\s*$").unwrap()
+});
+static SE_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\s*(?:(?:bootstrap(?:ped)?|robust|clustered|asymptotic)\s+)?(?:standard\s+errors?|std\.?\s*err\.?s?|s\.?e\.?s?|标准误|自助法标准误|稳健标准误|t[- ]?stat(?:istic)?s?|t\s*统计量|z[- ]?stat(?:istic)?s?|z\s*统计量)(?:\s*[\(（][^\)）]*[\)）])?\s*$").unwrap()
+});
+static NUMBER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[-−–]?(?:\d[\d,]*(?:\.\d+)?|\.\d+)(?:[eE][+\-−–]?\d+)?").unwrap()
+});
 static OBSERVATIONS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\s*(observations|obs\.?|n|no\. of obs|number of observations|样本量|观测值|观测数|观测值数|样本数)\s*$").unwrap()
 });
@@ -86,10 +95,59 @@ fn norm(text: &str) -> String {
         .to_lowercase()
 }
 
-/// The canonical form of one number: no thousands separators, an ASCII minus, no leading zero
-/// before the decimal point (`0.014` and `.014` match).
+/// Expands scientific notation (`-3.4e-3`, `0.19e-3`) to exact plain decimal strings without
+/// floating-point drift for moderate exponents (`|exp| <= 9`), and leaves ordinary numbers intact.
+pub(crate) fn expand_sci(raw: &str) -> String {
+    let cleaned = raw.replace(' ', "").replace(['−', '–'], "-");
+    let Some((mantissa, exp_raw)) = cleaned.split_once(['e', 'E']) else {
+        return cleaned;
+    };
+    let Ok(exp) = exp_raw.parse::<i32>() else {
+        return cleaned;
+    };
+    if exp.abs() > 9 {
+        return format!("{mantissa}e{exp}");
+    }
+    let mut m = mantissa.replace(',', "");
+    let negative = m.starts_with('-');
+    if negative {
+        m.remove(0);
+    } else if m.starts_with('+') {
+        m.remove(0);
+    }
+    let (int_part, frac_part) = match m.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (m.as_str(), ""),
+    };
+    let digits = format!("{int_part}{frac_part}");
+    if digits.is_empty() || digits.chars().all(|c| c == '0') {
+        return "0".to_string();
+    }
+    let new_pos = int_part.len() as i32 + exp;
+    let body = if new_pos <= 0 {
+        let zeros = "0".repeat((-new_pos) as usize);
+        let frac = format!("{zeros}{digits}");
+        let frac = frac.trim_end_matches('0');
+        if frac.is_empty() { "0".to_string() } else { format!("0.{frac}") }
+    } else if (new_pos as usize) >= digits.len() {
+        let trailing = "0".repeat(new_pos as usize - digits.len());
+        let whole = format!("{digits}{trailing}");
+        let whole = whole.trim_start_matches('0');
+        if whole.is_empty() { "0".to_string() } else { whole.to_string() }
+    } else {
+        let split = new_pos as usize;
+        let whole = digits[..split].trim_start_matches('0');
+        let whole = if whole.is_empty() { "0" } else { whole };
+        let frac = digits[split..].trim_end_matches('0');
+        if frac.is_empty() { whole.to_string() } else { format!("{whole}.{frac}") }
+    };
+    if negative && body != "0" { format!("-{body}") } else { body }
+}
+
+/// The canonical form of one number: no thousands separators, an ASCII minus, scientific notation
+/// expanded, no leading zero before the decimal point (`0.014` and `.014`, `-3.4e-3` and `-.0034` match).
 pub(crate) fn canonical(number: &str) -> String {
-    let mut text = number.replace([',', ' '], "").replace(['−', '–'], "-");
+    let mut text = expand_sci(number).replace(',', "");
     let negative = text.starts_with('-');
     if negative {
         text.remove(0);
@@ -286,10 +344,11 @@ pub(crate) fn cell(tables: &Value, table: &str, row: &str, col: &str) -> Option<
     let rows = found["rows"].as_array()?;
     let text = rows[r]["cells"].get(c).and_then(Value::as_str).unwrap_or_default().to_string();
     let parsed = VALUE.captures(&text);
-    let mut value = parsed.as_ref().map(|p| format!("{}{}", p[1].replace(' ', ""), &p[2]));
+    let value = parsed.as_ref().map(|p| format!("{}{}", expand_sci(&p[1]), &p[2]));
     let stars = stars_in(&text);
     let mark: String = text.chars().filter(|ch| matches!(ch, '†' | '‡')).collect();
-    let mut se = parsed.as_ref().and_then(|p| p.get(4)).map(|m| m.as_str().to_string());
+    let mut se = parsed.as_ref().and_then(|p| p.get(4)).map(|m| expand_sci(m.as_str()));
+    let mut paren = paren_kind(found["notes"].as_str().unwrap_or_default());
     // A standard error in the row below: an empty label and a parenthesized number.
     if se.is_none()
         && let Some(next) = rows.get(r + 1)
@@ -297,11 +356,29 @@ pub(crate) fn cell(tables: &Value, table: &str, row: &str, col: &str) -> Option<
         && let Some(below) = next["cells"].get(c).and_then(Value::as_str)
         && let Some(p) = PAREN_ONLY.captures(below)
     {
-        se = Some(p[1].to_string());
+        se = Some(expand_sci(&p[1]));
     }
-    if value.is_none() && !text.trim().is_empty() {
-        value = NUMBER.find(&text).map(|m| m.as_str().to_string());
+    // A separately labeled SE/t/z column immediately to the right (e.g. García-Maciá Table XVII:
+    // `Coefficient | Standard Error`).
+    if se.is_none()
+        && let Some(next_head) = found["header"].get(c + 1).and_then(Value::as_str)
+        && SE_HEADER.is_match(next_head)
+        && let Some(adj) = rows[r]["cells"].get(c + 1).and_then(Value::as_str)
+        && let Some(p) = BARE_SE.captures(adj)
+    {
+        se = Some(expand_sci(&p[1]));
+        let lower_h = next_head.to_lowercase();
+        if lower_h.contains("t-stat") || lower_h.contains("t stat") || lower_h.contains("t 统计量") || lower_h.contains("t统计量") {
+            paren = "t";
+        } else if lower_h.contains("z-stat") || lower_h.contains("z stat") || lower_h.contains("z 统计量") || lower_h.contains("z统计量") {
+            paren = "z";
+        } else {
+            paren = "se";
+        }
     }
+    // Never silently truncate an unparsed nonempty cell with a substring regex (jones2009burden Table 4:
+    // `-3.4e-3(0.19e-3)` fell back to `-3.4` and dropped the standard error).
+    let unresolved = parsed.is_none() && !text.trim().is_empty();
     let n = rows
         .iter()
         .find(|row| OBSERVATIONS.is_match(row["label"].as_str().unwrap_or_default()))
@@ -312,9 +389,10 @@ pub(crate) fn cell(tables: &Value, table: &str, row: &str, col: &str) -> Option<
     Some(json!({
         "text": text,
         "value": value,
+        "unresolved": unresolved,
         "stars": stars,
         "se": se,
-        "paren": paren_kind(found["notes"].as_str().unwrap_or_default()),
+        "paren": paren,
         "mark": mark,
         "significance": significance(found["notes"].as_str().unwrap_or_default(), stars, &mark),
         "n": n,
@@ -483,6 +561,48 @@ mod tests {
         assert_eq!(numbers("值 0.014，N = 4,618，−0.004 与 .50"), [".014", "4618", "-.004", ".5"]);
         assert_eq!(canonical("0.70"), ".7");
         assert_eq!(canonical("-0"), "0");
+        assert_eq!(canonical("-3.4e-3"), "-.0034");
+        assert_eq!(canonical("0.19e-3"), ".00019");
+        assert_eq!(expand_sci("-3.4e-3"), "-0.0034");
+        assert_eq!(expand_sci("0.19e-3"), "0.00019");
         assert!(table_numbers(&json!({ "tables": extract(HANSEN, "s") })).contains(&".047".to_string()));
+    }
+
+    /// jones2009burden Table 4: `-3.4e-3(0.19e-3)` must parse both scientific-notation value and SE
+    /// instead of falling back to `-3.4` with no standard error.
+    #[test]
+    fn scientific_notation_cells_parse_value_and_se() {
+        let text = "表 4\n\n<table><tr><td></td><td>(1)</td><td>(2)</td></tr><tr><td>Application year</td><td>-3.4e-3(0.19e-3)</td><td>-3.2e-3(0.20e-3)</td></tr><tr><td>Observations</td><td>215,855</td><td>215,855</td></tr></table>\n\n注：括号内为标准误。";
+        let tables = json!({ "tables": extract(text, "sections/s04.md") });
+        let c = cell(&tables, "表 4", "Application year", "(1)").expect("a cell");
+        assert_eq!(c["text"], "-3.4e-3(0.19e-3)");
+        assert_eq!(c["value"], "-0.0034");
+        assert_eq!(c["se"], "0.00019");
+        assert_eq!(c["unresolved"], false);
+        assert_eq!(c["n"], "215,855");
+    }
+
+    /// garciamacia2019destructive Table XVII: separate `Standard Error` column right next to `Coefficient`.
+    #[test]
+    fn a_separate_se_column_is_attached_to_its_coefficient() {
+        let text = "表 XVII\n自助法参数估计结果，2003–2013 年\n\n<table><tr><td></td><td>Coefficient</td><td>Standard Error</td></tr><tr><td>Creative destruction by incumbents $\\delta_{i}$</td><td>0.283</td><td>0.0091</td></tr><tr><td>New varieties by entrants $\\kappa_{e}$</td><td>0.030</td><td>0.0026</td></tr></table>";
+        let tables = json!({ "tables": extract(text, "sections/s14.md") });
+        let c = cell(&tables, "表 XVII", "Creative destruction", "Coefficient").expect("a cell");
+        assert_eq!(c["value"], "0.283");
+        assert_eq!(c["se"], "0.0091");
+        assert_eq!(c["paren"], "se");
+        assert_eq!(c["unresolved"], false);
+    }
+
+    /// A nonempty cell that cannot be parsed cleanly must be flagged `unresolved: true` rather than
+    /// silently truncated to its first numeric substring.
+    #[test]
+    fn an_unparsed_nonempty_cell_is_flagged_unresolved() {
+        let text = "表 9\n\n<table><tr><td></td><td>(1)</td></tr><tr><td>Rate</td><td>0.12 to 0.34</td></tr></table>";
+        let tables = json!({ "tables": extract(text, "sections/s09.md") });
+        let c = cell(&tables, "表 9", "Rate", "(1)").expect("a cell");
+        assert_eq!(c["text"], "0.12 to 0.34");
+        assert_eq!(c["unresolved"], true);
+        assert!(c["value"].is_null(), "{c}");
     }
 }

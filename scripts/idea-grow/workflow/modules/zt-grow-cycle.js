@@ -1,4 +1,6 @@
-// ==== module zt-grow-cycle v14 ====
+// ==== module zt-grow-cycle v15 ====
+// v15 (the owner, 2026-11-22): every grow job runs on the shared library's one source value (ZT_DRIVE_MODEL), as the
+// digests do; the frozen official model param left. The bridge's OpenCode Go key pool chooses every key.
 // The idea-grow compiler cycle (docs/idea-grow-design.md). v12 (zt-idea-grow 4.0.0, docs/workflow-simplicity-proposal.md
 // S1-S4, S6, S7, S9) is one loop with three branches. `zt-digest grow -Step next` runs every deterministic step it can
 // (plan, topics, apply, links, check, the restatement and concept reviews, the Topic maintenance, the hubs and the
@@ -17,7 +19,7 @@
 // and runs its entries (the same work DSMP dsDispatch did, from a file the step wrote). The done line carries the
 // report's counts; the fault line its code and cause.
 defineModule({
-  id: 'zt-grow-cycle', version: '14', requires: ['deepseek', '@dsmp', 'zt-workflow-lib'],
+  id: 'zt-grow-cycle', version: '15', requires: ['deepseek', '@dsmp', 'zt-workflow-lib'],
   summary: 'ZT idea grow: one loop over `zt-digest grow -Step next`, whose checked line one grow-steps.ps1 step (a DeepSeek drive job) prints (jobs -> one manager reading the job file, done, fault); the command plans, applies, checks, reviews, builds the hubs and the register and reports; a write the owner\'s Lock refused stops the stage with the typed card_locked fault.',
   params: {
     book: { type: 'string', description: 'one Literature tree to grow from (its Citation key)' },
@@ -28,7 +30,6 @@ defineModule({
     ztConfig: { type: 'string', description: 'the ZT_CONFIG_DIR of a copy of the box with its own zt service (the run pins its work folder to it); empty: the live box' },
     from: { type: 'number', description: 'the first section number to grow' },
     to: { type: 'number', description: 'the last section number to grow' },
-    model: { type: 'string', required: true, description: 'DeepSeek Harness model of the jobs (frozen: the official source)' },
     effort: { type: 'string', default: 'high', enum: ['high', 'max'], description: 'DeepSeek reasoning effort of every job, the hub jobs included (never below high)' },
     hubs: { type: 'boolean', default: true, description: 'run the hubs round (hub compiler and register) after the Cards are written' },
     register: { type: 'string', default: 'apply', enum: ['apply', 'off'], description: 'publish the rebuilt register (apply) or leave it (off)' },
@@ -49,7 +50,7 @@ defineModule({
     const STEPS = 'E:\\zet\\scripts\\idea-grow\\grow-steps.ps1'
     const options = {
       mode: p.mode === 'hubs' ? 'hubs' : 'full', books: Array.isArray(p.books) ? p.books.map(String).filter(Boolean) : [], book: p.book || '',
-      instructions: p.instructions, tool, zt_config: p.ztConfig || '', model: p.model, effort: p.effort === 'max' ? 'max' : 'high',
+      instructions: p.instructions, tool, zt_config: p.ztConfig || '', model: ZT_DRIVE_MODEL, effort: p.effort === 'max' ? 'max' : 'high',
       restate: p.restate !== false, concepts: p.concepts !== false, organize: p.organize === true, hubs: p.hubs !== false, register: p.register === 'off' ? 'off' : 'apply',
       hub_trees: p.hubTrees || '', hub_rebuild: p.hubRebuild === true, hub_limits: p.hubLimits && typeof p.hubLimits === 'object' ? p.hubLimits : null,
       ...(p.from != null ? { from: Number(p.from) } : {}), ...(p.to != null ? { to: Number(p.to) } : {}),

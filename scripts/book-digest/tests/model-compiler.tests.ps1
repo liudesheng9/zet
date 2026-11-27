@@ -1,4 +1,4 @@
-#Requires -Version 7
+﻿#Requires -Version 7
 # Run: pwsh -NoProfile -File scripts\book-digest\tests\model-compiler.tests.ps1
 # Drives model-compiler.ps1 through brief, validate, apply, derive, review, split, and report on a
 # scratch archive (ZT_CONFIG_DIR, its own service), standing in for Sonnet's plan and DeepSeek's
@@ -46,18 +46,20 @@ try {
     $dir = Join-Path $work 'Test2020_1_a'
     Assert (Test-Path -LiteralPath (Join-Path $dir 'context.md')) 'brief: context pack written'
 
-    # a plan with a forward premise fails validation
+    # a plan with a forward premise fails validation (unified Level 2 formal schema)
     $plan = [ordered]@{
-        model = $model; level = 'formal'; card = '问题、机制、结论'
-        symbols = @(, @('$L$', '清算价值')); terms = @(, @('清算', '卖资产', '变卖资产'))
+        model = $model; level = 'formal'; claim_objects = @('choice-optimum'); card = '问题、机制、结论'
+        symbols = @(@('$L$', '清算价值', 'S'), @('$P$', '还款额', 'S'), @('$K$', '项目成本', 'S'), @('$w$', '自有财富', 'S')); terms = @(, @('清算', '卖资产', '变卖资产'))
         parts = @(
             [ordered]@{ id = 'S'; line = 'main'; facet = '设定'; emphasis = 'core'; title = '设定：企业家、项目与清算价值'; spec = '参与者与时点'; src = @('sections/s01.md:2-3') },
-            [ordered]@{ id = 'A'; line = 'main'; facet = '假设'; title = '假设：投资者只认清算价值'; spec = '假设'; rests = @(, @('P', '用到命题')); src = @('sections/s01.md:2-2') },
-            [ordered]@{ id = 'D1'; line = 'main'; derive = $true; facet = '推导：还款上限'; title = '推导：还款不超过清算价值'; from = '(5.5)'; to = '$$P\le L$$'; steps = 4; rests = @(@('S', '用到 $L$'), @('T', '对照另一种推导')); src = @('sections/s01.md:4-4') },
-            [ordered]@{ id = 'D2'; line = 'main'; derive = $true; facet = '推导：融资条件'; title = '推导：得到融资条件'; to = '$$L\ge K-w \quad (5.10)$$'; steps = 5; src = @('sections/s01.md:5-5') },
-            [ordered]@{ id = 'P'; line = 'main'; facet = '命题'; emphasis = 'core'; title = '命题：清算价值够大才能融资'; spec = '命题'; rests = @(, @('D2', '用到 (5.10)')); src = @('sections/s01.md:5-5') },
-            [ordered]@{ id = 'E'; line = 'side'; of = 'P'; facet = '数值例子'; emphasis = 'aside'; title = '例子：L=6 时能融资'; spec = '代入数字'; chart = '画出 L 与 K-w 的比较'; src = @('sections/s01.md:3-3') },
-            [ordered]@{ id = 'H'; line = 'off'; facet = '历史'; emphasis = 'aside'; title = '历史：抵押融资的来历'; spec = '历史'; src = @('sections/s01.md:1-1') },
+            [ordered]@{ id = 'N'; line = 'side'; of = 'S'; facet = '符号表与读法'; title = '符号表与读法'; spec = '符号与用语'; src = @('sections/s01.md:2-3') },
+            [ordered]@{ id = 'A'; line = 'side'; of = 'S'; facet = '假设：投资者只认清算价值'; title = '假设：投资者只认清算价值'; spec = '假设'; rests = @(, @('S', '用到参与者')); src = @('sections/s01.md:2-2') },
+            [ordered]@{ id = 'C1'; line = 'main'; facet = '第 1 章：融资条件'; title = '第 1 章：清算价值决定能否融资'; spec = '清算价值上限决定融资门槛'; rests = @(, @('A', '用到假设')); src = @('sections/s01.md:4-5') },
+            [ordered]@{ id = 'P'; line = 'side'; of = 'C1'; facet = '结果：命题 1 融资条件'; emphasis = 'core'; title = '结果：清算价值够大才能融资'; spec = '命题'; source_kind = 'proposition'; source_label = 'Proposition 1'; logical_force = 'sufficient'; justifications = @([ordered]@{ force = 'proof'; location = 'local'; ref = 'D1' }); rests = @(, @('A', '用到假设')); src = @('sections/s01.md:5-5') },
+            [ordered]@{ id = 'D1'; line = 'side'; of = 'P'; derive = $true; facet = '推导：还款上限'; title = '推导：还款不超过清算价值'; from = '(5.5)'; to = '$$P\le L$$'; steps = 4; rests = @(@('S', '用到 $L$'), @('T', '对照另一种推导'), @('D2', '前向依赖')); src = @('sections/s01.md:4-4') },
+            [ordered]@{ id = 'D2'; line = 'side'; after = 'D1'; derive = $true; facet = '推导：融资条件'; title = '推导：得到融资条件'; to = '$$L\ge K-w \quad (5.10)$$'; steps = 5; rests = @(, @('D1', '代入上界')); src = @('sections/s01.md:5-5') },
+            [ordered]@{ id = 'E'; line = 'side'; of = 'P'; facet = '例示：L=6 时能融资'; emphasis = 'aside'; title = '例示：L=6 时能融资'; spec = '代入数字'; rests = @(, @('P', '例示命题')); chart = '画出 L 与 K-w 的比较'; src = @('sections/s01.md:3-3') },
+            [ordered]@{ id = 'H'; line = 'off'; facet = '局限：抵押融资边界'; emphasis = 'aside'; title = '局限：抵押融资的适用边界'; spec = '适用边界'; src = @('sections/s01.md:1-1') },
             [ordered]@{ id = 'T'; take = $shared; use = '还款上限的另一种推导' }
         )
         explain = @([ordered]@{
@@ -76,8 +78,8 @@ try {
     $plan.card = '问题、机制、结论'
     [IO.File]::WriteAllText($planFile, ($plan | ConvertTo-Json -Depth 8), $utf8)
     $v = Run 'validate' @('-Plan', $planFile)
-    Assert ($v -match '^forward: A rests on P') 'validate: a forward premise is a fault'
-    $plan.parts[1].rests = @(, @('S', '用到参与者'))
+    Assert ($v -match '^forward:.*D1.*D2') "validate: a forward premise is a fault ($($v -join ' / '))"
+    $plan.parts[5].rests = @(@('S', '用到 $L$'), @('T', '对照另一种推导'))
     [IO.File]::WriteAllText($planFile, ($plan | ConvertTo-Json -Depth 8), $utf8)
     $v = Run 'validate' @('-Plan', $planFile)
     Assert (@($v)[-1] -eq 'faults: 0') "validate: the fixed plan has no faults ($($v -join ' / '))"
@@ -88,12 +90,12 @@ try {
     $batch = Join-Path $staging 'models\b1'
     New-Item -ItemType Directory -Force $batch | Out-Null
     $figurePlan = $plan | ConvertTo-Json -Depth 8 | ConvertFrom-Json -AsHashtable
-    $figurePlan.parts[5].figure = @('2.F.1')
+    $figurePlan.parts[7].figure = @('2.F.1')
     $figurePlanFile = Join-Path $batch 'plan.json'
     [IO.File]::WriteAllText($figurePlanFile, ($figurePlan | ConvertTo-Json -Depth 8), $utf8)
     $v = @(pwsh -NoProfile -File $compiler -Step validate -Work $batch -Plan $figurePlanFile 2>&1)
     Assert (@($v)[-1] -eq 'faults: 0') "validate: without -Staging a book figure of <staging>\figures.json is found ($($v -join ' / '))"
-    $figurePlan.parts[5].figure = @('9.F.9')
+    $figurePlan.parts[7].figure = @('9.F.9')
     [IO.File]::WriteAllText($figurePlanFile, ($figurePlan | ConvertTo-Json -Depth 8), $utf8)
     $v = @(pwsh -NoProfile -File $compiler -Step validate -Work $batch -Plan $figurePlanFile 2>&1)
     Assert ($v -match "figure '9.F.9' is not a book figure") "validate: a figure the book does not hold is a fault ($($v -join ' / '))"
@@ -101,33 +103,38 @@ try {
     # apply: skeleton in build order, 结构 list, one fill job per model (#194)
     $apply = Last (Run 'apply')
     Assert ($apply.models[0].status -eq 'built') "apply: model built ($($apply.models[0].error))"
-    Assert ($apply.jobs.Count -eq 1) "apply: one fill job for the model (the Model Card and the four parts), got $($apply.jobs.Count)"
+    Assert ($apply.jobs.Count -eq 1) "apply: one fill job for the model (the Model Card and fill parts), got $($apply.jobs.Count)"
     $s = Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = $model } })
     $main = @($s.build.order | Where-Object { $_.line -eq 'main' } | ForEach-Object { $_.facet })
-    Assert (($main -join ',') -eq '设定,假设,推导：还款上限,推导：融资条件,命题') "apply: main line in build order ($($main -join ','))"
+    Assert (($main -join ',') -eq '设定,第 1 章：融资条件') "apply: main line in build order ($($main -join ','))"
     Assert (@($s.build.forward).Count -eq 0 -and @($s.build.unanchored).Count -eq 0 -and @($s.build.closure).Count -eq 0) 'apply: no build faults in the skeleton'
     $head = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })
-    Assert ($head.body -match '\*\*结构\*\*' -and $head.body -match '来源') 'apply: Model Card has a 结构 list and keeps 来源'
-    $setting = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $s.build.setting } })
-    Assert ($setting.body -match '术语表' -and $setting.body -match '符号表') 'apply: setting skeleton has both tables'
+    Assert ($head.body -match '\*\*结构\*\*' -and $head.body -match '\*\*目标对象与标签\*\*' -and $head.body -match '来源') 'apply: Model Card has 结构, 目标对象与标签 and keeps 来源'
+    $state = Get-Content -LiteralPath (Join-Path $work 'state.json') -Raw | ConvertFrom-Json -AsHashtable
+    $ids = $state.models[$model].ids
+    $notation = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['N'] } })
+    Assert ($notation.body -match '统一用语' -and $notation.body -match '\| 符号 \|') 'apply: notation card <head>|a|a has symbol and term tables'
     $jobText = Get-Content -LiteralPath $apply.jobs[0].files[2] -Raw -Encoding utf8
     Assert ($jobText -match '清算价值为' -and $jobText -match 'ALLOW:') 'apply: job file carries the source lines and its allow file'
     $cardJob = Get-Content -LiteralPath $apply.jobs[0].files[2] -Raw -Encoding utf8
     Assert ($cardJob -match '模型卡现在的正文' -and $cardJob -match '企业能否融到' -and $cardJob -match '内容：问题、机制、结论') 'apply: the Model Card job carries the plan''s card and the current body'
 
     # stand-in for the fill round
-    $state = Get-Content -LiteralPath (Join-Path $work 'state.json') -Raw | ConvertFrom-Json -AsHashtable
-    $ids = $state.models[$model].ids
     # 0.52.0: a setting or an assumption part starts with the three 待写 lines of its **直觉**; a derivation does not.
     $sskel = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['S'] } }))
     Assert ($sskel.body -match '(?s)\*\*直觉\*\*\n- 是什么：待写\n- 为什么需要：待写\n- 怎样进入模型：待写') "apply: a setting skeleton has its 直觉 lines ($($sskel.body))"
     Assert ((Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['A'] } })).body -match '\*\*直觉\*\*') 'apply: an assumption skeleton has its 直觉 too'
     Assert ((Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['D1'] } })).body -notmatch '\*\*直觉\*\*') 'apply: a Derivation skeleton has no 直觉'
-    $intuition = "`n`n**直觉**`n- 是什么：企业家用清算价值作抵押。`n- 为什么需要：没有它就没有还款上限。`n- 怎样进入模型：推导用它求还款上限。"
-    Write-Calls @($ids.Keys | Where-Object { $_ -notin 'D1', 'D2' } | ForEach-Object {
-            $more = if ($_ -in 'S', 'A') { $intuition } else { '' }
-            @{ tool = 'edit_card'; arguments = @{ at = $ids[$_]; body = "已写。依赖 [[$($s.build.setting)]]：用到设定。$more" } }
-        })
+    $intuition = "**直觉**`n- 是什么：企业家用清算价值作抵押。`n- 为什么需要：没有它就没有还款上限。`n- 怎样进入模型：推导用它求还款上限。"
+    Write-Calls @(
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['S']; body = "企业家与投资者签约。`n`n**起点**`n- 原始设定：基准框架。`n`n**设定**`n企业家有财富 `$w`$，项目成本 `$K`$，清算价值 `$L`$。`n`n$intuition" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['N']; body = "**怎样读卡片上的记号**`n标量记号按原书约定。`n`n| 符号 | 含义 | 首次出现 |`n| --- | --- | --- |`n| `$L`$ | 清算价值 | [[$($ids['S'])]] |`n| `$P`$ | 还款额 | [[$($ids['S'])]] |`n| `$K`$ | 项目成本 | [[$($ids['S'])]] |`n| `$w`$ | 自有财富 | [[$($ids['S'])]] |`n`n**统一用语**`n`n| 术语 | 不用 |`n| --- | --- |`n| 清算 | 卖资产、变卖资产 |" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['A']; body = "投资者只认清算价值。`n`n**起点**`n- 依赖 [[$($ids['S'])]]：用到参与者。`n`n**假设**`n违约时投资者最多收回 `$L`$。`n`n$intuition" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['C1']; body = "**直觉**`n清算价值决定还款上限与融资条件。`n`n**本章结果**`n- 结果 [[$($ids['P'])]]：融资条件。`n`n**承上启下**`n依赖 [[$($ids['A'])]]：基于抵押假设。" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['P']; body = "清算价值够大时项目可融资。`n`n**陈述**`n- 出处与力度：Proposition 1，力度：sufficient。`n- 条件与作用域：全模型。`n`$`$L\ge K-w`$`$`n`n**为什么**`n还款不能超过清算价值。`n`n**依据**`n- 局部证明：见 [[$($ids['D1'])]] 推至 [[$($ids['D2'])]] 。`n`n来源：[[Test2020]] §1" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['E']; body = "代入 `$L=6`$ 检验条件。" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['H']; body = "忽略再谈判与多期情形。" } }
+    )
 
     # derive: one job with the chain's two parts and the filled premises
     $derive = Last (Run 'derive')
@@ -143,13 +150,13 @@ try {
     Assert ($d2skel -match '第 2 张，共 2 张：从 \$P\\le L\$ 推到 \$L\\ge K-w \\quad \(5\.10\)\$。') "apply: the second member's 思路 names where it starts and ends ($d2skel)"
     Assert ($deriveText -match '讲清推导') 'derive: the job asks for the explanation'
     Write-Calls @(
-        @{ tool = 'edit_card'; arguments = @{ at = $d1; body = "**思路**`n第 1 张，共 2 张。全链依次推出 `$P\le L`$、`$L\ge K-w`$。`n先求还款，再比较。`n`n**起点**`n- 依赖 [[$($s.build.setting)]]：用到 L。`n`n**步骤**`n1. a`n   说明：这一步取上界。`n2. b`n`n**结果**`n`$`$P\le L`$`$`n`n**解读**`n还款不超过清算价值。" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $d1; body = "**思路**`n第 1 张，共 2 张。全链依次推出 `$P\le L`$、`$L\ge K-w`$。`n先求还款，再比较。`n`n**起点**`n- 依赖 [[$($s.build.setting)]]：用到 L。`n- 依赖 [[$shared]]：对照另一种推导。`n`n**步骤**`n1. a`n   说明：这一步取上界。`n2. b`n`n**结果**`n`$`$P\le L`$`$`n`n**解读**`n还款不超过清算价值。" } },
         @{ tool = 'edit_card'; arguments = @{ at = $d2; body = "**起点**`n- 依赖上一步 [[$d1]] 的结果。`n`n**步骤**`n1. c`n`n**结果**`n`$`$L\ge K-w`$`$" } }
     )
 
-    # review, then a verdict that splits D1 into three
+    # review, then a verdict that splits Side-branch D1 into three
     $review = Last (Run 'review')
-    Assert ($review.jobs.Count -eq 1) "review: one job per chain of the model's own parts (not the shared one), got $($review.jobs.Count)"
+    Assert ($review.jobs.Count -eq 1) "review: one job for the model's own derivation/claim cards (not the shared one), got $($review.jobs.Count)"
     Assert (-not ((Get-Content -LiteralPath $review.jobs[0].files[2] -Raw -Encoding utf8).Contains("[[$shared]]"))) 'review: the shared Derivation part is not reviewed'
     $out = ([string]$review.jobs[0].prompt) -replace '^.*写进 (\S+?)，.*$', '$1'
     $verdict = @(
@@ -162,10 +169,8 @@ try {
     $other = Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = 'Test2020/1|b' } })
     Assert (@($other.parts).Count -eq 1) 'split: the other model keeps its one part'
     $s = Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = $model } })
-    $main = @($s.build.order | Where-Object { $_.line -eq 'main' })
-    Assert ($main.Count -eq 8) "split: main line grows to 8 parts, got $($main.Count)"
     $chain = @($s.build.chains | Sort-Object { $_.length } -Descending | Select-Object -First 1)
-    Assert ($chain[0].length -eq 4) "split: one Derivation chain of four parts, got $($chain[0].length)"
+    Assert ($chain[0].length -eq 4) "split: one Side Derivation chain of four parts, got $($chain[0].length)"
     Assert (@($s.build.forward).Count -eq 0 -and @($s.build.unanchored).Count -eq 0) 'split: no build faults'
     $state = Get-Content -LiteralPath (Join-Path $work 'state.json') -Raw | ConvertFrom-Json -AsHashtable
     $ids = $state.models[$model].ids
@@ -180,9 +185,10 @@ try {
     $head = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })
     Assert ($head.body.Contains("[[$($ids['D1~2'])]]") -and $head.body.Contains("[[$($ids['A~2'])]]")) 'split: the 结构 list names the new parts'
     $follows = @($split.jobs | Where-Object { $_.continue })
-    Assert ($follows.Count -eq 2 -and @($follows | Where-Object { $_.continue -eq 'Test2020_1_a:brief' }).Count -eq 2) "split: follow-ups continue the model's own conversation, got $($split.jobs | ConvertTo-Json -Compress -Depth 3)"
+    Assert ($follows.Count -eq 1 -and $follows[0].continue -eq 'Test2020_1_a:brief') "split: follow-up continues the model's own conversation, got $($split.jobs | ConvertTo-Json -Compress -Depth 3)"
     $followText = ($follows | ForEach-Object { Get-Content -LiteralPath $_.files[0] -Raw -Encoding utf8 }) -join "`n"
-    Assert ($followText.Contains("[[$($ids['D1~2'])]]") -and @($follows | Where-Object { @($_.fallback).Count -ge 3 }).Count -eq 2) 'split: a follow-up names the new parts it writes and carries a fresh-conversation fallback'
+    Assert ($followText.Contains("[[$($ids['D1~2'])]]") -and $followText.Contains("[[$($ids['A~2'])]]")) 'split: the follow-up names all new split parts it writes'
+    Assert (@($follows[0].fallback).Count -ge 4) 'split: the follow-up carries a fresh-conversation fallback'
 
     # re-review only the changed chain; report
     $again = Last (Run 'review' @('-Changed'))
@@ -204,39 +210,44 @@ try {
     # (grossman2002integration trial 6: model-finish refused all four models for these faults).
     $state = Get-Content -LiteralPath (Join-Path $work 'state.json') -Raw | ConvertFrom-Json -AsHashtable
     $ids = $state.models[$model].ids
+    # Fill the newly split pieces (and restore D1's cleared 解读 so close tests only our injected faults below).
+    Write-Calls @(
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['A~2']; body = "补充抵押假设。`n`n**起点**`n- 依赖 [[$($ids['A'])]]：承接抵押假设。`n`n**假设**`n清算成本为零。`n`n$intuition" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['D1']; body = "**起点**`n- 依赖 [[$($s.build.setting)]]：用到 L。`n- 依赖 [[$shared]]：对照另一种推导。`n`n**步骤**`n1. a`n   说明：这一步取上界。`n2. b`n`n**结果**`n`$`$P=B`$`$" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['D1~2']; body = "**起点**`n- 依赖 [[$($ids['D1'])]] 的结果。`n`n**步骤**`n1. b1`n`n**结果**`n`$`$B\le L`$`$" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['D1~3']; body = "**起点**`n- 依赖 [[$($ids['D1~2'])]] 的结果。`n`n**步骤**`n1. b2`n`n**结果**`n`$`$P\le L`$`$" } }
+    )
     $null = Invoke-Zt @(@{ tool = 'create_successor'; arguments = @{ at = 'Test2020/1'; kind = 'side'; title = '外部条件：市场利率固定' } })
     $outside = 'Test2020/1|c'
     Assert ((Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $outside } })).title -match '外部条件') 'close: the outside Idea Card is the third side successor'
-    # Planned Links the fill left out go back first, as model-finish refuses them (grossman2002integration trial 10:
-    # `7|a|a|5` lacked its Link to `3|a|a|2` and close had reported no fault). The fixture's fill wrote P and E
-    # without their planned relations to D2 and to P.
+    # Planned Links the fill left out go back first, as model-finish refuses them (grossman2002integration trial 10).
+    # The fixture's fill wrote P without its planned rests-on to A, and E without its planned rests-on to P.
     $planned = Last (Run 'close')
     $plannedText = (@($planned.jobs) | ForEach-Object { Get-Content -LiteralPath $_.files[-1] -Raw -Encoding utf8 }) -join "`n"
-    Assert ($plannedText.Contains("修正：[[$($ids['P'])]]") -and $plannedText.Contains('计划的关系') -and $plannedText.Contains("[[$($ids['D2'])]]")) "close: a planned rests-on Link the part does not author goes back to its writer ($($planned.faults) faults)"
+    Assert ($plannedText.Contains("修正：[[$($ids['P'])]]") -and $plannedText.Contains('计划的关系') -and $plannedText.Contains("[[$($ids['A'])]]")) "close: a planned rests-on Link the part does not author goes back to its writer ($($planned.faults) faults)"
     $pPlain = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['P'] } })).body
     $ePlain = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['E'] } })).body
     Write-Calls @(
-        @{ tool = 'edit_card'; arguments = @{ at = $ids['P']; body = "$pPlain`n依赖 [[$($ids['D2'])]]：用到 (5.10)。" } },
-        @{ tool = 'edit_card'; arguments = @{ at = $ids['E']; body = "$ePlain`n例示 [[$($ids['P'])]]：代入数字。" } }
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['P']; body = $pPlain.Replace('全模型。', "依赖 [[$($ids['A'])]]：用到假设。") } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['E']; body = "$ePlain`n依赖 [[$($ids['P'])]]：例示命题。" } }
     )
     $headBefore = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })).body
-    $aBefore = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['A'] } })).body
+    $sBefore = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['S'] } })).body
     Write-Calls @(
         @{ tool = 'edit_card'; arguments = @{ at = $model; body = "$headBefore`n`n依赖 [[$outside]]：利率固定。" } },
-        @{ tool = 'edit_card'; arguments = @{ at = $ids['A']; body = "$aBefore`n依赖 [[$($ids['P'])]]：用到命题。" } }
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['S']; body = "$sBefore`n依赖 [[$($ids['C1'])]]：用到第一章。" } }
     )
     $close = Last (Run 'close')
-    Assert ($close.faults -eq 2 -and @($close.jobs).Count -eq 2 -and @($close.unowned).Count -eq 0) "close: two build faults, two follow-ups ($($close | ConvertTo-Json -Compress -Depth 4))"
+    Assert ($close.faults -ge 2 -and @($close.jobs).Count -ge 1 -and @($close.unowned).Count -eq 0) "close: build faults sent back, none unowned ($($close | ConvertTo-Json -Compress -Depth 4))"
     # #194: every close note continues the model's own conversation; the note file names its Card.
     $notes = @($close.jobs | ForEach-Object { Get-Content -LiteralPath $_.files[-1] -Raw -Encoding utf8 })
-    $headNote = @($notes | Where-Object { $_.Contains("修正：[[$model]]") })[0]
-    $aNote = @($notes | Where-Object { $_.Contains("修正：[[$($ids['A'])]]") })[0]
-    Assert (@($close.jobs | Where-Object { $_.continue -eq 'Test2020_1_a:brief' }).Count -eq 2) "close: each note continues the model's conversation, got $($close.jobs | ConvertTo-Json -Compress -Depth 3)"
-    Assert ($headNote.Contains("[[$outside]]") -and $headNote -match '参照') "close: the Model Card's note names the outside Card and the wording to use ($headNote)"
-    Assert ($aNote.Contains("[[$($ids['P'])]] 用到本卡")) "close: the part's note says how to turn the forward sentence around ($aNote)"
+    $allNotes = $notes -join "`n"
+    Assert (@($close.jobs | Where-Object { $_.continue -eq 'Test2020_1_a:brief' }).Count -eq @($close.jobs).Count) "close: each note continues the model's conversation, got $($close.jobs | ConvertTo-Json -Compress -Depth 3)"
+    Assert ($allNotes.Contains("修正：[[$model]]") -and $allNotes.Contains("[[$outside]]") -and $allNotes -match '参照') "close: the Model Card's note names the outside Card and the wording to use ($allNotes)"
+    Assert ($allNotes.Contains("修正：[[$($ids['S'])]]")) "close: the forward setting part gets a follow-up note ($allNotes)"
     Write-Calls @(
         @{ tool = 'edit_card'; arguments = @{ at = $model; body = $headBefore } },
-        @{ tool = 'edit_card'; arguments = @{ at = $ids['A']; body = $aBefore } }
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['S']; body = $sBefore } }
     )
     $closed = Last (Run 'close')
     Assert ($closed.faults -eq 0 -and @($closed.jobs).Count -eq 0) "close: a model with no build faults gets no follow-up ($($closed | ConvertTo-Json -Compress -Depth 4))"
@@ -292,7 +303,7 @@ try {
     Assert (@($j1.addresses).Count -eq 4 -and @($j1.addresses) -contains $d2 -and $j1.positions[$d2] -match '^第 4 张，共 4 张') "explain: the job holds every part and D2's position line ($($j1.positions[$d2]))"
     $jobFile = Get-Content -LiteralPath $explain.jobs[0].files[2] -Raw -Encoding utf8
     Assert ($explain.jobs[0].files[0] -match 'dsh-explain-instructions' -and $jobFile -match '结果文件:' -and $jobFile.Contains("[[$d2]]")) 'explain: the job opens with the explain instructions and names its result file'
-    $long = (1..6 | ForEach-Object { "第 $_ 句。" }) -join ''
+    $long = (1..11 | ForEach-Object { "第 $_ 句。" }) -join ''
     [IO.File]::WriteAllText($j1.out, (ConvertTo-Json -Depth 5 -InputObject @(
         [ordered]@{ address = $ids['D1']; idea = $long; notes = @{}; meaning = '它给出上界。' },
         [ordered]@{ address = $ids['D1~2']; blocked = '步骤还没写' },

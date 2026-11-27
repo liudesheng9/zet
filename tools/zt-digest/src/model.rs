@@ -14,7 +14,9 @@ mod list;
 
 pub(crate) mod source_review;
 pub(crate) mod tables;
+pub(crate) mod inventory;
 pub(crate) mod empirical;
+pub(crate) mod formal;
 mod evidence_link;
 pub(crate) mod text;
 

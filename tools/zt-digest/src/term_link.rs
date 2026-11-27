@@ -250,13 +250,13 @@ fn plan(p: &Params) -> Result<i32> {
     built.summary["pass"] = units["pass"].clone();
     built.summary["round"] = units["round"].clone();
     for fault in &built.card_faults {
-        eprintln!(
+        crate::util::emit_err(&format!(
             "term-link: refused {} ({} at line {}): {}",
             fault["address"].as_str().unwrap_or_default(),
             fault["code"].as_str().unwrap_or_default(),
             fault["line"].as_u64().unwrap_or(0),
             fault["message"].as_str().unwrap_or_default()
-        );
+        ));
     }
     util::print_line(&canon::canonical_json(&built.summary))?;
     Ok(0)

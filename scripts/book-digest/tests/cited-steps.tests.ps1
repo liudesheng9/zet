@@ -53,33 +53,34 @@ switch -Regex ($flat) {
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; units = @(@{ id = 'citedcards/t001@1'; state = 'claimed' }) })
         exit 0
     }
+    '^ledger reclaim' {
+        Write-Output (ConvertTo-Json -Compress -Depth 6 @{ schema_version = 1; reclaimed = @(@{ unit = 'citedcards/t001@1'; state = 'ready'; released = $true }); blocked = @(); skipped = @() })
+        exit 0
+    }
     '^ledger next' {
         if ($flat -match '-Lease (\d+)' -and [int]$Matches[1] -gt 7200) { Write-Output 'zt-digest ledger: -Lease must be a whole number of seconds from 1 through 7200'; exit 1 }
         if ($flat -match '-Owner cited cards finish') {
-            $n = 0; if (Test-Path -LiteralPath $env:CS_STALE_NEXT) { $n = [int](Get-Content -Raw $env:CS_STALE_NEXT) }; Set-Content -LiteralPath $env:CS_STALE_NEXT -Value "$($n + 1)"
-            if ($n -eq 0) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'citedcards/t001@1'; token = 8; input_hash = 'ih-1'; inputs = @{ job = @{ id = 't001' } } }) }) } else { Write-Output (ConvertTo-Json -Compress @{ units = @() }) }
+            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'citedcards/t001@1'; token = 8; input_hash = 'ih-1'; inputs = @{ job = @{ id = 't001' } } }) })
             exit 0
         }
         if ($flat -match '-Layer cited ') {
             Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'cited/book@1'; token = 4; input_hash = 'ih-c' }) })
             exit 0
         }
-        if ($flat -match '-Take 1 ' -and $env:CS_BOOK_STATE) { Write-Output (ConvertTo-Json -Compress @{ units = @() }); exit 0 }
-        if ($flat -match '-Take 1 ') {
+        if ($flat -match '-Prefix citedcards/book@' -and $env:CS_BOOK_STATE) { Write-Output (ConvertTo-Json -Compress @{ units = @() }); exit 0 }
+        if ($flat -match '-Prefix citedcards/book@') {
             Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'citedcards/book@1'; token = 9; input_hash = 'ih-b' }) })
             exit 0
         }
-        # v3: the start claims page after page until a page holds no job unit.
-        $page = 1
-        if ($flat -match '-Take 64') { if (Test-Path -LiteralPath $env:CS_NEXT_COUNT) { $page = [int](Get-Content -Raw $env:CS_NEXT_COUNT) + 1 }; Set-Content -LiteralPath $env:CS_NEXT_COUNT -Value "$page" }
-        if ($page -eq 1) {
-            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(
-                        @{ id = 'citedcards/t001@1'; token = 1; input_hash = 'ih-1'; inputs = @{ job = @{ id = 't001' } } },
-                        @{ id = 'citedcards/t002@1'; token = 2; input_hash = 'ih-2'; inputs = @{ job = @{ id = 't002' } } },
-                        @{ id = 'citedcards/book@1'; token = 8; input_hash = 'ih-b' }) })
-        } elseif ($page -eq 2 -and $env:CS_TWO_PAGES) {
-            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'citedcards/t003@1'; token = 3; input_hash = 'ih-3'; inputs = @{ job = @{ id = 't003' } } }) })
-        } else { Write-Output (ConvertTo-Json -Compress @{ units = @() }) }
+        # One -Prefix citedcards/t -All claim returns every ready job unit without touching citedcards/book@*.
+        $units = @(
+            @{ id = 'citedcards/t001@1'; token = 1; input_hash = 'ih-1'; inputs = @{ job = @{ id = 't001' } } },
+            @{ id = 'citedcards/t002@1'; token = 2; input_hash = 'ih-2'; inputs = @{ job = @{ id = 't002' } } }
+        )
+        if ($env:CS_TWO_PAGES) {
+            $units += @{ id = 'citedcards/t003@1'; token = 3; input_hash = 'ih-3'; inputs = @{ job = @{ id = 't003' } } }
+        }
+        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = $units })
         exit 0
     }
     '^cited-cards -Step plan' {
@@ -101,6 +102,21 @@ switch -Regex ($flat) {
         Write-Output (ConvertTo-Json -Compress @{ ok = $true; ready = 7; not_ready = 1 }); exit 0
     }
     '^ledger done' {
+        if ($flat -match '-UnitsFile\s+(\S+)') {
+            $inUnits = @(Get-Content -LiteralPath $Matches[1] -Raw -Encoding utf8 | ConvertFrom-Json -Depth 16)
+            $res = @()
+            foreach ($u in $inUnits) {
+                if ($env:CS_NOT_READY -and $u.id -eq 'citedcards/t002@1') {
+                    $res += @{ unit = $u.id; token = $u.token; status = 'error'; code = 'check_failed'; cause = 'row 8 is faults, not ready' }
+                } elseif ($env:CS_STALE -and $u.id -eq 'citedcards/t001@1' -and [int]$u.token -eq 1) {
+                    $res += @{ unit = $u.id; token = $u.token; status = 'stale_claim'; cause = 'stale_claim: citedcards/t001@1 has no current unexpired claim for token 1' }
+                } else {
+                    $res += @{ unit = $u.id; token = $u.token; status = 'done' }
+                }
+            }
+            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = 'ledger_done_batch'; ok = (-not @($res | Where-Object { $_.status -ne 'done' }).Count); units = $res.Count; results = $res })
+            exit 0
+        }
         if ($env:CS_NOT_READY -and $flat -match 'citedcards/t002@1') { Write-Output 'zt-digest ledger: row 8 is faults, not ready'; exit 1 }
         if ($env:CS_STALE -and $flat -match 'citedcards/t001@1 -Token 1 ') { Write-Output 'zt-digest ledger: stale_claim: citedcards/t001@1 has no current unexpired claim for token 1'; exit 1 }
         Write-Output (ConvertTo-Json -Compress @{ schema_version = 1; state = 'done' })
@@ -191,26 +207,23 @@ Remove-Item -LiteralPath $calls
 $start = Step (@('-Step', 'start') + $common)
 Assert ($start.json.jobs -eq 2) "start: the claimed jobs are listed ($($start.text))"
 $c = Get-Content -LiteralPath $calls -Raw
-Assert ($c -match 'ledger reclaim .*-Unit citedcards/t001@1 -Release') 'start: a stopped run''s claim is released before the plan'
-Assert ($c -match 'ledger reclaim .*-Unit citedcards/book@1 -Release') 'start: the book unit start hands out is released'
+Assert ($c -match 'ledger reclaim .*-Layer citedcards -All -Release') 'start: stopped claims of citedcards are released in one command before the plan'
+Assert ($c -notmatch 'ledger reclaim .*-Unit citedcards/book@1') 'start: book unit is excluded by -Prefix and never claimed or released'
 Assert ($c -match 'cited-cards -Step jobs -Staging .* -Tokens t001:1,t002:2') 'start: the jobs step names the claimed tokens'
-Assert (@(Get-Content -LiteralPath $calls | Where-Object { $_ -match '^ledger next .*-Layer citedcards .*-Take 64' }).Count -eq 2 -and $c -notmatch '-Lease (2[0-9]{4}|[89][0-9]{3})') 'start v3: it claims until a page holds no job unit, under the ledger''s lease limit'
+Assert (@(Get-Content -LiteralPath $calls | Where-Object { $_ -match '^ledger next .*-Layer citedcards -Prefix citedcards/t -All' }).Count -eq 1 -and $c -notmatch '-Lease (2[0-9]{4}|[89][0-9]{3})') 'start: one -Prefix -All claim fetches every ready job under the ledger lease limit'
 $chunk1 = @(Get-Content -Raw (Join-Path $out 'cited\drive\jobs-001.json') | ConvertFrom-Json)
 Assert ($start.json.chunks -eq 1 -and ($chunk1.id -join ',') -eq 't001,t002') "start v3: one chunk file per manager holds its jobs in order ($($start.text))"
-# v3 (atkinson2015lectures, 2026-11-02): one start claimed at most 64 jobs; the start now claims every page.
 Remove-Item -LiteralPath $env:CS_NEXT_COUNT -ErrorAction SilentlyContinue
 $env:CS_TWO_PAGES = '1'
 $three = Step (@('-Step', 'start', '-Chunk', '2') + $common)
 $env:CS_TWO_PAGES = ''
 $chunk1 = @(Get-Content -Raw (Join-Path $out 'cited\drive\jobs-001.json') | ConvertFrom-Json)
 $chunk2 = @(Get-Content -Raw (Join-Path $out 'cited\drive\jobs-002.json') | ConvertFrom-Json)
-Assert ($three.json.jobs -eq 3 -and $three.json.chunks -eq 2 -and ($chunk1.id -join ',') -eq 't001,t002' -and ($chunk2.id -join ',') -eq 't003') "start v3: two pages list three jobs in chunks of two and one ($($three.text))"
+Assert ($three.json.jobs -eq 3 -and $three.json.chunks -eq 2 -and ($chunk1.id -join ',') -eq 't001,t002' -and ($chunk2.id -join ',') -eq 't003') "start: one -All claim lists three jobs in chunks of two and one ($($three.text))"
 Remove-Item -LiteralPath $env:CS_NEXT_COUNT -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $calls
 $null = Step (@('-Step', 'start') + $common)
 Remove-Item -LiteralPath $env:CS_NEXT_COUNT -ErrorAction SilentlyContinue
-# A restarted branch (atkinson2015lectures, 2026-11-02: the DeepSeek Desktop stalled after 267 of 398 drafts) keeps its
-# drafts: a claimed job whose rows are all ready completes at start and is never written again.
 Remove-Item -LiteralPath $calls
 $env:CS_SETTLE = Join-Path $out 'cited-cards\check\readiness.json'
 $settle = Step (@('-Step', 'start') + $common)
@@ -218,17 +231,16 @@ Remove-Item -LiteralPath $env:CS_SETTLE -ErrorAction SilentlyContinue
 $env:CS_SETTLE = ''
 Remove-Item -LiteralPath $env:CS_NEXT_COUNT -ErrorAction SilentlyContinue
 $c = Get-Content -LiteralPath $calls -Raw
-Assert ($settle.json.settled -eq 1 -and $settle.json.jobs -eq 1 -and $c -match 'ledger done .*-Unit citedcards/t001@1 -Token 1 -Outputs .*readiness\.json' -and $c -match 'cited-cards -Step jobs -Staging .* -Tokens t002:2' -and $c -notmatch 'Tokens t001') "start: a job whose drafts are all ready settles and only the rest are written ($($settle.text))"
+Assert ($settle.json.settled -eq 1 -and $settle.json.jobs -eq 1 -and $c -match 'ledger done .*-UnitsFile .*settle\.json -Outputs .*readiness\.json' -and $c -match 'cited-cards -Step jobs -Staging .* -Tokens t002:2' -and $c -notmatch 'Tokens t001') "start: a job whose drafts are all ready settles via batch ledger done and only the rest are written ($($settle.text))"
 Remove-Item -LiteralPath $calls
 $null = Step (@('-Step', 'start') + $common)
 Remove-Item -LiteralPath $env:CS_NEXT_COUNT -ErrorAction SilentlyContinue
-# v3: a job that outlasts its claim's lease is taken back and completed under a new token.
 $env:CS_STALE = '1'
 Remove-Item -LiteralPath $calls
 $late = Step (@('-Step', 'finish') + $common)
 $env:CS_STALE = ''
 $lc = @(Get-Content -LiteralPath $calls)
-Assert ($late.json.done -eq 2 -and -not $late.json.failed -and @($lc | Where-Object { $_ -match '^ledger reclaim .*-Unit citedcards/t001@1$' }).Count -eq 1 -and @($lc | Where-Object { $_ -match '^ledger done .*-Unit citedcards/t001@1 -Token 8 ' }).Count -eq 1) "finish v3: an expired claim is taken back and the job completes ($($late.text))"
+Assert ($late.json.done -eq 2 -and -not $late.json.failed -and @($lc | Where-Object { $_ -match '^ledger reclaim .*-UnitsFile .*late-units\.json$' }).Count -eq 1 -and @($lc | Where-Object { $_ -match '^ledger next .*-Layer citedcards -IdsFile .*late-ids\.json -All' }).Count -eq 1 -and @($lc | Where-Object { $_ -match '^ledger done .*-UnitsFile .*late-reclaimed\.json ' }).Count -eq 1) "finish: expired claims are token-fenced reclaimed, exact-ID reclaimed, and batch completed ($($late.text))"
 $env:CS_NOT_READY = '1'; $env:CS_PARTIAL = '1'
 Remove-Item -LiteralPath $calls
 $finish = Step (@('-Step', 'finish') + $common)

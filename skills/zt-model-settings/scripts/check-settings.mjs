@@ -39,12 +39,18 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SETTING = /^(设定|假设|假定|本章设定|本阶段的设定)/
+const SETTING_EXT = /^(设定|假设|假定|本章设定|本阶段的设定|定义|判据|均衡定义|解概念)/
+const CRITERION = /^(判据|均衡定义|解概念)/
+const DEFINITION = /^定义/
 const NOTATION = /^符号/
 const HEADER = /^\*\*(本章设定|本阶段的设定|设定|假设|假定|记号|符号|符号表)\*\*/
 const LIST = /^\s*(?:[-*](?=\s)|\d+[.、])\s*/
 const DEFINES = /(?:^|[\s。；，：:、(（])记(?:号[:：])?\s*\$([^$]+)\$/g
 
 const isSetting = (c) => SETTING.test(c.facet || '') || SETTING.test(c.title || '')
+const isCriterion = (c) => CRITERION.test(c.facet || '') || CRITERION.test(c.title || '')
+const isDefinition = (c) => DEFINITION.test(c.facet || '') || DEFINITION.test(c.title || '')
+const isSettingMember = (c) => SETTING_EXT.test(c.facet || '') || SETTING_EXT.test(c.title || '')
 const isNotation = (c) => NOTATION.test(c.facet || '') || NOTATION.test(c.title || '')
 const symbolOf = (tex) => tex.split(/:=|=|\\equiv|\\coloneqq/)[0].replace(/\s+/g, '')
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -194,7 +200,21 @@ export function audit(m, cards, parents = new Map()) {
   // One line binds a whole block's symbols (owner decision 3, #205).
   const binds = all.some((c) => inPart(c.address) && /沿用\s*\[\[[^\]]+\]\]\s*的全部符号/.test(c.body || ''))
   const missing = notes.length || binds ? [] : [{ fix: `the setting part of ${S} has no notation card (facet 符号表与读法): add one as its first Side successor, import one (**引入**), or write 沿用 [[…]] 的全部符号` }]
-  const noteText = notes.map((c) => c.body || '').join('\n').replace(/\s+/g, '')
+  // Follow 1-hop `沿用 [[...]]` borrowed notation bindings when present in `cards` (Astra #16 / M4).
+  const borrowedBodies = []
+  for (const c of all.filter((x) => inPart(x.address))) {
+    for (const line of (c.body || '').split('\n')) {
+      for (const clause of line.split(/[。；;]/)) {
+        const at = clause.indexOf('沿用')
+        if (at < 0 || !clause.slice(at).includes('符号')) continue
+        for (const m2 of clause.slice(at).matchAll(/\[\[(?:[^\]@]*@)?([^\]]+)\]\]/g)) {
+          const t = cards.get(m2[1])
+          if (t?.body && !borrowedBodies.includes(t.body)) borrowedBodies.push(t.body)
+        }
+      }
+    }
+  }
+  const noteText = [...notes.map((c) => c.body || ''), ...borrowedBodies].join('\n').replace(/\s+/g, '')
 
   const outside = []
   // A part shared from another model (line 'shared') is filed in its home model, whose own audit checks it.
@@ -210,7 +230,7 @@ export function audit(m, cards, parents = new Map()) {
   }
 
   const inside = all
-    .filter((c) => inPart(c.address) && c.address !== S && !isSetting(c) && !isNotation(c))
+    .filter((c) => inPart(c.address) && c.address !== S && !isSettingMember(c) && !isNotation(c))
     .map((c) => ({ card: c.address, facet: c.facet, fix: `${c.address} (${c.facet}) is not a setting: move it out of the setting part, after its latest premise (check-network names the chapter); a setting states the assumption only` }))
 
   const stated = []
@@ -243,7 +263,7 @@ export function audit(m, cards, parents = new Map()) {
 
   // The dependency tree of the setting part.
   const pos = new Map(order.map((o, i) => [o.address, i]))
-  const settings = all.filter((c) => inPart(c.address) && (isSetting(c) || c.address === S) && !isNotation(c))
+  const settings = all.filter((c) => inPart(c.address) && (isSettingMember(c) || c.address === S) && !isNotation(c))
   const rests = (m.relations || []).filter((r) => r.kind === 'rests-on')
   const premisesOf = (a) => [...new Set(rests.filter((r) => r.from === a).map((r) => r.to))]
   const start = settings.filter((c) => !/^\*\*起点\*\*/m.test(c.body || '')).map((c) => ({ card: c.address, fix: `${c.address} (${c.facet}) has no **起点** section: list the settings it builds on (依赖 [[…]] 的设定：…), or write 原始设定 for a primitive` }))
@@ -260,7 +280,9 @@ export function audit(m, cards, parents = new Map()) {
     misfiled.push({ card: c.address, parent, fix: `${c.address} (${c.facet}) is filed under ${parent} but does not build on it: file it under ${main ? 'its main premise ' + main : 'the setting it builds on'}, or as a top-level Side of ${S}; if it does build on ${parent}, say so in its **起点**` })
   }
   const known = new Set()
-  const syms = notes.length ? notationSymbols(notes.map((c) => c.body).join('\n')) : []
+  const syms = (notes.length || borrowedBodies.length)
+    ? notationSymbols([...notes.map((c) => c.body), ...borrowedBodies].join('\n'))
+    : []
   const introduces = []
   for (const c of settings) {
     const fresh = syms.filter((x) => !known.has(x) && usesSymbol(c.body, x, syms))
@@ -280,7 +302,7 @@ export function audit(m, cards, parents = new Map()) {
   const own_ = (c) => !borrowed(c) && !(isNotation(c) && notes.includes(c))
   const covered = new Set(syms.flatMap((x) => baseSymbols(x)))
   const uncovered = []
-  if (notes.length) {
+  if (notes.length || borrowedBodies.length) {
     for (const c of settings) {
       const lack = [...new Set(formulas(c.body).flatMap(baseSymbols))].filter((x) => !covered.has(x))
       if (lack.length) uncovered.push({ card: c.address, symbols: lack, fix: `${c.address} uses ${lack.map((x) => '$' + x + '$').join(' ')}, which the notation card does not list: add a row for each (its meaning and the card that defines it), or write the symbol as the notation card does` })
@@ -309,14 +331,35 @@ export function audit(m, cards, parents = new Map()) {
     return i > 0 ? m2[i + 1] : ''
   }
   const format = []
+  const kindOf = (c) => {
+    if (isAssumption(c)) return '假设'
+    if (isCriterion(c)) {
+      const m = (c.facet || c.title || '').match(CRITERION)
+      return m ? m[1] : '判据'
+    }
+    if (isDefinition(c)) return '定义'
+    return '设定'
+  }
+  const titleOk = (c, kind) => {
+    const t = c.title || ''
+    if (kind === '设定') return /^设定[：:]/.test(t)
+    if (kind === '假设') {
+      // Accepts `假设 1：`, `假设 1.2：`, `假设 B：`, `假设 A1：`, `假设：`, `假设 (B)：`, `假设（A1.2）：`, and `假设 1′：`.
+      return /^(?:假设|假定)(?:\s*(?:[（(][A-Za-z0-9.\-′']+[）)]|[A-Za-z0-9][A-Za-z0-9.\-′']*))?[：:]/.test(t)
+    }
+    if (kind === '定义') return /^定义[：:]/.test(t)
+    return CRITERION.test(t)
+  }
+  const allowedTails = new Set(['', '直觉', '说明', '直觉,说明', '作用域', '作用域,说明', '作用域,直觉', '作用域,直觉,说明'])
   for (const c of settings) {
-    const kind = isAssumption(c) ? '假设' : '设定'
+    const kind = kindOf(c)
     const bad = (what, fix) => format.push({ card: c.address, what, fix: `${c.address} (${c.facet}): ${fix}` })
-    if (kind === '设定' ? !/^设定：/.test(c.title || '') : !/^(假设|假定)\s*[A-Za-z]?\d*[A-Za-z]?\d*：/.test(c.title || '')) bad('title', kind === '设定' ? 'the title opens with 设定：' : 'the title opens with 假设 <name>：')
+    if (!titleOk(c, kind)) bad('title', kind === '设定' ? 'the title opens with 设定：' : kind === '假设' ? 'the title opens with 假设 <name>： (or 假设 (B)： / 假设：)' : `the title opens with ${kind}：`)
     const sec = sectionsOf(c.body)
-    // After the content: an optional **直觉** (what it is, why the model needs it, how it enters), then an optional **说明**.
+    // After the content: optional **作用域**, optional **直觉**, then optional **说明**.
     const tail = sec.slice(2).join(',')
-    if (sec[0] !== '起点' || sec[1] !== kind || !['', '直觉', '说明', '直觉,说明'].includes(tail)) bad('section', `the sections are **起点**, **${kind}**, then an optional **直觉** and an optional **说明** (now ${sec.map((x) => '**' + x + '**').join(', ') || 'none'})`)
+    const okTail = allowedTails.has(tail)
+    if (sec[0] !== '起点' || sec[1] !== kind || !okTail) bad('section', `the sections are **起点**, **${kind}**, then optional **作用域**/**直觉**/**说明** (now ${sec.map((x) => '**' + x + '**').join(', ') || 'none'})`)
     if (/依赖\s*\[\[/.test(afterStart(c.body))) bad('depends', 'a 依赖 line outside **起点**: move the premise into **起点**')
     if (/^\|\s*(符号|术语)\s*\|/m.test(c.body || '')) bad('table', 'a symbol or term table: its rows belong in the notation card')
   }
@@ -325,13 +368,17 @@ export function audit(m, cards, parents = new Map()) {
   const plain = (s) => s.replace(/\[\[([^\]@]*)@[^\]]+\]\]/g, '$1').replace(/\[\[[^\]]+\]\]/g, '').replace(/[\s，。；：、,.;:()（）]/g, '')
   const statementsOf = (c) => {
     // Display equations are no statements: a variant system extends an equation it does not restate.
-    const text = (sectionText(c.body, isAssumption(c) ? '假设' : '设定') || '').replace(/\$\$[\s\S]*?\$\$/g, '')
+    const text = (sectionText(c.body, kindOf(c)) || '').replace(/\$\$[\s\S]*?\$\$/g, '')
     return text.split('\n').filter((l) => !/^\s*\$\$/.test(l)).map((l) => l.replace(LIST, '')).flatMap((l) => l.split('。')).map(plain).filter((s) => s.length >= 12)
   }
   const bigrams = (s) => new Set([...s].slice(1).map((ch, i) => s[i] + ch))
   const dice = (a, b) => { const A = bigrams(a), B = bigrams(b); let n = 0; for (const x of A) if (B.has(x)) n++; return (2 * n) / (A.size + B.size || 1) }
   // Two assumptions with different names are different statements, however parallel (a weakening).
-  const nameOf = (c) => (isAssumption(c) && (c.title || '').match(/^(?:假设|假定)\s*([A-Za-z]?\d+[A-Za-z]?)/)?.[1]) || null
+  const nameOf = (c) => {
+    if (!isAssumption(c)) return null
+    const m = (c.title || '').match(/^(?:假设|假定)\s*(?:[（(]([A-Za-z0-9.\-′']+)[）)]|([A-Za-z0-9][A-Za-z0-9.\-′']*))/)
+    return m ? (m[1] || m[2] || null) : null
+  }
   const apart = (a, b) => nameOf(a) && nameOf(b) && nameOf(a) !== nameOf(b)
   const repeat = []
   const said = []
@@ -342,23 +389,24 @@ export function audit(m, cards, parents = new Map()) {
     for (const s of mine) said.push([c.address, s])
   }
 
-  // Assumptions are named the same way everywhere: a card that names 假设 N links its card.
+  // Assumptions are named the same way everywhere: a card that names 假设 N or 假设 (B) links its card.
   const named = new Map()
   for (const c of settings.filter(isAssumption)) {
-    const n = (c.title || '').match(/^(?:假设|假定)\s*([A-Za-z]?\d+[A-Za-z]?)/)
-    if (n) named.set(n[1], [...(named.get(n[1]) || []), c.address])
+    const n = nameOf(c)
+    if (n) named.set(n, [...(named.get(n) || []), c.address])
   }
   const cite = []
   for (const c of all.filter(own_)) {
     const seen = new Set()
     for (const line of (c.body || '').split('\n')) {
       const bare = line.replace(/\[\[[^\]]+\]\]/g, '')
-      for (const x of bare.matchAll(/(?:假设|假定)\s*([A-Za-z]?\d+[A-Za-z]?)/g)) {
-        const at = named.get(x[1])
-        if (!at || at.includes(c.address) || seen.has(x[1])) continue
+      for (const x of bare.matchAll(/(?:假设|假定)\s*(?:[（(]([A-Za-z0-9′']+)[）)]|([A-Za-z]?\d+[A-Za-z′']*))/g)) {
+        const key = x[1] || x[2]
+        const at = named.get(key)
+        if (!at || at.includes(c.address) || seen.has(key)) continue
         if (at.some((a) => line.includes(`@${a}]]`) || line.includes(`[[${a}]]`))) continue
-        seen.add(x[1])
-        cite.push({ card: c.address, name: '假设 ' + x[1], line: line.trim(), fix: `${c.address} names 假设 ${x[1]} without a Link: write [[${at[0]}]] in its place (the GUI shows a Link to a model part by its facet, 假设 ${x[1]})` })
+        seen.add(key)
+        cite.push({ card: c.address, name: '假设 ' + key, line: line.trim(), fix: `${c.address} names 假设 ${key} without a Link: write [[${at[0]}]] in its place (the GUI shows a Link to a model part by its facet, 假设 ${key})` })
       }
     }
   }
@@ -481,7 +529,24 @@ async function main() {
     process.exit(r.ok ? 0 : 1)
   }
   const parents = new Map(tree(head.split('/')[0]).map((c) => [c.address, c.parent]))
-  const r = audit(m, new Map(cards(order).map((c) => [c.address, c])), parents)
+  const cardMap = new Map(cards(order).map((c) => [c.address, c]))
+  // Fetch any 1-hop `沿用 [[...]]` borrowed notation targets outside `build.order` (Astra M4).
+  const extraAddrs = new Set()
+  for (const c of cardMap.values()) {
+    for (const line of (c.body || '').split('\n')) {
+      for (const clause of line.split(/[。；;]/)) {
+        const at = clause.indexOf('沿用')
+        if (at < 0 || !clause.slice(at).includes('符号')) continue
+        for (const m2 of clause.slice(at).matchAll(/\[\[(?:[^\]@]*@)?([^\]]+)\]\]/g)) {
+          if (!cardMap.has(m2[1])) extraAddrs.add(m2[1])
+        }
+      }
+    }
+  }
+  if (extraAddrs.size) {
+    for (const c of cards([...extraAddrs])) cardMap.set(c.address, c)
+  }
+  const r = audit(m, cardMap, parents)
   if (flag === '--json') { console.log(JSON.stringify(r, null, 2)); process.exit(r.ok ? 0 : 1) }
   const sh = (a) => (a && a.startsWith(head) ? 'H' + a.slice(head.length) : a)
   const say = (kind, list) => list.forEach((f) => console.log(`${kind}: ${f.fix.replaceAll(head, 'H')}`))

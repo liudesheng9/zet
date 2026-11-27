@@ -1,5 +1,5 @@
 // Run: node scripts/book-digest/tests/grow-workflow-harness.mjs
-// The current zt-idea-grow build (zt-grow-cycle v14, zt-workflow-lib v7, #180
+// The current zt-idea-grow build (zt-grow-cycle v15, zt-workflow-lib v7, #180
 // docs/workflow-module-structure-proposal.md) against a stand-in runtime. The build is assembled from its blueprint
 // and its nested script is run with stand-ins for the Workflow runtime, so no model, DeepSeek, zt or archive call
 // happens. The order of the rounds is zt-digest's (grow_next.rs, tested by cargo test and grow.tests.ps1); this
@@ -13,8 +13,8 @@
 //    relays a command;
 //  - every drive answer is at most 400 characters with a boolean top-level `ok`, and a prose or `ok`-less answer
 //    fails the stage instead of reading a nested object (#180);
-//  - the options reach the step as one JSON object (the box copy, the mode, the frozen model, high effort);
-//  - the built script carries zt-grow-cycle v14 and zt-workflow-lib v7, names no relay helper, and carries the DSMP
+//  - the options reach the step as one JSON object (the box copy, the mode, the shared source value ZT_DRIVE_MODEL, high effort);
+//  - the built script carries zt-grow-cycle v15 and zt-workflow-lib v7, names no relay helper, and carries the DSMP
 //    block; the blueprint declares the manager role (no relay role).
 import os from 'node:os'
 import path from 'node:path'
@@ -110,7 +110,7 @@ const optionsOf = (command) => JSON.parse((command.match(/-Options '((?:[^']|'')
   const longest = Math.max(...r.driveAnswers.map((a) => a.length))
   check(r.driveAnswers.every((a) => a.length <= 400 && typeof JSON.parse(a).ok === 'boolean'), `#180: every drive answer is at most 400 characters with a boolean ok (longest ${longest})`)
   const o = optionsOf(n[0])
-  check(o.mode === 'full' && o.model === 'deepseek-official/deepseek-flash' && o.effort === 'high' && o.zt_config === '' && o.restate === true && o.hubs === true && o.organize === false, 'the options reach the step as one JSON object with the frozen model and the defaults')
+  check(o.mode === 'full' && o.model === 'opencode-go/deepseek-v4.1-flash' && o.effort === 'high' && o.zt_config === '' && o.restate === true && o.hubs === true && o.organize === false, 'the options reach the step as one JSON object with the shared one source value (ZT_DRIVE_MODEL) and the defaults')
   check(n.every((c) => optionsOf(c).instructions === o.instructions && / -Tool 'zt-digest'$/.test(c)), 'every next names the same options and the tool')
   check(n.every((c) => !/ -ZtConfig /.test(c)), 'a live-box run names no -ZtConfig')
 }
@@ -176,7 +176,7 @@ const optionsOf = (command) => JSON.parse((command.match(/-Options '((?:[^']|'')
 
 // 7. The frozen build.
 {
-  check(build.modules['zt-grow-cycle'] === '14' && build.modules['zt-workflow-lib'] === '19', `the build carries zt-grow-cycle v14 and zt-workflow-lib v19 (${JSON.stringify(build.modules)})`)
+  check(build.modules['zt-grow-cycle'] === '15' && build.modules['zt-workflow-lib'] === '19', `the build carries zt-grow-cycle v15 and zt-workflow-lib v19 (${JSON.stringify(build.modules)})`)
   const cycle = source.slice(source.indexOf('// ==== module zt-grow-cycle'), source.indexOf('// ==== end module zt-grow-cycle'))
   check(!/ztRelay\s*\(|runScript\s*\(|wfpScript\s*\(/.test(cycle), 'the grow cycle calls no relay helper')
   check(/ztDrive\(ctx/.test(cycle) && /grow-steps\.ps1/.test(cycle) && /dispatch\(line\)/.test(cycle), 'the cycle drives one grow-steps.ps1 step per round and dispatches each checked job set from its file')

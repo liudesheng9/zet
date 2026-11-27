@@ -176,26 +176,27 @@ fn read_json(path: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).expect("read artifact")).expect("JSON")
 }
 
-/// The plan a Sonnet architect writes: seven parts the fill round writes, then a chain of two
-/// Derivation parts. `F3` states no premise, so the build reports it `unanchored` and `close` has a
-/// note to send back.
+/// The plan a Sonnet architect writes: seven fill parts (canonical Level 2 formal roles), then a
+/// Side-branch chain of two Derivation parts. `F3` states no premise, so the build reports it
+/// `unanchored` and `close` has a note to send back.
 fn plan(model: &str) -> Value {
     json!({
         "model": model,
         "level": "formal",
+        "claim_objects": ["choice-optimum"],
         "card": "问题：一个买者如何选择数量。",
-        "symbols": [["$x$", "数量", "本卡"], ["$p$", "价格", "本卡"]],
+        "symbols": [["$x$", "数量", "F1"], ["$p$", "价格", "F1"]],
         "terms": [["均衡", "平衡"]],
         "parts": [
-            {"id":"F1","facet":"设定","title":"设定","spec":"买者的效用和预算。","line":"main","src":["sections/s01.md:1-4"]},
-            {"id":"F2","facet":"均衡","title":"均衡数量","spec":"买者选择的数量使边际效用等于价格。","line":"main","rests":[["F1","用到设定"]],"src":["sections/s01.md:5-8"]},
-            {"id":"F3","facet":"均衡","title":"比较静态","spec":"价格上升时数量下降。","line":"main","src":["sections/s01.md:9-12"]},
-            {"id":"F4","facet":"均衡","title":"预算约束","spec":"支出不超过收入。","line":"main","rests":[["F1","用到设定"]],"src":["sections/s01.md:13-16"]},
-            {"id":"F5","facet":"均衡","title":"最优条件","spec":"边际效用等于价格。","line":"main","rests":[["F4","用到预算"]],"src":["sections/s01.md:17-20"]},
-            {"id":"F6","facet":"均衡","title":"唯一性","spec":"最优数量唯一。","line":"main","rests":[["F2","用到均衡"]],"src":["sections/s01.md:21-24"]},
-            {"id":"F7","facet":"旁注","title":"数值例子","spec":"价格为一时的数量。","line":"side","of":"F2","src":["sections/s01.md:25-28"]},
-            {"id":"D1","facet":"推导：均衡","title":"推导均衡条件","line":"main","derive":true,"from":"效用函数","to":"$$u'(x)=p$$","rests":[["F2","用到均衡"]],"src":["sections/s01.md:29-36"]},
-            {"id":"D2","facet":"推导：结果","title":"推导数量","line":"main","derive":true,"to":"$$x=p^{-1}$$","src":["sections/s01.md:37-44"]}
+            {"id":"F1","facet":"设定","title":"设定","spec":"买者的效用和预算。","line":"main","src":["sections/s01.md:1-2"]},
+            {"id":"N","facet":"符号表与读法","title":"符号表与读法","spec":"符号与用语。","line":"side","of":"F1","src":["sections/s01.md:1-2"]},
+            {"id":"CR","facet":"判据：最优选择","title":"判据：买者效用最大化","spec":"边际效用等于价格。","line":"side","of":"F1","rests":[["F1","用到设定"]],"src":["sections/s01.md:1-2"]},
+            {"id":"C1","facet":"第 1 章：最优数量","title":"第 1 章：买者最优数量","spec":"买者选择的数量使边际效用等于价格。","line":"main","rests":[["CR","按最优判据"]],"src":["sections/s01.md:1-2"]},
+            {"id":"F3","facet":"第 2 章：比较静态","title":"第 2 章：比较静态","spec":"价格上升时数量下降。","line":"main","src":["sections/s01.md:2-2"]},
+            {"id":"R1","facet":"结果：命题 1 均衡数量","title":"结果：命题 1 均衡数量","spec":"边际效用等于价格决定唯一数量。","line":"side","of":"C1","emphasis":"core","source_kind":"proposition","source_label":"Proposition 1","logical_force":"characterization","justifications":[{"force":"proof","location":"local","ref":"D1"}],"rests":[["CR","按最优判据"]],"src":["sections/s01.md:2-2"]},
+            {"id":"F7","facet":"例示：数值例子","title":"例示：数值例子","spec":"价格为一时的数量。","line":"side","of":"R1","rests":[["R1","例示结果"]],"src":["sections/s01.md:2-2"]},
+            {"id":"D1","facet":"推导：均衡","title":"推导均衡条件","line":"side","of":"R1","derive":true,"from":"效用函数","to":"$$u'(x)=p$$","rests":[["CR","由最优判据出发"]],"src":["sections/s01.md:1-2"]},
+            {"id":"D2","facet":"推导：结果","title":"推导数量","line":"side","after":"D1","derive":true,"to":"$$x=p^{-1}$$","rests":[["D1","由一阶条件解出"]],"src":["sections/s01.md:2-2"]}
         ],
         "explain": [
             {"chain": ["D1", "D2"], "route": "对效用函数求导得到一阶条件，再由一阶条件解出数量。",
@@ -221,7 +222,7 @@ fn staging(parent: &Path, key: &str) -> PathBuf {
     dir
 }
 
-/// The work folder of one batch, as `brief` leaves it: the state's order and the model's status.
+/// The work folder of one batch, as `brief` leaves it: the state's order, the pinned inventory, and the model's status.
 fn work(staged: &Path, model: &str, status: &str) -> PathBuf {
     let slug = model.replace(['/', '|', '\\'], "_");
     let dir = staged.join("models").join("m-Key_1_a");
@@ -233,6 +234,19 @@ fn work(staged: &Path, model: &str, status: &str) -> PathBuf {
     });
     std::fs::write(dir.join("state.json"), serde_json::to_string_pretty(&state).unwrap()).expect("write state");
     std::fs::write(dir.join(&slug).join("plan.json"), serde_json::to_string_pretty(&plan(model)).unwrap()).expect("write plan");
+    // Pin inventory.json for the staged section file, as `brief` does for every Level 2 formal model.
+    let inv = json!({
+        "schema_version": 1,
+        "model": model,
+        "work_id": null,
+        "file_id": null,
+        "file_sha256": "0".repeat(64),
+        "files": [{"file": "sections/s01.md", "sha256": "", "lines": 2}],
+        "equations": [],
+        "items": [],
+        "obligations": []
+    });
+    std::fs::write(dir.join(&slug).join("inventory.json"), serde_json::to_string_pretty(&inv).unwrap()).expect("write inventory");
     dir
 }
 

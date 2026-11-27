@@ -1,4 +1,4 @@
-#Requires -Version 7.5
+﻿#Requires -Version 7.5
 <#
 .SYNOPSIS
   The model layer's deterministic command chains, one step per call (#177, #180). A DeepSeek job runs one step
@@ -31,7 +31,7 @@
   Files stay under <staging>\models\drive; a batch step names its files after its batch folder (jobs.<batch>.json).
 #>
 param(
-    [Parameter(Mandatory)][ValidateSet('start', 'brief', 'fill', 'derive', 'review', 'split', 'close', 'report', 'explain', 'explain-apply', 'finish')][string]$Step,
+    [Parameter(Mandatory)][ValidateSet('start', 'brief', 'fill', 'derive', 'review', 'review-audit', 'split', 'close', 'report', 'explain', 'explain-apply', 'finish')][string]$Step,
     [Parameter(Mandatory)][string]$Out,
     [string]$Work = '',
     [string]$Models = '',
@@ -96,8 +96,8 @@ if ($ReviewDoc) { $Docs += @('-ReviewDoc', "$ReviewDoc") }
 
 # One command: its last JSON line (or $null), its exit code and the tail of its output.
 function Run([string[]]$CommandArgs) {
-    $code = $LASTEXITCODE
     $text = & $Tool @CommandArgs 2>&1 | ForEach-Object { "$_" }
+    $code = $LASTEXITCODE
     $line = @($text | Where-Object { $_.Trim().StartsWith('{') }) | Select-Object -Last 1
     $json = $null
     if ($line) { try { $json = $line | ConvertFrom-Json -Depth 64 } catch { $json = $null } }
@@ -160,11 +160,44 @@ function Jobs($Name, $Result) {
     Save $Name $jobs
     return (Join-Path $Drive $Name)
 }
+# Recognize ONLY a typed planning-stop refusal (`card_locked` or `scope_refused`); never treat an untyped exit 2 as a Lock.
+function Planning-Stop($RunResult) {
+    if ($RunResult -and $RunResult.json) {
+        $code = ''
+        if ("$($RunResult.json.code)" -in @('card_locked', 'scope_refused')) { $code = "$($RunResult.json.code)" }
+        elseif ("$($RunResult.json.error)" -in @('card_locked', 'scope_refused')) { $code = "$($RunResult.json.error)" }
+        if ($code) {
+            $ref = if ($RunResult.json.refusal) { $RunResult.json.refusal } else { $RunResult.json }
+            $lockedUnit = @($RunResult.json.results | Where-Object { $_ -and "$($_.code)" -in @('card_locked', 'scope_refused') }) | Select-Object -First 1
+            if (-not $lockedUnit -and $RunResult.json.explain) {
+                $lockedUnit = @($RunResult.json.explain | Where-Object { $_ -and "$($_.code)" -in @('card_locked', 'scope_refused') }) | Select-Object -First 1
+            }
+            return @{
+                code = $code
+                unit = if ($lockedUnit) { "$($lockedUnit.unit)" } else { '' }
+                message = if ($ref.message) { "$($ref.message)" } elseif ($RunResult.json.message) { "$($RunResult.json.message)" } else { "$($RunResult.tail)" }
+                tree = "$($ref.tree)"
+                lock_id = $ref.lock_id
+                refusal = $ref
+            }
+        }
+    }
+    return $null
+}
+function Fail-PlanningStop([string]$Where, $StopObj, $Detail = $null) {
+    $code = if ($StopObj.code) { "$($StopObj.code)" } else { 'card_locked' }
+    Send-StepFail -Step $Where -Reason "${code}: $($StopObj.message)" -Name $LineName -Out $ModelWork -Detail $Detail -Extra @{ code = $code; layer = 'models'; unit = "$($StopObj.unit)"; message = "$($StopObj.message)"; tree = "$($StopObj.tree)"; lock_id = $StopObj.lock_id }
+}
 function Compiler([string]$StepName, [string[]]$Extra = @()) {
     $argv = @('model', '-Step', $StepName, '-Work', $Work, '-Staging', $Out)
     $argv += $Docs
     $argv += $Extra
-    return Run $argv
+    $res = Run $argv
+    $stop = Planning-Stop $res
+    if ($stop) {
+        Fail-PlanningStop $StepName $stop @{ refusal = $stop.refusal }
+    }
+    return $res
 }
 # A model's own status, packed as `address:status` pairs (#180): the module reads a short list, never a row
 # per model. A status is `done`, `failed` or `skipped`.
@@ -181,12 +214,16 @@ function Status-List($Rows) {
 
 switch ($Step) {
     'start' {
-        # A start begins the branch: a Model claim still held belongs to a stopped run. Release it, or the
-        # new block waits for a lease that no writer is using.
+        # A start begins the branch: release any Model claim a stopped run held in one command.
         # A lane beside other lanes keeps their claims (-KeepClaims): only the stage's first start releases.
-        $status = if ($KeepClaims) { $null } else { Run @('ledger', 'status', '-Out', $Out, '-Layer', 'models') }
-        foreach ($u in @($status.json.units | Where-Object { $_.state -eq 'claimed' })) {
-            Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', "$($u.id)", '-Release') | Out-Null
+        if (-not $KeepClaims) {
+            $rel = Run @('ledger', 'reclaim', '-Out', $Out, '-Layer', 'models', '-All', '-Release')
+            if ($rel.code -ne 0) { Fail 'release' $rel; break }
+            if ($rel.json -and (@($rel.json.blocked).Count -or @($rel.json.skipped).Count)) {
+                $first = @(@($rel.json.blocked) + @($rel.json.skipped))[0]
+                Send-StepFail -Step 'release' -Reason "$($first.unit): $($first.reason)" -Name $LineName -Out $ModelWork -Detail $rel.json
+                break
+            }
         }
         $listed = Run @('list-models', '-Staging', $Out, '-All', '-CitationKey', $CitationKey)
         if (-not $listed.json -or -not ($listed.json.models -is [Array])) { Fail 'list' $listed; break }
@@ -223,7 +260,7 @@ switch ($Step) {
             if ($st -and $st.models -is [System.Collections.IDictionary]) { foreach ($k in $st.models.Keys) { $buildOf[$k.ToLowerInvariant()] = "$($st.models[$k].status)" } }
         }
         $failedBuild = { param($m) $b = $buildOf["$($m.address)".ToLowerInvariant()]; $b -and @('built', 'derived', 'reviewed') -notcontains $b }
-        $todo = @($todo | Where-Object { $Rebuild -or ($Level -and "$($_.level)" -ne $Level) -or (& $failedBuild $_) -or -not ([int]$_.parts -gt 0 -and -not [bool]$_.issues -and -not [int]$_.todo) })
+        $todo = @($todo | Where-Object { $Rebuild -or ($Level -and "$($_.level)" -ne $Level) -or (& $failedBuild $_) -or -not ([int]$_.parts -gt 0 -and -not [bool]$_.issues -and -not [int]$_.todo -and -not [int]$_.faults) })
         $groupOf = { param($m) $g = [int]$m.group; if (-not $g) { $g = [int]("$($m.address)".Split('/')[1].Split('|')[0]) }; $g }
         $todo = @($todo | Sort-Object @{ Expression = { & $groupOf $_ } }, @{ Expression = { "$($_.address)" } })
         $concept = @($todo | Where-Object { $(if ($Level) { $Level } else { "$($_.level)" }) -eq 'concept' })
@@ -297,8 +334,9 @@ switch ($Step) {
         $still = @($plans | Where-Object { $_.status -eq 'planned' })
         $go = @($still | Where-Object { $deferred.model -notcontains $_.model })
         $derive = @($go | Where-Object { [int]$_.derivations -gt 0 }).Count -gt 0
-        # An empirical model is reviewed against its source even without a derivation (§8.2 step 5).
-        $review = @($go | Where-Object { "$($_.level)" -eq 'empirical' }).Count -gt 0
+        # Empirical models and Level 2 formal models (even with 0 algebraic derivations, e.g. Spence 1973)
+        # are always reviewed against their source/clauses.
+        $review = @($go | Where-Object { $_.review -eq $true -or "$($_.level)" -eq 'empirical' -or ("$($_.level)" -eq 'formal' -and $_.math_unit -ne $true) }).Count -gt 0
         if ($deferred.Count) {
             $d = Compiler 'defer' @('-Models', (($deferred | ForEach-Object { $_.model } | Select-Object -Unique) -join ','))
             if (-not $d.json -or $d.json.ok -ne $true) { Fail 'defer' $d; break }
@@ -317,9 +355,18 @@ switch ($Step) {
         }
         $a = Compiler 'apply' $Limits.Split(' ')
         if (-not $a.json) { Fail 'apply' $a; break }
+        $failedApply = @($a.json.models | Where-Object { $_ -and "$($_.status)" -eq 'failed' })
+        if ($failedApply.Count -and -not @($a.json.jobs).Count) {
+            $why = ($failedApply | ForEach-Object { "$(Short "$($_.model)"): $($_.error)" }) -join '; '
+            Send-StepFail -Step 'apply' -Reason "apply failed: $why" -Name $LineName -Out $ModelWork -Detail @{ plans = $plans; deferred = $deferred; apply = $a.json }
+            break
+        }
         $file = Jobs 'jobs.json' $a
         $line.jobs = @($a.json.jobs).Count
         $line.file = $file
+        if ($failedApply.Count) {
+            $line.failed = (@($failedApply | ForEach-Object { Short "$($_.model)" }) -join ',')
+        }
         Reply $line @{ plans = $plans; deferred = $deferred; apply = $a.json }
     }
     'derive' {
@@ -341,12 +388,18 @@ switch ($Step) {
         $file = Jobs 'jobs.json' $r
         Reply @{ ok = $true; step = 'review'; jobs = @($r.json.jobs).Count; file = $file } $r.json
     }
+    'review-audit' {
+        Renew
+        $r = Compiler 'review-audit'
+        if (-not $r.json -or $r.code -ne 0 -or $r.json.ok -eq $false) { Fail 'review-audit' $r; break }
+        Reply @{ ok = $true; step = 'review-audit'; needs_split = [bool]$r.json.needs_split; ok_count = [int]$r.json.verdicts.ok; fix = [int]$r.json.verdicts.fix; split = [int]$r.json.verdicts.split } $r.json
+    }
     'split' {
         Renew
         $extra = @()
         if ($Need) { $extra += @('-Need', $Need) }
         $r = Compiler 'split' $extra
-        if (-not $r.json) { Fail 'split' $r; break }
+        if (-not $r.json -or $r.code -ne 0 -or $r.json.ok -eq $false) { Fail 'split' $r; break }
         $file = Jobs 'jobs.json' $r
         Reply @{ ok = $true; step = 'split'; jobs = @($r.json.jobs).Count; file = $file } $r.json
     }
@@ -391,28 +444,96 @@ switch ($Step) {
         $r = Compiler 'explain-apply' $Limits.Split(' ')
         if (-not $r.json) { Fail 'explain-apply' $r; break }
         $file = Jobs 'apply-jobs.json' $r
-        Reply @{ ok = $true; step = 'explain-apply'; jobs = @($r.json.jobs).Count; applied = [int]$r.json.applied; refused = @($r.json.refused).Count; blocked = @($r.json.blocked).Count; file = $file } $r.json
+        Reply @{ ok = $true; step = 'explain-apply'; jobs = (Count-Of $r.json.jobs); applied = [int]$r.json.applied; refused = (Count-Of $r.json.refused); blocked = (Count-Of $r.json.blocked); file = $file } $r.json
     }
     'finish' {
         $held = @(Load 'units.json' | Where-Object { $_ -and $_.id -and $_.token })
         if ($Units) { $held = @(Held) }
+        if (-not $held.Count) {
+            $gate = Run @('ledger', 'gate', '-Out', $Out, '-Layer', 'models', '-Brief')
+            $gateFields = @{}
+            if ($gate.json -and $gate.json.counts) { $gateFields.gate_complete = ($gate.json.complete -eq $true); $gateFields.gate_open = [int]$gate.json.counts.open }
+            Reply (@{ ok = $true } + $gateFields) @{ results = @(); gate = $gate.json }
+            break
+        }
+        $pending = @($held)
+        $results = @()
+        $explains = @()
+        $explainDone = 0
+        $explainReady = 0
+        $round = 0
+        $stopObj = $null
+        $fatalStop = $null
+        $badBatch = $null
+        while ($pending.Count) {
+            $round++
+            if ($round -eq 1) {
+                $list = ($pending | ForEach-Object { "$($_.id):$($_.token)" }) -join ','
+                $b = Run @('finish-batch', '-Out', $Out, '-Units', "$list")
+            } else {
+                $remName = Lane-File "finish-rem-$round.json"
+                ConvertTo-Json -InputObject @($pending) -Depth 64 | Set-Content -LiteralPath (Join-Path $Drive $remName) -Encoding utf8
+                $b = Run @('finish-batch', '-Out', $Out, '-UnitsFile', (Join-Path $Drive $remName))
+            }
+            $stopObj = Planning-Stop $b
+            if ($b.json -and $b.json.kind -eq 'finish_batch' -and ($b.json.results -is [Array])) {
+                $results += @($b.json.results | Where-Object { $_ -and $_.status -ne 'not_run' })
+                if ($b.json.explain) { $explains += @($b.json.explain) }
+                $explainDone += [int]$b.json.explain_done
+                $explainReady += [int]$b.json.explain_ready
+            }
+            if ($stopObj) { break }
+            if (-not $b.json -or $b.json.kind -ne 'finish_batch' -or -not ($b.json.results -is [Array])) {
+                $badBatch = $b
+                break
+            }
+            $stopReason = "$($b.json.stop_reason)"
+            $notRun = [int]$b.json.not_run
+            if ($stopReason -eq 'transport' -or $stopReason -eq 'archive_identity') {
+                $fatalStop = "${stopReason}: $notRun model unit(s) not run"
+                break
+            }
+            if ($stopReason -eq 'budget' -or $notRun -gt 0) {
+                if (-not $b.json.file -or -not (Test-Path -LiteralPath "$($b.json.file)")) {
+                    $fatalStop = "budget_continuation: missing remaining detail for $notRun model unit(s)"
+                    break
+                }
+                $full = Get-Content -LiteralPath "$($b.json.file)" -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64
+                $nextPending = @($full.remaining | Where-Object { $_ -and $_.id -and $_.token })
+                if ($nextPending.Count -eq 0) {
+                    $fatalStop = "budget_continuation: empty remaining set for $notRun model unit(s)"
+                    break
+                }
+                if ($nextPending.Count -ge $pending.Count) {
+                    $fatalStop = "budget_continuation: remaining set did not shrink ($($nextPending.Count) >= $($pending.Count))"
+                    break
+                }
+                $pending = $nextPending
+                continue
+            }
+            break
+        }
         $gate = Run @('ledger', 'gate', '-Out', $Out, '-Layer', 'models', '-Brief')
+        if ($stopObj) {
+            Fail-PlanningStop 'finish' $stopObj @{ results = $results; explain = $explains; gate = $gate.json; refusal = $stopObj.refusal }
+            break
+        }
+        if ($badBatch) { Fail 'finish-batch' $badBatch; break }
+        if ($fatalStop) {
+            Send-StepFail -Step 'finish' -Reason $fatalStop -Name $LineName -Out $ModelWork -Detail @{ results = $results; explain = $explains; gate = $gate.json }
+            break
+        }
         $gateFields = @{}
         if ($gate.json -and $gate.json.counts) { $gateFields.gate_complete = ($gate.json.complete -eq $true); $gateFields.gate_open = [int]$gate.json.counts.open }
-        if (-not $held.Count) { Reply (@{ ok = $true } + $gateFields) @{ results = @(); gate = $gate.json }; break }
-        $list = ($held | ForEach-Object { "$($_.id):$($_.token)" }) -join ','
-        $b = Run @('finish-batch', '-Out', $Out, '-Units', "$list")
-        if (-not $b.json -or $b.json.kind -ne 'finish_batch' -or -not ($b.json.results -is [Array])) { Fail 'finish-batch' $b; break }
-        $results = @($b.json.results)
         $done = @($results | Where-Object { $_.status -eq 'done' -or $_.status -eq 'partial' }).Count
         $failed = @($results | Where-Object { $_.status -ne 'done' -and $_.status -ne 'partial' }).Count
         $partial = @($results | Where-Object { $_.status -eq 'partial' }).Count
         # §3.7: finish-batch also records the Explain completion of a model whose explanations the
         # batch wrote. Those units are not Model results; their counts travel beside them.
         $line = @{ ok = $true; done = $done; failed = $failed; partial = $partial }
-        if ([int]$b.json.explain_done -gt 0) { $line.explain_done = [int]$b.json.explain_done }
-        if ([int]$b.json.explain_ready -gt 0) { $line.explain_ready = [int]$b.json.explain_ready }
-        Reply ($line + $gateFields) @{ results = $results; explain = $b.json.explain; gate = $gate.json }
+        if ($explainDone -gt 0) { $line.explain_done = $explainDone }
+        if ($explainReady -gt 0) { $line.explain_ready = $explainReady }
+        Reply ($line + $gateFields) @{ results = $results; explain = $explains; gate = $gate.json }
     }
 }
 

@@ -367,3 +367,33 @@ test('an environment name and an array column spec are not symbols (\begin{array
   assert.deepEqual(baseSymbols(String.raw`y = \left\{ \begin{array}{l l} x & \text {if} I = 1 \\ w & \text {if} I = 0 \end{array} \right.`), ['y', 'x', 'I', 'w'])
   assert.deepEqual(baseSymbols(String.raw`\left( \begin{array}{c c c} a & b \\ c & d \end{array} \right)`), ['a', 'b', 'c', 'd'])
 })
+
+test('Astra M4: dotted assumption labels (假设 1.2) and 1-hop 沿用 notation cards pass audit', () => {
+  const H = 'K/9|a'
+  const S = H + '|a'
+  const o = (address, facet, line = 'side', extra = {}) => ({ address, facet, line, ...extra })
+  const m = {
+    level: 'formal', head: { address: H },
+    build: {
+      setting: S,
+      order: [
+        o(S, '设定', 'main'),
+        o(S + '|a', '符号表与读法'),
+        o(S + '|b', '假设 1.2：单调性'),
+        o(S + '|1', '第 1 章：主结果', 'main'),
+      ],
+    },
+    relations: [{ from: S + '|b', to: S, kind: 'rests-on' }],
+  }
+  const cards = new Map([
+    [S, { title: '设定：基础环境', body: '**起点**\n原始设定。\n\n**设定**\n产出为 $y$，记 $z := 2y$。\n\n**说明**\n无。' }],
+    [S + '|a', { title: '符号表与读法', body: '沿用 [[K/1|a|a|a]] 的全部符号。' }],
+    [S + '|b', { title: '假设 1.2：单调性', body: '**起点**\n- 依赖 [[' + S + ']]。\n\n**假设**\n效用对 $y$ 递增。\n\n**说明**\n无。' }],
+    [S + '|1', { title: '第 1 章：主结果', body: '结论见 [[K/9|a|a|b]]。' }],
+    ['K/1|a|a|a', { title: '符号表与读法', body: '| 符号 | 含义 | 首次出现 |\n| --- | --- |\n| $y$ | 产出 | [[K/1|a|a]] |\n| $z$ | 派生量 | [[K/1|a|a]] |' }],
+  ])
+  const r = audit(m, cards)
+  assert.deepEqual(r.format, [], JSON.stringify(r.format))
+  assert.deepEqual(r.notation, [], JSON.stringify(r.notation))
+  assert.deepEqual(r.uncovered, [], JSON.stringify(r.uncovered))
+})

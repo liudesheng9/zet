@@ -23,9 +23,10 @@ use super::{Scripts, context, get_card, get_model, read_calls};
 use crate::args::Args;
 use crate::calls;
 use crate::check::Check;
+use crate::ledger::batch::is_transport_fault;
 use crate::util;
 use crate::zt::Zt;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -58,8 +59,8 @@ pattern!(REFUSED, r"(?i)^(\S+): ");
 pattern!(LIST_ITEM, r"(?i)^\s*-");
 pattern!(COMMA, r",");
 
-const STEPS: [&str; 15] = [
-    "brief", "validate", "plan-status", "apply", "derive", "review", "split", "close", "defer", "report", "resume", "explain", "explain-check",
+const STEPS: [&str; 16] = [
+    "brief", "validate", "plan-status", "apply", "derive", "review", "review-audit", "split", "close", "defer", "report", "resume", "explain", "explain-check",
     "explain-apply", "explain-report",
 ];
 /// Folds one move map (old address → new address, every Card a write renumbered) into the run's
@@ -93,9 +94,14 @@ pub(crate) fn slug_of(address: &str) -> String {
 }
 /// A premise that states a mathematical unit (a Model Card with a unit form) is cited, not taken in.
 const UNIT_FORMS: [&str; 6] = ["definition", "axiom", "theorem", "proposition", "lemma", "corollary"];
+
+fn is_math_unit_structure(st: &Value) -> bool {
+    !st["form"].is_null() && !s(&st["form"]).trim().is_empty()
+}
 /// The CRLF line end the ported PowerShell job texts kept.
 const CR: &str = "\r\n";
 
+#[derive(Clone)]
 struct Params {
     step: String,
     work: String,
@@ -109,6 +115,8 @@ struct Params {
     report: bool,
     /// review only: the reviewer is its own conversation (`<slug>:review`) instead of the model's.
     independent_review: bool,
+    /// split only: fail with non-zero exit if any pending formal review JSON is missing, invalid, or incomplete.
+    strict_audit: bool,
     /// explain only (§3.7): the batch's own explain round — one job per model continuing `<slug>:brief`,
     /// with the architect's design entry from `plan.json`.
     batch: bool,
@@ -123,6 +131,15 @@ struct Params {
     file: String,
 }
 
+#[derive(Clone)]
+struct BatchSpec {
+    work: String,
+    models: String,
+    need: String,
+    jobs_file: String,
+}
+
+#[derive(Clone)]
 struct Docs {
     brief: String,
     fill: String,
@@ -153,6 +170,9 @@ struct Compiler {
     /// Every Card this run renumbered: its address when the run began → its address now. A plan names
     /// the Cards it merges by their addresses at planning time (ebrill2001modern pilot 2026-11-09).
     renamed: BTreeMap<String, String>,
+    /// Multi-batch mode suppresses per-batch stdout and captures the last JSON object here.
+    silent_out: bool,
+    last_out: Option<Value>,
 }
 
 /// What explain-apply would do with one job's result file.
@@ -288,6 +308,7 @@ fn planned_link_entries(
     parts: &BTreeSet<String>,
     pairs: &BTreeSet<(String, String)>,
     rests: &BTreeSet<(String, String)>,
+    formal_model: bool,
 ) -> Vec<(String, String)> {
     let mut out = Vec::new();
     // #197: the model's takes. Only a rests-on Link takes a shared part in, so a planned relation to a take
@@ -308,16 +329,9 @@ fn planned_link_entries(
         if address.is_empty() || address.contains('#') {
             continue;
         }
-        let mut wanted: Vec<(String, String)> = Vec::new();
-        for rest in list(&part["rests"]) {
-            let reference = s(&ps::at(&pipe(rest), 0));
-            if !reference.is_empty() {
-                wanted.push((reference, s(&ps::at(&pipe(rest), 1))));
-            }
-        }
-        if truthy(&part["of"]) {
-            wanted.push((s(&part["of"]), String::new()));
-        }
+        // Single authoritative relation-requirements extractor (Astra #1):
+        // in Level 2 formal models, plain `of`/`after` are placement-only unless `kind` is explicitly set.
+        let wanted = super::formal::planned_relations(part, formal_model);
         for (reference, why) in wanted {
             let Some(target) = resolve(&reference) else { continue };
             let take = taken.contains(&target);
@@ -554,14 +568,27 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             "ReviewDoc",
             "Job",
             "File",
+            "BatchesFile",
+            "RenewUnits",
         ],
-        &["Changed", "Rebuild", "Report", "IndependentReview", "Batch"],
+        &["Changed", "Rebuild", "Report", "IndependentReview", "Batch", "StrictAudit"],
     )?;
     let step = a.choice("Step", &STEPS)?;
-    let work = a.required("Work")?;
-    if work.is_empty() {
-        bail!("Cannot bind argument to parameter 'Work' because it is an empty string.");
+    let has_batches = a.has("BatchesFile");
+    if has_batches && a.has("Work") {
+        bail!("-Work and -BatchesFile are mutually exclusive");
     }
+    let work = if has_batches {
+        String::new()
+    } else {
+        let w = a.required("Work")?;
+        if w.is_empty() {
+            bail!("Cannot bind argument to parameter 'Work' because it is an empty string.");
+        }
+        w
+    };
+    let batches_file = a.str("BatchesFile");
+    let renew_units = a.str("RenewUnits");
     let p = Params {
         step,
         work,
@@ -572,6 +599,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         changed: a.flag("Changed"),
         report: a.flag("Report"),
         independent_review: a.flag("IndependentReview"),
+        strict_audit: a.flag("StrictAudit"),
         batch: a.flag("Batch"),
         rebuild: a.flag("Rebuild"),
         level: a.str("Level"),
@@ -602,21 +630,39 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     );
     // R328 (§15.2): the steps that allocate a model job or write Model Cards into the book's
     // Literature tree stop before their first file or Card when that tree is locked by the owner.
-    // A read-only step (validate, close, defer, report, explain-check, explain-report) and a step
-    // without -Staging (no prepared book to name) never ask; the storage gate still protects them.
+    // `close` and `report` write Model Cards (`refresh_shared`, `complete_structures`), so they
+    // preflight too whenever `-Staging` names a book.
+    if has_batches {
+        return run_batches(p, &docs, &explain_args, &limits, &scripts.helper, &batches_file, &renew_units);
+    }
     let zt = if matches!(
         p.step.as_str(),
-        "brief" | "apply" | "derive" | "review" | "split" | "resume" | "explain" | "explain-apply"
+        "brief" | "apply" | "derive" | "review" | "split" | "close" | "report" | "resume" | "explain" | "explain-apply"
     ) {
         let key = crate::lockcheck::key_from_staging(&p.staging);
         let mut client = crate::zt::start()?;
-        if let Some(refusal) = crate::lockcheck::preflight(&mut client, "model", &p.step, &key)? {
+        if !key.is_empty()
+            && let Some(refusal) = crate::lockcheck::preflight(&mut client, "model", &p.step, &key)?
+        {
             return crate::lockcheck::stop("model", &refusal);
         }
         Some(client)
     } else {
         None
     };
+    let mut c = new_compiler(p, docs, explain_args, limits, scripts.helper, zt, false)?;
+    c.run_step()
+}
+
+fn new_compiler(
+    p: Params,
+    docs: Docs,
+    explain_args: String,
+    limits: String,
+    helper: String,
+    zt: Option<Zt>,
+    silent_out: bool,
+) -> Result<Compiler> {
     std::fs::create_dir_all(&p.work)?;
     let state_file = ps::join(&p.work, "state.json");
     let state = if ps::exists(&state_file) {
@@ -624,8 +670,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     } else {
         json!({ "order": [], "models": {}, "jobs": {}, "rereview": [], "reviews": [], "seq": 0 })
     };
-    let mut c = Compiler {
-        helper: scripts.helper.clone(),
+    Ok(Compiler {
+        helper,
         check: "zt-check".into(),
         p,
         zt,
@@ -639,25 +685,479 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         source_report: None,
         plans: HashMap::new(),
         renamed: BTreeMap::new(),
+        silent_out,
+        last_out: None,
+    })
+}
+
+fn norm_fs_key(path: &str) -> String {
+    let resolved = std::fs::canonicalize(path)
+        .or_else(|_| std::path::absolute(path))
+        .unwrap_or_else(|_| std::path::PathBuf::from(path));
+    resolved
+        .to_string_lossy()
+        .replace('/', "\\")
+        .trim_start_matches("\\\\?\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
+fn norm_work_key(path: &str) -> String {
+    norm_fs_key(path)
+}
+
+fn validate_batches_manifest(
+    step: &str,
+    staging: &str,
+    batches_file: &str,
+) -> Result<(String, Vec<BatchSpec>)> {
+    if !matches!(
+        step,
+        "brief" | "derive" | "review" | "review-audit" | "split" | "close" | "report" | "explain" | "explain-apply"
+    ) {
+        bail!("-BatchesFile supports brief, derive, review, review-audit, split, close, report, explain, explain-apply (not {step})");
+    }
+    if staging.trim().is_empty() {
+        bail!("-BatchesFile requires an explicit -Staging folder");
+    }
+    let manifest = crate::organize::common::manifest(staging)?;
+    let key = crate::organize::common::pstr(&manifest, "citation_key").trim().to_string();
+    if key.is_empty() {
+        bail!("manifest.json in {staging} has an empty citation_key");
+    }
+    let raw = util::read_json(batches_file).with_context(|| format!("invalid -BatchesFile {batches_file}"))?;
+    let items = raw.as_array().context("-BatchesFile must be a JSON array")?;
+    let mut specs = Vec::with_capacity(items.len());
+    let mut seen_works: HashSet<String> = HashSet::new();
+    let mut seen_jobs_files: HashSet<String> = HashSet::new();
+    let mut seen_models: HashSet<String> = HashSet::new();
+    let key_prefix = format!("{}/", key.to_ascii_lowercase());
+    let requires_existing_state = matches!(
+        step,
+        "derive" | "review" | "review-audit" | "split" | "close" | "report" | "explain" | "explain-apply"
+    );
+    for (idx, item) in items.iter().enumerate() {
+        let obj = item.as_object().with_context(|| format!("-BatchesFile entry {idx} must be an object"))?;
+        let work = obj.get("work").and_then(Value::as_str).map(str::trim).unwrap_or("").to_string();
+        if work.is_empty() {
+            bail!("-BatchesFile entry {idx} is missing a non-empty `work` path");
+        }
+        let wkey = norm_work_key(&work);
+        if !seen_works.insert(wkey.clone()) {
+            bail!("-BatchesFile lists duplicate `work` folder `{work}`");
+        }
+        let jobs_file = obj.get("jobs_file").and_then(Value::as_str).map(str::trim).unwrap_or("").to_string();
+        if !jobs_file.is_empty() {
+            let jkey = norm_fs_key(&jobs_file);
+            if !seen_jobs_files.insert(jkey.clone()) {
+                bail!("-BatchesFile lists colliding `jobs_file` `{jobs_file}`");
+            }
+            if jkey == norm_fs_key(&ps::join(&work, "state.json"))
+                || std::path::Path::new(&jobs_file).file_name().is_some_and(|n| n.eq_ignore_ascii_case("plan.json") || n.eq_ignore_ascii_case("state.json"))
+            {
+                bail!("-BatchesFile `jobs_file` `{jobs_file}` cannot target state.json or plan.json");
+            }
+        }
+        let mut model_vec: Vec<String> = Vec::new();
+        if let Some(mv) = obj.get("models") {
+            if let Some(arr) = mv.as_array() {
+                for m in arr {
+                    let s_m = m.as_str().map(str::trim).unwrap_or("");
+                    if !s_m.is_empty() {
+                        model_vec.push(s_m.to_string());
+                    }
+                }
+            } else if let Some(csv) = mv.as_str() {
+                for s_m in csv.split(',').map(str::trim).filter(|x| !x.is_empty()) {
+                    model_vec.push(s_m.to_string());
+                }
+            } else if !mv.is_null() {
+                bail!("-BatchesFile entry {idx} `models` must be an array or comma-separated string");
+            }
+        }
+        if matches!(step, "brief" | "explain") && model_vec.is_empty() {
+            bail!("-BatchesFile entry {idx} ({work}) requires a non-empty `models` list for -Step {step}");
+        }
+        let state_path = ps::join(&work, "state.json");
+        let state_order: Vec<String> = if ps::exists(&state_path) {
+            let st = util::read_json(&state_path)
+                .with_context(|| format!("-BatchesFile entry {idx}: invalid state.json in {work}"))?;
+            if !st.is_object() {
+                bail!("-BatchesFile entry {idx}: state.json in {work} must be an object");
+            }
+            list(&st["order"]).into_iter().map(s).filter(|m| !m.is_empty()).collect()
+        } else {
+            if requires_existing_state {
+                bail!("-BatchesFile entry {idx}: `-Step {step}` requires existing `{state_path}`");
+            }
+            Vec::new()
+        };
+        let mut check_models: Vec<String> = Vec::new();
+        for m in model_vec.iter().chain(state_order.iter()) {
+            if !check_models.iter().any(|x| ps::eq(x, m)) {
+                check_models.push(m.clone());
+            }
+        }
+        for m in &check_models {
+            let low = m.to_ascii_lowercase();
+            if !low.starts_with(&key_prefix) {
+                bail!("-BatchesFile entry {idx} model `{m}` (or state order) does not belong to `{key}`");
+            }
+            if !seen_models.insert(low) {
+                bail!("-BatchesFile assigns model `{m}` to more than one batch");
+            }
+        }
+        let need = obj.get("need").and_then(Value::as_str).unwrap_or("").to_string();
+        specs.push(BatchSpec {
+            work,
+            models: model_vec.join(","),
+            need,
+            jobs_file,
+        });
+    }
+    Ok((key, specs))
+}
+
+fn load_renew_units_map(path: &str) -> Result<(Vec<(String, i64)>, HashMap<String, String>)> {
+    let raw = util::read_json(path).with_context(|| format!("invalid -RenewUnits {path}"))?;
+    let items = if let Some(arr) = raw.as_array() {
+        arr
+    } else if let Some(arr) = raw.get("units").and_then(Value::as_array) {
+        arr
+    } else {
+        bail!("-RenewUnits must contain a JSON array of units");
     };
-    match c.p.step.as_str() {
-        "brief" => c.step_brief(),
-        "validate" => c.step_validate(),
-        "apply" => c.step_apply(),
-        "derive" => c.step_derive(),
-        "review" => c.step_review(),
-        "split" => c.step_split(),
-        "close" => c.step_close(),
-        "defer" => c.step_defer(),
-        "plan-status" => c.step_plan_status(),
-        "report" => c.step_report(),
-        "resume" => c.step_resume(),
-        "explain" => c.step_explain(),
-        "explain-check" => c.step_explain_check(),
-        "explain-apply" => c.step_explain_apply(),
-        _ => c.step_explain_report(),
-    }?;
-    Ok(0)
+    let mut pairs = Vec::new();
+    let mut seen_ids = HashSet::new();
+    let mut unit_to_model = HashMap::new();
+    for (idx, item) in items.iter().enumerate() {
+        let obj = item.as_object().with_context(|| format!("-RenewUnits entry {idx} must be an object"))?;
+        let id = obj.get("id").or_else(|| obj.get("unit")).and_then(Value::as_str).map(str::trim).unwrap_or("").to_string();
+        if id.is_empty() {
+            bail!("-RenewUnits entry {idx} has an empty unit id");
+        }
+        if !seen_ids.insert(id.clone()) {
+            bail!("-RenewUnits entry {idx} duplicates unit id `{id}`");
+        }
+        let token = obj
+            .get("token")
+            .and_then(Value::as_i64)
+            .filter(|t| *t > 0)
+            .with_context(|| format!("-RenewUnits entry {idx} (`{id}`) must carry positive integer `token`"))?;
+        let model = obj
+            .get("inputs")
+            .and_then(|inp| inp.get("header").or_else(|| inp.get("model")))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        if !model.is_empty() {
+            unit_to_model.insert(id.clone(), model);
+        }
+        pairs.push((id, token));
+    }
+    Ok((pairs, unit_to_model))
+}
+
+fn run_batches(
+    base_p: Params,
+    docs: &Docs,
+    explain_args: &str,
+    limits: &str,
+    helper: &str,
+    batches_file: &str,
+    renew_units: &str,
+) -> Result<i32> {
+    let (key, specs) = validate_batches_manifest(&base_p.step, &base_p.staging, batches_file)?;
+    if specs.is_empty() {
+        util::print_line(&ps::json_compact(&json!({
+            "ok": true,
+            "step": base_p.step,
+            "batches": [],
+            "jobs": [],
+        })))?;
+        return Ok(0);
+    }
+
+    let mut zt = crate::zt::start()?;
+    let mut has_renew = false;
+    let mut renewed_models: HashSet<String> = HashSet::new();
+    let mut released_models: HashSet<String> = HashSet::new();
+    let mut renew_summary = Value::Null;
+    if !renew_units.trim().is_empty() {
+        has_renew = true;
+        let (pairs, mut unit_to_model) = load_renew_units_map(renew_units)?;
+        if !pairs.is_empty() {
+            let p = crate::ledger::Prepared::read(&base_p.staging, &mut zt)?;
+            // Also resolve unit -> model from the ledger itself if the units file omitted `inputs`.
+            if let Ok(conn) = crate::ledger::connect(&p.out.join("ledger.sqlite3"), false) {
+                for (uid, _) in &pairs {
+                    if !unit_to_model.contains_key(uid)
+                        && let Ok(raw_inp) = conn.query_row("SELECT inputs_json FROM units WHERE id=?1", [uid], |r| r.get::<_, String>(0))
+                        && let Ok(v) = serde_json::from_str::<Value>(&raw_inp)
+                    {
+                        let m = v.get("header").or_else(|| v.get("model")).and_then(Value::as_str).unwrap_or("").trim();
+                        if !m.is_empty() {
+                            unit_to_model.insert(uid.clone(), m.to_string());
+                        }
+                    }
+                }
+            }
+            let res = crate::ledger::renew_batch(&p, &pairs)?;
+            for ren in list(&res["renewed"]) {
+                let uid = s(&ren["unit"]);
+                if let Some(m) = unit_to_model.get(&uid) {
+                    renewed_models.insert(m.to_ascii_lowercase());
+                }
+            }
+            for rel in list(&res["released"]) {
+                let uid = s(&rel["unit"]);
+                if let Some(m) = unit_to_model.get(&uid) {
+                    released_models.insert(m.to_ascii_lowercase());
+                }
+            }
+            renew_summary = res;
+        }
+    }
+
+    let needs_lock_preflight = matches!(
+        base_p.step.as_str(),
+        "brief" | "derive" | "review" | "split" | "close" | "report" | "explain" | "explain-apply"
+    );
+    let mut batch_results: Vec<Value> = Vec::with_capacity(specs.len());
+    let mut all_jobs: Vec<Value> = Vec::new();
+    let mut all_ok = true;
+
+    for (idx, spec) in specs.iter().enumerate() {
+        let mut p = Params {
+            work: spec.work.clone(),
+            models: if !spec.models.is_empty() { spec.models.clone() } else { base_p.models.clone() },
+            need: if !spec.need.is_empty() { spec.need.clone() } else { base_p.need.clone() },
+            ..base_p.clone()
+        };
+        if !spec.models.is_empty() {
+            p.models = spec.models.clone();
+        }
+
+        // Compute effective models of this batch (`spec.models` / `base_p.models` / `state.order`) before execution.
+        let mut batch_models: Vec<String> = p
+            .models
+            .split(',')
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
+            .collect();
+        let st_path = ps::join(&spec.work, "state.json");
+        if ps::exists(&st_path)
+            && let Ok(st) = util::read_json(&st_path)
+        {
+            for m in list(&st["order"]).into_iter().map(s).filter(|m| !m.is_empty()) {
+                if !batch_models.iter().any(|x| ps::eq(x, &m)) {
+                    batch_models.push(m);
+                }
+            }
+        }
+
+        if has_renew {
+            let stale = batch_models.iter().any(|m| {
+                let low = m.to_ascii_lowercase();
+                released_models.contains(&low)
+                    || (needs_lock_preflight && !renewed_models.contains(&low))
+            });
+            if stale {
+                all_ok = false;
+                batch_results.push(json!({
+                    "work": spec.work,
+                    "status": "stale_claim",
+                    "error": "claimed model unit was released, expired, or missing from renewed claims before batch step",
+                }));
+                continue;
+            }
+        }
+
+        if needs_lock_preflight {
+            match crate::lockcheck::preflight(&mut zt, "model", &base_p.step, &key) {
+                Ok(Some(refusal)) => {
+                    batch_results.push(json!({ "work": spec.work, "status": "locked", "refusal": refusal }));
+                    for rem in &specs[idx + 1..] {
+                        batch_results.push(json!({ "work": rem.work, "status": "not_run" }));
+                    }
+                    let code = crate::lockcheck::refusal_code(&refusal);
+                    let out = json!({
+                        "ok": false,
+                        "step": base_p.step,
+                        "code": code,
+                        "refusal": refusal,
+                        "renew": renew_summary,
+                        "batches": batch_results,
+                        "jobs": all_jobs,
+                    });
+                    util::print_line(&ps::json_compact(&out))?;
+                    return Ok(crate::lockcheck::LOCKED_EXIT);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    if is_transport_fault(&err) {
+                        batch_results.push(json!({
+                            "work": spec.work,
+                            "status": "transport_fault",
+                            "error": format!("{err:#}"),
+                        }));
+                        for rem in &specs[idx + 1..] {
+                            batch_results.push(json!({ "work": rem.work, "status": "not_run" }));
+                        }
+                        let out = json!({
+                            "ok": false,
+                            "step": base_p.step,
+                            "stop_reason": "transport",
+                            "error": format!("{err:#}"),
+                            "renew": renew_summary,
+                            "batches": batch_results,
+                            "jobs": all_jobs,
+                        });
+                        util::print_line(&ps::json_compact(&out))?;
+                        return Ok(1);
+                    }
+                    all_ok = false;
+                    batch_results.push(json!({
+                        "work": spec.work,
+                        "status": "failed",
+                        "error": format!("{err:#}"),
+                    }));
+                    continue;
+                }
+            }
+        }
+
+        let mut taken_zt = Some(zt);
+        let step_res: Result<(i32, Value)> = (|| {
+            let mut c = new_compiler(
+                p,
+                docs.clone(),
+                explain_args.to_string(),
+                limits.to_string(),
+                helper.to_string(),
+                taken_zt.take(),
+                true,
+            )?;
+            let rc_res = c.run_step();
+            taken_zt = c.zt.take();
+            let rc = rc_res?;
+            let last = c.last_out.unwrap_or_else(|| json!({}));
+            if !spec.jobs_file.is_empty() {
+                let jobs = last.get("jobs").and_then(Value::as_array).cloned().unwrap_or_default();
+                if let Some(parent) = std::path::Path::new(&spec.jobs_file).parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent)?;
+                }
+                util::write_atomic(&spec.jobs_file, &serde_json::to_string_pretty(&jobs)?)?;
+            }
+            Ok((rc, last))
+        })();
+        zt = match taken_zt {
+            Some(client) => client,
+            None => crate::zt::start()?,
+        };
+        match step_res {
+            Ok((rc, last)) => {
+                let jobs = last.get("jobs").and_then(Value::as_array).cloned().unwrap_or_default();
+                all_jobs.extend(jobs);
+                let ok_batch = rc == 0 && last.get("ok") != Some(&json!(false));
+                if !ok_batch {
+                    all_ok = false;
+                }
+                batch_results.push(json!({
+                    "work": spec.work,
+                    "status": if ok_batch { "ok" } else { "failed" },
+                    "rc": rc,
+                    "jobs_file": if spec.jobs_file.is_empty() { Value::Null } else { json!(spec.jobs_file) },
+                    "result": last,
+                }));
+            }
+            Err(err) => {
+                if let Some(refusal) = crate::lockcheck::stopped_refusal(&err) {
+                    batch_results.push(json!({ "work": spec.work, "status": "locked", "refusal": refusal }));
+                    for rem in &specs[idx + 1..] {
+                        batch_results.push(json!({ "work": rem.work, "status": "not_run" }));
+                    }
+                    let code = crate::lockcheck::refusal_code(&refusal);
+                    let out = json!({
+                        "ok": false,
+                        "step": base_p.step,
+                        "code": code,
+                        "refusal": refusal,
+                        "renew": renew_summary,
+                        "batches": batch_results,
+                        "jobs": all_jobs,
+                    });
+                    util::print_line(&ps::json_compact(&out))?;
+                    return Ok(crate::lockcheck::LOCKED_EXIT);
+                }
+                if is_transport_fault(&err) {
+                    batch_results.push(json!({
+                        "work": spec.work,
+                        "status": "transport_fault",
+                        "error": format!("{err:#}"),
+                    }));
+                    for rem in &specs[idx + 1..] {
+                        batch_results.push(json!({ "work": rem.work, "status": "not_run" }));
+                    }
+                    let out = json!({
+                        "ok": false,
+                        "step": base_p.step,
+                        "stop_reason": "transport",
+                        "error": format!("{err:#}"),
+                        "renew": renew_summary,
+                        "batches": batch_results,
+                        "jobs": all_jobs,
+                    });
+                    util::print_line(&ps::json_compact(&out))?;
+                    return Ok(1);
+                }
+                all_ok = false;
+                batch_results.push(json!({
+                    "work": spec.work,
+                    "status": "failed",
+                    "error": format!("{err:#}"),
+                }));
+            }
+        }
+    }
+
+    let out = json!({
+        "ok": all_ok,
+        "step": base_p.step,
+        "renew": renew_summary,
+        "batches": batch_results,
+        "jobs": all_jobs,
+    });
+    util::print_line(&ps::json_compact(&out))?;
+    Ok(if all_ok { 0 } else { 1 })
+}
+
+impl Compiler {
+    fn run_step(&mut self) -> Result<i32> {
+        match self.p.step.as_str() {
+            "brief" => self.step_brief()?,
+            "validate" => self.step_validate()?,
+            "apply" => self.step_apply()?,
+            "derive" => self.step_derive()?,
+            "review" => self.step_review()?,
+            "review-audit" => return self.step_review_audit(),
+            "split" => return self.step_split(),
+            "close" => self.step_close()?,
+            "defer" => self.step_defer()?,
+            "plan-status" => self.step_plan_status()?,
+            "report" => self.step_report()?,
+            "resume" => self.step_resume()?,
+            "explain" => self.step_explain()?,
+            "explain-check" => self.step_explain_check()?,
+            "explain-apply" => self.step_explain_apply()?,
+            _ => self.step_explain_report()?,
+        }
+        Ok(0)
+    }
 }
 
 /// `$items += $value` on a state list: the old list (nulls dropped) plus the value.
@@ -669,6 +1169,48 @@ fn plus(old: &Value, more: impl IntoIterator<Item = Value>) -> Value {
 
 fn strings(v: &Value) -> Vec<String> {
     pipe(v).into_iter().map(s).collect()
+}
+
+/// True when a Derivation part's `to` field actually states a mathematical expression rather than
+/// only a prose reference label like `式 (18) 与 (19)`.
+fn has_math_expr(to: &str) -> bool {
+    to.chars().any(|c| matches!(c, '$' | '=' | '\\' | '<' | '>' | '≤' | '≥' | '≠' | '≈' | '∼' | '∝' | '∈' | '→' | '⇒' | '⟺' | '≡'))
+}
+
+/// Format a `close` 修正 note for blocking R2 (>40 char) faults on the Model Card head itself.
+fn head_r2_note(model: &str, check_lines: &[String]) -> Option<String> {
+    let r2: Vec<String> = check_lines
+        .iter()
+        .filter_map(|line| {
+            let c = STYLE_FAULT.captures(line)?;
+            if !ps::eq(&c[1], model) {
+                return None;
+            }
+            let msg = &c[2];
+            if msg.starts_with("R2 ") && !msg.contains("(advisory)") {
+                Some(msg.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    if r2.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "## 修正：[[{model}]]\n\n构建检查（模型头卡短句 R2）：这张模型卡正文有以下句子超过 40 个汉字：\n{}\n把上述长句拆成 40 字以内的短句，保留全部问题、概要、数据、样本、比较对象、单位、限定条件和既有链接；不要改动 **结构**、**引入**、**分部**、**主要估计** 等脚本节，不要移动卡片。改完照常运行 CHECK。\n",
+        r2.iter().map(|l| format!("- {l}")).collect::<Vec<_>>().join("\n")
+    ))
+}
+
+/// Returns `true` when `path` begins with a UTF-8 BOM (`EF BB BF`).
+fn has_utf8_bom(path: &str) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut prefix = [0u8; 3];
+    matches!(file.read_exact(&mut prefix), Ok(()) if prefix == [0xEF, 0xBB, 0xBF])
 }
 
 impl Compiler {
@@ -726,7 +1268,7 @@ impl Compiler {
                 }
             }
         }
-        let (done, failure) = result.map_err(|e| anyhow!("zt helper failed: {e:#}"))?;
+        let (done, failure) = result.context("zt helper failed")?;
         let mut addresses = Vec::new();
         for d in &done {
             if let Some(c) = OK_LINE.captures(&d.line) {
@@ -734,6 +1276,9 @@ impl Compiler {
             }
         }
         if let Some(failure) = failure {
+            if let Some(refusal) = failure.refusal.as_ref().filter(|r| crate::lockcheck::is_planning_stop(r)) {
+                return Err(anyhow::Error::new(crate::lockcheck::Stopped(refusal.clone())));
+            }
             let lines = failure.lines();
             if let Some(c) = ERROR_LINE.captures(&lines[0]) {
                 bail!("zt: {}", &c[1]);
@@ -787,11 +1332,15 @@ impl Compiler {
     // --- state ----------------------------------------------------------------------------------
 
     fn save_state(&self) -> Result<()> {
-        util::write_text(&self.state_file, &ps::json_pretty(&self.state))
+        util::write_atomic(&self.state_file, &ps::json_pretty(&self.state))
     }
 
-    fn out_last(&self, value: &Value) -> Result<()> {
-        util::print_line(&ps::json_compact(value))
+    fn out_last(&mut self, value: &Value) -> Result<()> {
+        self.last_out = Some(value.clone());
+        if !self.silent_out {
+            util::print_line(&ps::json_compact(value))?;
+        }
+        Ok(())
     }
 
     fn slug(address: &str) -> String {
@@ -847,6 +1396,152 @@ impl Compiler {
     fn tables_of(&self, model: &str) -> Option<Value> {
         let path = ps::join(&self.dir(model), "tables.json");
         if ps::exists(&path) { util::read_json(&path).ok() } else { None }
+    }
+
+    /// The model's pinned `inventory.json` (a formal model's brief writes it), surfacing parse
+    /// errors explicitly rather than silently skipping Layer 3 validation (Astra #12) and merging
+    /// optional reader-curated `obligations.json` (Astra H3).
+    fn inventory_result(&self, model: &str) -> std::result::Result<Option<Value>, String> {
+        let dir = self.dir(model);
+        let path = ps::join(&dir, "inventory.json");
+        if !ps::exists(&path) {
+            return Ok(None);
+        }
+        let mut inv = util::read_json(&path)
+            .map_err(|e| format!("inventory_invalid: `{path}` could not be parsed as JSON: {e:#}"))?;
+        let ob_path = ps::join(&dir, "obligations.json");
+        super::inventory::merge_obligations_file(&mut inv, &ob_path)?;
+        Ok(Some(inv))
+    }
+
+    fn inventory_of(&self, model: &str) -> Option<Value> {
+        self.inventory_result(model).ok().flatten()
+    }
+
+    fn inventory_required_for(&self, model: &str, staging: Option<&str>) -> bool {
+        ps::exists(&ps::join(&self.dir(model), "brief.md"))
+            || staging.is_some_and(|st| std::path::Path::new(&ps::join(st, "sections")).is_dir())
+    }
+
+    /// Build an effective plan parts list that includes any split pieces recorded in `m["added"]`
+    /// right after their predecessor, inheriting `src` from their origin part and updating any
+    /// subsequent Side part's `after` pointer (Astra #7).
+    fn effective_plan_parts(&self, model: &str, plan: &Value) -> Vec<Value> {
+        let mut parts: Vec<Value> = list(&plan["parts"]).into_iter().cloned().collect();
+        let Some(added_map) = self.m(model)["added"].as_object() else {
+            return parts;
+        };
+        if added_map.is_empty() {
+            return parts;
+        }
+        let mut added_entries: Vec<(String, Value)> = added_map
+            .iter()
+            .filter(|(_, v)| v.is_object())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        // Sort by base id then numeric suffix (`~2`, `~3`, ...) so chained splits insert in order.
+        added_entries.sort_by(|a, b| {
+            let key = |id: &str| {
+                if let Some((base, suf)) = id.rsplit_once('~') {
+                    (base.to_string(), suf.parse::<u64>().unwrap_or(u64::MAX))
+                } else {
+                    (id.to_string(), 0)
+                }
+            };
+            key(&a.0).cmp(&key(&b.0))
+        });
+        for (new_id, mut entry) in added_entries {
+            if parts.iter().any(|p| ps::eq(&s(&p["id"]), &new_id)) {
+                continue;
+            }
+            let base_id = new_id.split_once('~').map(|(b, _)| b).unwrap_or(&new_id);
+            if entry["src"].is_null()
+                && let Some(origin) = parts.iter().find(|p| ps::eq(&s(&p["id"]), base_id))
+            {
+                entry["src"] = origin["src"].clone();
+            }
+            let pred_id = if truthy(&entry["after"]) {
+                s(&entry["after"])
+            } else {
+                base_id.to_string()
+            };
+            if ps::eq(&s(&entry["line"]), "side") && !pred_id.is_empty() {
+                for p in &mut parts {
+                    if ps::eq(&s(&p["after"]), &pred_id) && !ps::eq(&s(&p["id"]), &new_id) {
+                        p["after"] = json!(new_id);
+                    }
+                }
+            }
+            match parts.iter().position(|p| ps::eq(&s(&p["id"]), &pred_id)) {
+                Some(idx) => parts.insert(idx + 1, entry),
+                None => parts.push(entry),
+            }
+        }
+        parts
+    }
+
+    /// Level 2 formal close-round card checks: FM1–FM6 and pinned `inventory.json` equation fidelity.
+    /// Checks ONLY the model's own filed parts (never borrowed `take` cards from other models, Astra #15),
+    /// scoping equation tags to each part's pinned `src` file(s) and surfacing corrupt/missing inventory (Astra H2/H4).
+    fn formal_check(&mut self, model: &str, st: &Value) -> Result<Vec<(String, String)>> {
+        let mut own = Vec::new();
+        let mut src_files_by_addr: CiMap<Vec<String>> = CiMap::new();
+        for id in ps::keys(&self.m(model)["ids"]) {
+            let p = self.plan_part(model, &id)?;
+            if p.as_ref().is_some_and(|p| truthy(&p["take"])) {
+                continue;
+            }
+            let addr = self.id_address(model, &id);
+            if !addr.is_empty() && !addr.contains('#') {
+                own.push(addr.clone());
+                if let Some(part) = p {
+                    let spans: Vec<String> = pipe(&part["src"]).into_iter().map(s).filter(|x| !x.is_empty()).collect();
+                    let files = super::inventory::src_files_of_spans(&spans);
+                    if !files.is_empty() {
+                        src_files_by_addr.insert(&addr, files);
+                    }
+                }
+            }
+        }
+        let folder = self.run_folder();
+        let staging = (!folder.is_empty()).then_some(folder.as_str());
+        let mut extra_faults: Vec<(String, String)> = Vec::new();
+        let inv = match self.inventory_result(model) {
+            Ok(Some(inv)) => Some(inv),
+            Ok(None) => {
+                if self.inventory_required_for(model, staging) {
+                    extra_faults.push((
+                        model.to_string(),
+                        format!(
+                            "## 修正：[[{model}]]\n\n清单检查（模型 [[{model}]]）：\n- inventory_missing: formal model requires pinned inventory.json; re-extract inventory before finish.\n"
+                        ),
+                    ));
+                }
+                None
+            }
+            Err(msg) => {
+                extra_faults.push((
+                    model.to_string(),
+                    format!(
+                        "## 修正：[[{model}]]\n\n清单检查（模型 [[{model}]]）：\n- {msg}\n"
+                    ),
+                ));
+                None
+            }
+        };
+        let head_body = s(&st["head"]["body"]);
+        let cards: Vec<(String, String, String, Vec<String>)> = list(&st["parts"])
+            .into_iter()
+            .filter(|p| ps::is_in(&s(&p["address"]), &own))
+            .map(|p| {
+                let addr = s(&p["address"]);
+                let files = src_files_by_addr.get(&addr).cloned().unwrap_or_default();
+                (addr, s(&p["facet"]), s(&p["body"]), files)
+            })
+            .collect();
+        let mut out = super::formal::formal_entries_scoped(model, &head_body, &cards, inv.as_ref());
+        out.extend(extra_faults);
+        Ok(out)
     }
 
     /// Every number of the source lines the plan's parts name, and of the model's tables: what
@@ -919,6 +1614,7 @@ impl Compiler {
             let text = format!("## 第 {} 组，共 {total} 组\r\n\r\n{reread}\r\n\r\n{}", k + 1, blocks.join("\r\n\r\n"));
             let mut job = self.new_job(model, "e", ids, &text, "按以上说明核对这一组卡，改正原文不支持的地方，最后只回复一行 JSON。")?;
             let file = s(&self.state["jobs"][&s(&job["id"])]["file"]);
+            job["review_kind"] = json!("empirical");
             job["files"] = json!([self.docs.review_empirical, ps::join(&dir, "setting.md"), file]);
             jobs.push(job);
         }
@@ -1049,6 +1745,8 @@ impl Compiler {
         }
         let level = s(&plan["level"]);
         let formal = ps::eq(&level, "formal") && !plan["level"].is_null();
+        let is_math_unit = is_math_unit_structure(structure);
+        let formal_model = super::formal::is_formal_model(plan, is_math_unit);
         let concept = ps::eq(&level, "concept") && !plan["level"].is_null();
         let empirical = ps::eq(&level, "empirical") && !plan["level"].is_null();
         if !formal && !concept && !empirical {
@@ -1098,7 +1796,7 @@ impl Compiler {
             if !ps::is_in(&line, &["main", "side", "off", "shared"]) {
                 faults.push(format!("{id}: line must be main, side, or off"));
             }
-            if ps::eq(&line, "side") && !truthy(&p["of"]) {
+            if ps::eq(&line, "side") && !formal_model && !truthy(&p["of"]) {
                 faults.push(format!("{id}: a side part needs of (the part it belongs beside)"));
             }
             if ref_of(p) == "new" {
@@ -1110,7 +1808,7 @@ impl Compiler {
                 if !truthy(&p["title"]) {
                     faults.push(format!("{id}: a new part needs a title"));
                 }
-                if !truthy(&p["spec"]) && !derives(p) {
+                if !truthy(&p["spec"]) && !derives(p) && !(formal_model && super::formal::role(p) == Some(zt_check::formal::FormalRole::Notation)) {
                     faults.push(format!("{id}: a new part needs spec (what it must state)"));
                 }
             }
@@ -1118,7 +1816,7 @@ impl Compiler {
                 if concept {
                     faults.push(format!("{id}: a concept model has no Derivation parts"));
                 }
-                if !ps::eq(&line, "main") {
+                if !formal_model && !ps::eq(&line, "main") {
                     faults.push(format!("{id}: a Derivation part stands on the main line"));
                 }
                 if truthy(&p["facet"]) && !ps::starts_with(&s(&p["facet"]), "推导") {
@@ -1126,6 +1824,11 @@ impl Compiler {
                 }
                 if !truthy(&p["to"]) {
                     faults.push(format!("{id}: a Derivation part needs to (its result equation)"));
+                } else if !has_math_expr(&s(&p["to"])) {
+                    faults.push(format!(
+                        "{id}: to '{}' must state the result equation in math (e.g. $$...$$), not only a reference label",
+                        s(&p["to"])
+                    ));
                 }
                 if truthy(&p["steps"]) && ps::gt(&p["steps"], self.part_steps()) {
                     faults.push(format!(
@@ -1152,10 +1855,15 @@ impl Compiler {
             } else if !SETTING_OR_PREMISES.is_match(&s(&main[0]["facet"])) && !truthy(&main[0]["existing"]) {
                 faults.push("the first main-line part is the setting (facet 设定; a mathematical unit: 前提)".into());
             }
-            if list(&plan["symbols"]).is_empty() {
+            let borrows_or_takes_notation = formal_model
+                && parts.iter().any(|p| {
+                    truthy(&p["borrows_notation"])
+                        || (truthy(&p["take"]) && super::formal::role(p) == Some(zt_check::formal::FormalRole::Notation))
+                });
+            if list(&plan["symbols"]).is_empty() && !borrows_or_takes_notation {
                 faults.push("a formal model needs symbols (the setting's symbol table)".into());
             }
-            if list(&plan["terms"]).is_empty() {
+            if list(&plan["terms"]).is_empty() && !borrows_or_takes_notation {
                 faults.push("a formal model needs terms (the setting's term table)".into());
             }
         }
@@ -1251,6 +1959,26 @@ impl Compiler {
             let tables = self.tables_of(model);
             faults.extend(super::empirical::plan_faults(plan, tables.as_ref()));
         }
+        // Level 2 formal economic model: strict role, placement, justification, and inventory gates (docs/formal-models-proposal.md §8).
+        if formal_model {
+            let folder = self.run_folder();
+            let staging = (!folder.is_empty()).then_some(folder.as_str());
+            match self.inventory_result(model) {
+                Ok(Some(inv)) => {
+                    faults.extend(super::formal::plan_faults(plan, Some(&inv), staging));
+                }
+                Ok(None) => {
+                    if self.inventory_required_for(model, staging) {
+                        faults.push("inventory_missing: formal model requires pinned inventory.json beside brief.md; run brief extraction before validate".into());
+                    }
+                    faults.extend(super::formal::plan_faults(plan, None, staging));
+                }
+                Err(msg) => {
+                    faults.push(msg);
+                    faults.extend(super::formal::plan_faults(plan, None, staging));
+                }
+            }
+        }
         Ok(faults)
     }
 
@@ -1264,8 +1992,16 @@ impl Compiler {
             for r in list(&p["rests"]) {
                 used.insert(s(&ps::at(&pipe(r), 0)));
             }
-            if truthy(&p["of"]) {
-                used.insert(s(&p["of"]));
+            for field in ["of", "after", "criterion", "calibration", "borrows_notation"] {
+                if truthy(&p[field]) {
+                    used.insert(s(&p[field]));
+                }
+            }
+            for a in pipe(&p["assumptions"]) {
+                let aid = s(a);
+                if !aid.is_empty() {
+                    used.insert(aid);
+                }
             }
         }
         let mut faults: Vec<String> = parts
@@ -1342,44 +2078,16 @@ impl Compiler {
         Ok(format!("{word} [[{target}]]{why}。"))
     }
 
-    /// Plan id -> (k, n, tos): the runs of neighbouring Derivation parts on the plan's main line.
+    /// Plan id -> (k, n, tos): every maximal contiguous run of Derivation parts on the plan's
+    /// main line (math units) or any Side branch (Level 2 formal models, breaking at non-Derivation steps like `论证`).
     fn plan_chains(plan: &Value) -> CiMap<(usize, usize, Vec<String>)> {
-        let mut out = CiMap::new();
-        let mut run: Vec<&Value> = Vec::new();
-        let main: Vec<&Value> = list(&plan["parts"]).into_iter().filter(|p| ps::eq(&line_of(p), "main")).collect();
-        for p in main.into_iter().map(Some).chain(std::iter::once(None)) {
-            if let Some(p) = p.filter(|p| derives(p)) {
-                run.push(p);
-                continue;
-            }
-            let tos: Vec<String> = run.iter().map(|r| s(&r["to"])).collect();
-            for (i, r) in run.iter().enumerate() {
-                out.insert(&s(&r["id"]), (i + 1, run.len(), tos.clone()));
-            }
-            run.clear();
-        }
-        out
+        super::formal::plan_chains(plan)
     }
 
-    /// §3.7 (`docs/model-one-conversation-proposal.md`): the chains of Derivation parts a plan's main
-    /// line holds, each as its plan ids in build order.
+    /// §3.7 & P2b-2: every maximal contiguous Derivation chain (main line or Side branch),
+    /// each as its plan ids in build order.
     fn plan_derivation_chains(plan: &Value) -> Vec<Vec<String>> {
-        let main: Vec<&Value> = list(&plan["parts"]).into_iter().filter(|p| ps::eq(&line_of(p), "main")).collect();
-        let mut chains: Vec<Vec<String>> = Vec::new();
-        let mut run: Vec<String> = Vec::new();
-        for part in main.into_iter().map(Some).chain(std::iter::once(None)) {
-            if let Some(part) = part.filter(|p| derives(p)) {
-                let id = s(&part["id"]);
-                if !id.is_empty() {
-                    run.push(id);
-                }
-                continue;
-            }
-            if !run.is_empty() {
-                chains.push(std::mem::take(&mut run));
-            }
-        }
-        chains
+        super::formal::plan_derivation_chains(plan)
     }
 
     /// §3.7: the architect's `explain` design of every chain of Derivation parts — the chain's route,
@@ -1444,31 +2152,45 @@ impl Compiler {
         let entries: Vec<Value> = list(&plan["explain"]).into_iter().cloned().collect();
         let ids = self.m(model)["ids"].clone();
         let mut out = String::new();
-        for chain in Self::plan_derivation_chains(&plan) {
+        let mut eff_plan = plan.clone();
+        eff_plan["parts"] = Value::Array(self.effective_plan_parts(model, &plan));
+        for chain in Self::plan_derivation_chains(&eff_plan) {
             let addresses: Vec<String> = chain.iter().map(|id| s(&ids[id])).collect();
             if !addresses.iter().any(|a| ps::is_in(a, missing)) {
                 continue;
             }
+            let base_chain: Vec<String> = {
+                let mut v = Vec::new();
+                for id in &chain {
+                    let b = id.split_once('~').map(|(x, _)| x).unwrap_or(id).to_string();
+                    if !v.contains(&b) {
+                        v.push(b);
+                    }
+                }
+                v
+            };
             let named = chain.join(",");
             let entry = entries
                 .iter()
-                .find(|e| pipe(&e["chain"]).into_iter().map(s).collect::<Vec<_>>() == chain)
+                .find(|e| {
+                    let ec: Vec<String> = pipe(&e["chain"]).into_iter().map(s).collect();
+                    ec == chain || ec == base_chain
+                })
                 .with_context(|| format!("plan.json of {model} has no explain entry for chain {named}; the plan must be designed again"))?;
             if out.is_empty() {
                 out = "## 解释设计（Sonnet 建筑师为本模型写下的；照它写思路、说明和解读）\n\n".into();
             }
             out += &format!("### 链 {named}\n\n全链路线：{}\n", s(&entry["route"]));
-            for part in list(&entry["parts"]) {
-                let id = s(&part["id"]);
-                if !chain.contains(&id) {
-                    continue;
+            for id in &chain {
+                let base_id = id.split_once('~').map(|(x, _)| x).unwrap_or(id);
+                if let Some(part) = list(&entry["parts"]).into_iter().find(|p| ps::eq(&s(&p["id"]), id) || ps::eq(&s(&p["id"]), base_id)) {
+                    out += &format!("- [[{}]] {}\n", s(&ids[id]), s(&part["shows"]));
+                    let notes = s(&part["notes"]);
+                    if !notes.trim().is_empty() {
+                        out += &format!("  - 需要说明的步骤：{}\n", notes.trim());
+                    }
+                    out += &format!("  - 结果的解读：{}\n", s(&part["meaning"]));
                 }
-                out += &format!("- [[{}]] {}\n", s(&ids[id]), s(&part["shows"]));
-                let notes = s(&part["notes"]);
-                if !notes.trim().is_empty() {
-                    out += &format!("  - 需要说明的步骤：{}\n", notes.trim());
-                }
-                out += &format!("  - 结果的解读：{}\n", s(&part["meaning"]));
             }
             out += "\n";
         }
@@ -1627,12 +2349,15 @@ impl Compiler {
     }
 
     /// `Get-Skeleton`: the body a new part starts with.
-    fn skeleton(&self, part: &Value, plan: &Value, model: &str, previous: Option<&Value>) -> Result<String> {
+    fn skeleton(&self, part: &Value, plan: &Value, model: &str, previous: Option<&Value>, is_math_unit: bool) -> Result<String> {
+        let formal_model = super::formal::is_formal_model(plan, is_math_unit);
         let mut links = Vec::new();
         for r in list(&part["rests"]).into_iter().filter(|r| truthy(&ps::at(&pipe(r), 0))) {
             links.push(self.link(r, model, "rests")?);
         }
-        if truthy(&part["of"]) {
+        // In a Level 2 formal model, a filing edge (`of` or `after`) never by itself licenses a
+        // premise/illustrates Link unless `kind` is explicitly provided (proposal §8.4).
+        if truthy(&part["of"]) && (!formal_model || truthy(&part["kind"])) {
             let kind = if truthy(&part["kind"]) { s(&part["kind"]) } else { "illustrates".into() };
             links.insert(0, self.link(&json!([part["of"], part["why"], kind]), model, "rests")?);
         }
@@ -1641,6 +2366,11 @@ impl Compiler {
             let tables = self.tables_of(model);
             let resolve = |id: &str| self.resolve(&json!(id), model);
             return super::empirical::skeleton(part, plan, &links, &resolve, tables.as_ref());
+        }
+        // Level 2 formal economic model: role skeletons (<head>|a|a 符号表与读法, 判据, 结果, 论证, 校准, 数值实验).
+        if formal_model && !derives(part) {
+            let resolve = |id: &str| self.resolve(&json!(id), model);
+            return super::formal::skeleton(part, plan, &links, &resolve);
         }
         if derives(part) {
             let mut start: Vec<String> = links.iter().map(|l| format!("- {l}")).collect();
@@ -1667,7 +2397,8 @@ impl Compiler {
         if text::wants_intuition(part, false) {
             body += &format!("\n\n{}", text::intuition_skeleton());
         }
-        if ps::eq(&s(&plan["level"]), "formal") && text::is_setting_facet(&s(&part["facet"])) && ps::eq(&line_of(part), "main") {
+        // Mathematical units (`form` set) keep their symbol and term tables inside `前提`.
+        if is_math_unit && ps::eq(&s(&plan["level"]), "formal") && text::is_setting_facet(&s(&part["facet"])) && ps::eq(&line_of(part), "main") {
             body += &format!("\n\n{}", text::tables(plan));
         }
         Ok(body.trim().to_string())
@@ -1893,10 +2624,14 @@ impl Compiler {
             let steps = if truthy(&part["steps"]) { format!("，约 {} 步", s(&part["steps"])) } else { String::new() };
             line(&mut b, &format!("- 推导：从起点写到结果 {}{steps}。骨架里已写好起点和结果。", s(&part["to"])));
             line(&mut b, "- 解释：写思路、步骤下的说明和解读（见“讲清推导”）。思路的位置行原样保留。");
-            // A chain member starts from the result of the part before it, which may sit in another job.
-            let main = strings(&Value::Array(list(&self.m(model)["main"]).into_iter().cloned().collect()));
-            let k = ps::index_of(&main, &s(&part["id"]));
-            let before = if k > 0 { self.plan_part(model, &main[(k - 1) as usize])? } else { None };
+            // A chain member starts from the result of the part before it (main line or Side `after`).
+            let before = if truthy(&part["after"]) {
+                self.plan_part(model, &s(&part["after"]))?
+            } else {
+                let main = strings(&Value::Array(list(&self.m(model)["main"]).into_iter().cloned().collect()));
+                let k = ps::index_of(&main, &s(&part["id"]));
+                if k > 0 { self.plan_part(model, &main[(k - 1) as usize])? } else { None }
+            };
             if let Some(before) = before.filter(|b| derives(b) && truthy(&b["to"])) {
                 line(&mut b, &format!("- 起点：上一步 [[{}]] 的结果 {}", self.resolve(&before["id"], model)?, s(&before["to"])));
             }
@@ -1904,12 +2639,29 @@ impl Compiler {
                 line(&mut b, &format!("- 从 {} 出发。", s(&part["from"])));
             }
         }
+        let formal_model = super::formal::is_formal_model(&plan, truthy(&self.m(model)["math_unit"]));
+        if formal_model {
+            if truthy(&part["source_kind"]) || truthy(&part["logical_force"]) {
+                line(
+                    &mut b,
+                    &format!(
+                        "- 结论属性：source_kind={}，source_label={}，logical_force={}（严格按原文力度陈述，不得升级）。",
+                        s(&part["source_kind"]),
+                        if truthy(&part["source_label"]) { s(&part["source_label"]) } else { "未编号".into() },
+                        s(&part["logical_force"])
+                    ),
+                );
+            }
+            if truthy(&part["inventory_ref"]) {
+                line(&mut b, &format!("- 源清单引用：{}", s(&part["inventory_ref"])));
+            }
+        }
         let premises = self.premises(part, model, bodies)?;
         if !premises.is_empty() {
             line(&mut b, "- 前提：");
             line(&mut b, &premises);
         }
-        if truthy(&part["of"]) {
+        if truthy(&part["of"]) && (!formal_model || truthy(&part["kind"])) {
             let kind = if truthy(&part["kind"]) { s(&part["kind"]) } else { "illustrates".into() };
             line(&mut b, &format!("- 它站在 [[{}]] 旁边（{kind}）。", self.resolve(&part["of"], model)?));
         }
@@ -2030,7 +2782,10 @@ impl Compiler {
             // An empirical model reads the source's tables by script (docs/empirical-models-proposal.md
             // §8.2 step 1): every table of its group's section files, with its file and line.
             let empirical = if self.p.level.is_empty() { ps::eq(&s(&st["level"]), "empirical") } else { ps::eq(&self.p.level, "empirical") };
+            let concept_brief = if self.p.level.is_empty() { ps::eq(&s(&st["level"]), "concept") && !st["level"].is_null() } else { ps::eq(&self.p.level, "concept") };
             let tables_file = ps::join(&dir, "tables.json");
+            let inventory_file = ps::join(&dir, "inventory.json");
+            let mut has_inventory = false;
             if empirical {
                 // The group's own sections first (a label that repeats in another chapter resolves to the
                 // model's own table), then every other section of the book: a paper's empirical section
@@ -2057,6 +2812,36 @@ impl Compiler {
                     found.extend(super::tables::extract(&text, back).into_iter().filter(|t| !known.contains(&s(&t["label"]))));
                 }
                 util::write_text(&tables_file, &serde_json::to_string_pretty(&json!({ "model": model, "tables": found }))?)?;
+            } else if !concept_brief && !is_math_unit_structure(&st) && !staging.is_empty() {
+                // Formal model staged source inventory (docs/formal-models-proposal.md §8.3):
+                // deterministic extraction of display equations, \tag{n}, named statements, spans & hashes.
+                let mut names: Vec<String> = pipe(&summary["sections"]).into_iter().map(s).collect();
+                let mut rest: Vec<String> = std::fs::read_dir(ps::join(&staging, "sections"))
+                    .map(|entries| entries.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect())
+                    .unwrap_or_default();
+                rest.retain(|n| n.ends_with(".md") && n != "index.md" && !names.contains(n));
+                rest.sort();
+                names.extend(rest);
+                let mut sec_texts: Vec<(String, String)> = Vec::new();
+                for name in &names {
+                    let path = ps::join(&staging, &format!("sections\\{name}"));
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        sec_texts.push((format!("sections/{name}"), text));
+                    }
+                }
+                let back = crate::prepare::BACK_MATTER;
+                if let Ok(text) = std::fs::read_to_string(ps::join(&staging, back)) {
+                    sec_texts.push((back.to_string(), text));
+                }
+                if !sec_texts.is_empty() {
+                    let manifest = util::read_json(&ps::join(&staging, "manifest.json")).ok();
+                    let work_id = manifest.as_ref().and_then(|m| m.get("work_id"));
+                    let file_id = manifest.as_ref().and_then(|m| m.get("file_id"));
+                    let src_sha = manifest.as_ref().and_then(|m| m["source_sha256"].as_str());
+                    let inv = super::inventory::build_inventory(&model, work_id, file_id, src_sha, &sec_texts);
+                    util::write_text(&inventory_file, &serde_json::to_string_pretty(&inv)?)?;
+                    has_inventory = true;
+                }
             }
             let context_hash = Self::file_hash(&context)?;
             let read_only = ps::join(&dir, "read-only.allow.txt");
@@ -2065,13 +2850,19 @@ impl Compiler {
             let job = ps::join(&dir, "brief-job.md");
             let level = if truthy(&st["level"]) { s(&st["level"]) } else { "未定".into() };
             let asked = if self.p.level.is_empty() { String::new() } else { format!("\n本次指定层级: {}", self.p.level) };
+            let extra_file = if empirical {
+                format!("表格文件: {tables_file}\n")
+            } else if has_inventory {
+                format!("清单文件: {inventory_file}\n")
+            } else {
+                String::new()
+            };
             util::write_text(
                 &job,
                 &format!(
-                    "# 简报任务：[[{model}]]\n\nHELPER: {}（只读：每条命令末尾加 -Allow \"{read_only}\"）\n上下文包: {context}\n简报文件: {brief}\n现在的层级: {level}{asked}\n分卡数: {}\n{}",
+                    "# 简报任务：[[{model}]]\n\nHELPER: {}（只读：每条命令末尾加 -Allow \"{read_only}\"）\n上下文包: {context}\n简报文件: {brief}\n现在的层级: {level}{asked}\n分卡数: {}\n{extra_file}",
                     self.helper,
                     list(&st["parts"]).len(),
-                    if empirical { format!("表格文件: {tables_file}\n") } else { String::new() }
                 ),
             )?;
             jobs.push(json!({
@@ -2092,6 +2883,10 @@ impl Compiler {
     }
 
     fn step_validate(&mut self) -> Result<()> {
+        let mut bom_faults = Vec::new();
+        if has_utf8_bom(&self.p.plan) {
+            bom_faults.push("plan.json has a UTF-8 BOM; write UTF-8 without BOM".to_string());
+        }
         let plan = util::read_json(&self.p.plan)?;
         let st = self.model_of(&plan["model"])?;
         let model = s(&plan["model"]);
@@ -2105,7 +2900,8 @@ impl Compiler {
         // The architect's source observations go into the run's retained record before the plan's
         // own structure is judged: a bad observation names its entry and counts as a plan fault.
         let path = self.p.plan.clone();
-        let mut faults = self.record_source_faults(&plan, &path);
+        let mut faults = bom_faults;
+        faults.extend(self.record_source_faults(&plan, &path));
         let (reviewed, review_faults) = self.source_review(&plan, &model, &path);
         faults.extend(review_faults);
         faults.extend(self.test_plan(&plan, &st, &model)?);
@@ -2157,7 +2953,7 @@ impl Compiler {
             Ok(identity) => identity,
             Err(error) => return vec![format!("source_faults: {error:#}")],
         };
-        let normalized = match crate::faults::entries(&identity, &entries, origin) {
+        let normalized = match crate::faults::entries_in(&folder, &identity, &entries, origin) {
             Ok(entries) => entries,
             Err(error) => return vec![format!("source_faults: {error:#}")],
         };
@@ -2170,6 +2966,21 @@ impl Compiler {
         }
     }
 
+    fn handle_apply_result(&mut self, model: &str, res: Result<Vec<Value>>) -> Result<Vec<Value>> {
+        match res {
+            Ok(built) => Ok(built),
+            Err(error) => {
+                if crate::lockcheck::stopped_refusal(&error).is_some() || is_transport_fault(&error) {
+                    return Err(error);
+                }
+                let m = self.m_mut(model);
+                m["status"] = json!("failed");
+                m["error"] = json!(format!("{error:#}"));
+                Ok(Vec::new())
+            }
+        }
+    }
+
     fn step_apply(&mut self) -> Result<()> {
         let mut jobs = Vec::new();
         let mut models = Vec::new();
@@ -2178,14 +2989,8 @@ impl Compiler {
             if !ps::exists(&ps::join(&self.dir(&model), "plan.json")) || !ps::is_in(&status, &["brief", "planned"]) {
                 continue;
             }
-            match self.build_model(&model) {
-                Ok(built) => jobs.extend(built),
-                Err(error) => {
-                    let m = self.m_mut(&model);
-                    m["status"] = json!("failed");
-                    m["error"] = json!(format!("{error:#}"));
-                }
-            }
+            let res = self.build_model(&model);
+            jobs.extend(self.handle_apply_result(&model, res)?);
             let m = self.m(&model);
             models.push(json!({ "model": model, "status": m["status"], "error": m["error"] }));
             self.save_state()?;
@@ -2199,6 +3004,12 @@ impl Compiler {
     fn build_model(&mut self, model: &str) -> Result<Vec<Value>> {
         let dir = self.dir(model);
         let plan_path = ps::join(&dir, "plan.json");
+        if has_utf8_bom(&plan_path) {
+            let m = self.m_mut(model);
+            m["status"] = json!("failed");
+            m["error"] = json!("plan faults: plan.json has a UTF-8 BOM; write UTF-8 without BOM");
+            return Ok(Vec::new());
+        }
         let plan = util::read_json(&plan_path)?;
         let st = self.model_of(&json!(model))?;
         let faults = self.test_plan(&plan, &st, model)?;
@@ -2254,10 +3065,18 @@ impl Compiler {
                 p["rests"] = Value::Array(rests);
             }
         }
+        let is_math_unit = is_math_unit_structure(&st);
+        let formal_model = super::formal::is_formal_model(&plan, is_math_unit);
         let mut known: CiMap<Value> = CiMap::new();
         for p in list(&st["parts"]) {
             known.insert(&s(&p["address"]), p.clone());
         }
+        // Preserve already-allocated live archive addresses on retry so an interrupted build does
+        // not orphan Cards and allocate duplicates (Astra H8).
+        let prev_ids = self.m(model)["ids"].as_object().cloned().unwrap_or_default();
+        let live_addrs = self.tree_addresses(model).unwrap_or_default();
+        let own_prefix = format!("{}|", model.to_lowercase());
+        let mut reused_new: HashSet<String> = HashSet::new();
         let mut ids = Map::new();
         let mut titles = Map::new();
         let mut facets = Map::new();
@@ -2269,6 +3088,12 @@ impl Compiler {
                 // dependent's part map must name Cards, not unresolved references (R233).
                 let address = self.resolve(&Value::String(s(&p[r])), model)?;
                 ids.insert(id.clone(), json!(address));
+            } else if let Some(prev_addr) = prev_ids.get(&id).map(s).filter(|a| !a.is_empty())
+                && prev_addr.to_lowercase().starts_with(&own_prefix)
+                && live_addrs.contains(&prev_addr)
+            {
+                ids.insert(id.clone(), json!(prev_addr));
+                reused_new.insert(id.clone());
             }
             let was = if truthy(&p["existing"]) { known.get(&s(&p["existing"])).cloned() } else { None };
             let pick = |field: &str| {
@@ -2299,14 +3124,20 @@ impl Compiler {
                 into["old"] = json!(joined);
             }
         }
-        let mut edit = json!({ "at": model, "level": plan["level"] });
+        let defer_formal_level = formal_model && !list(&st["parts"]).is_empty();
+        let mut edit = json!({ "at": model });
+        if !defer_formal_level {
+            edit["level"] = plan["level"].clone();
+        }
         if truthy(&plan["title"]) {
             edit["title"] = plan["title"].clone();
         } else if let Some(title) = cleared_title(&s(&self.card(&json!(model))?["title"])) {
             // A unit skeleton's title (`4.1 幂法则：待写`) never survives a build the architect left untitled.
             edit["title"] = json!(title);
         }
-        self.edits(vec![json!({ "tool": "edit_card", "arguments": edit })])?;
+        if edit.as_object().is_some_and(|o| o.len() > 1) {
+            self.edits(vec![json!({ "tool": "edit_card", "arguments": edit })])?;
+        }
 
         // Main line, in build order. A new part goes before the next kept part, or after the last one.
         let main: Vec<usize> = (0..parts.len()).filter(|&i| ps::eq(&line_of(&parts[i]), "main")).collect();
@@ -2314,21 +3145,26 @@ impl Compiler {
         for k in 0..main.len() {
             let p = parts[main[k]].clone();
             let id = s(&p["id"]);
+            if truthy(&p["existing"]) || reused_new.contains(&id) {
+                previous = Some(main[k]);
+                continue;
+            }
             let anchor = main[k + 1..].iter().find(|&&i| truthy(&parts[i]["existing"])).map(|&i| s(&parts[i]["id"]));
             let anchor_address = anchor.map(|a| self.m(model)["ids"][&a].clone()).unwrap_or(Value::Null);
+            let init_body = if formal_model {
+                super::formal::initial_skeleton(&p, &plan)
+            } else {
+                "待写".to_string()
+            };
             let mut fields = Map::new();
             fields.insert("title".into(), p["title"].clone());
             fields.insert("facet".into(), p["facet"].clone());
             fields.insert("type".into(), json!("model"));
-            fields.insert("body".into(), json!("待写"));
+            fields.insert("body".into(), json!(init_body));
             if truthy(&p["emphasis"]) {
                 fields.insert("emphasis".into(), p["emphasis"].clone());
             } else if derives(&p) {
                 fields.insert("emphasis".into(), json!("aside"));
-            }
-            if truthy(&p["existing"]) {
-                previous = Some(main[k]);
-                continue;
             }
             if truthy(&p["move"]) {
                 let mut target = Map::new();
@@ -2357,33 +3193,76 @@ impl Compiler {
                 args.insert("confirm".into(), json!("insert"));
                 let address = self.write(vec![json!({ "tool": "insert_card", "arguments": args })])?.into_iter().next();
                 self.m_mut(model)["ids"][&id] = json!(address);
+                self.save_state()?;
             } else if let Some(prev) = previous {
                 let mut args = fields.clone();
                 args.insert("at".into(), self.m(model)["ids"][&s(&parts[prev]["id"])].clone());
                 args.insert("kind".into(), json!("direct"));
                 let address = self.write(vec![json!({ "tool": "create_successor", "arguments": args })])?.into_iter().next();
                 self.m_mut(model)["ids"][&id] = json!(address);
+                self.save_state()?;
             } else {
                 let mut args = fields.clone();
                 args.insert("at".into(), json!(model));
                 args.insert("kind".into(), json!("side"));
                 let address = self.write(vec![json!({ "tool": "create_successor", "arguments": args })])?.into_iter().next();
                 self.m_mut(model)["ids"][&id] = json!(address);
+                self.save_state()?;
             }
             previous = Some(main[k]);
         }
-        // Side parts beside their step, then off parts beside the Model Card.
-        for i in 0..parts.len() {
+        // Side parts beside their step (topologically ordered so `of` and `after` parents exist
+        // before children; §8.5 Invariants 1 & 2), then off parts beside the Model Card.
+        let side_order = super::formal::side_placement_order(&parts)
+            .map_err(|stuck| anyhow::anyhow!("placement cycle in side parts: {}", stuck.join(", ")))?;
+        for i in side_order {
             let p = parts[i].clone();
-            let line = line_of(&p);
-            if !ps::is_in(&line, &["side", "off"]) {
-                continue;
-            }
             let id = s(&p["id"]);
-            let parent = if ps::eq(&line, "side") { self.resolve(&p["of"], model)? } else { model.to_string() };
-            if truthy(&p["existing"]) {
+            if truthy(&p["existing"]) || reused_new.contains(&id) {
                 continue;
             }
+            let init_body = if formal_model {
+                super::formal::initial_skeleton(&p, &plan)
+            } else {
+                "待写".to_string()
+            };
+            if formal_model && truthy(&p["after"]) {
+                let prev_addr = self.resolve(&p["after"], model)?;
+                if truthy(&p["move"]) {
+                    let to = Self::direct_slot(&prev_addr)?;
+                    let at = self.m(model)["ids"][&id].clone();
+                    self.write(vec![json!({ "tool": "move_card", "arguments": { "at": at, "to": to, "confirm": "move" } })])?;
+                    let moved = format!("{} -> {}", s(&p["move"]), self.id_address(model, &id));
+                    let m = self.m_mut(model);
+                    m["moved"] = plus(&m["moved"], [json!(moved)]);
+                    continue;
+                }
+                let mut fields = Map::new();
+                fields.insert("title".into(), p["title"].clone());
+                fields.insert("facet".into(), p["facet"].clone());
+                fields.insert("type".into(), json!("model"));
+                fields.insert("body".into(), json!(init_body));
+                if truthy(&p["emphasis"]) {
+                    fields.insert("emphasis".into(), p["emphasis"].clone());
+                } else if derives(&p) {
+                    fields.insert("emphasis".into(), json!("aside"));
+                }
+                let slot = Self::direct_slot(&prev_addr)?;
+                let set = self.tree_addresses(model)?;
+                let address = if set.contains(&slot) {
+                    fields.insert("before".into(), json!(slot));
+                    fields.insert("confirm".into(), json!("insert"));
+                    self.write(vec![json!({ "tool": "insert_card", "arguments": fields })])?.into_iter().next()
+                } else {
+                    fields.insert("at".into(), json!(prev_addr));
+                    fields.insert("kind".into(), json!("direct"));
+                    self.write(vec![json!({ "tool": "create_successor", "arguments": fields })])?.into_iter().next()
+                };
+                self.m_mut(model)["ids"][&id] = json!(address);
+                self.save_state()?;
+                continue;
+            }
+            let parent = self.resolve(&p["of"], model)?;
             if truthy(&p["move"]) {
                 let set = self.tree_addresses(model)?;
                 let to = Self::free_side(&parent, &set)?;
@@ -2400,12 +3279,54 @@ impl Compiler {
             fields.insert("title".into(), p["title"].clone());
             fields.insert("facet".into(), p["facet"].clone());
             fields.insert("type".into(), json!("model"));
-            fields.insert("body".into(), json!("待写"));
+            fields.insert("body".into(), json!(init_body));
+            if truthy(&p["emphasis"]) {
+                fields.insert("emphasis".into(), p["emphasis"].clone());
+            } else if derives(&p) {
+                fields.insert("emphasis".into(), json!("aside"));
+            }
+            let address = self.write(vec![json!({ "tool": "create_successor", "arguments": fields })])?.into_iter().next();
+            self.m_mut(model)["ids"][&id] = json!(address);
+            self.save_state()?;
+        }
+        // Off parts beside the Model Card.
+        for i in 0..parts.len() {
+            let p = parts[i].clone();
+            if !ps::eq(&line_of(&p), "off") {
+                continue;
+            }
+            let id = s(&p["id"]);
+            if truthy(&p["existing"]) || reused_new.contains(&id) {
+                continue;
+            }
+            if truthy(&p["move"]) {
+                let set = self.tree_addresses(model)?;
+                let to = Self::free_side(model, &set)?;
+                let at = self.m(model)["ids"][&id].clone();
+                self.write(vec![json!({ "tool": "move_card", "arguments": { "at": at, "to": to, "confirm": "move" } })])?;
+                let moved = format!("{} -> {}", s(&p["move"]), self.id_address(model, &id));
+                let m = self.m_mut(model);
+                m["moved"] = plus(&m["moved"], [json!(moved)]);
+                continue;
+            }
+            let init_body = if formal_model {
+                super::formal::initial_skeleton(&p, &plan)
+            } else {
+                "待写".to_string()
+            };
+            let mut fields = Map::new();
+            fields.insert("at".into(), json!(model));
+            fields.insert("kind".into(), json!("side"));
+            fields.insert("title".into(), p["title"].clone());
+            fields.insert("facet".into(), p["facet"].clone());
+            fields.insert("type".into(), json!("model"));
+            fields.insert("body".into(), json!(init_body));
             if truthy(&p["emphasis"]) {
                 fields.insert("emphasis".into(), p["emphasis"].clone());
             }
             let address = self.write(vec![json!({ "tool": "create_successor", "arguments": fields })])?.into_iter().next();
             self.m_mut(model)["ids"][&id] = json!(address);
+            self.save_state()?;
         }
         // Merged parts: only a part without successors can go (a delete takes its successors with it).
         for mg in list(&plan["merge"]) {
@@ -2456,6 +3377,12 @@ impl Compiler {
                 continue;
             }
             let address = self.resolve(&p["id"], model)?;
+            let step_prev: Option<Value> = if formal_model && truthy(&p["after"]) {
+                let aid = s(&p["after"]);
+                parts.iter().find(|cand| ps::eq(&s(&cand["id"]), &aid)).cloned()
+            } else {
+                prev.clone()
+            };
             if truthy(&p["existing"]) || truthy(&p["move"]) {
                 let mut change = Map::new();
                 change.insert("at".into(), json!(address));
@@ -2465,13 +3392,13 @@ impl Compiler {
                     }
                 }
                 if truthy(&p["refill"]) {
-                    change.insert("body".into(), json!(self.skeleton(p, &plan, model, prev.as_ref())?));
+                    change.insert("body".into(), json!(self.skeleton(p, &plan, model, step_prev.as_ref(), is_math_unit)?));
                 }
                 if change.len() > 1 {
                     edits.push(json!({ "tool": "edit_card", "arguments": change }));
                 }
             } else {
-                edits.push(json!({ "tool": "edit_card", "arguments": { "at": address, "body": self.skeleton(p, &plan, model, prev.as_ref())? } }));
+                edits.push(json!({ "tool": "edit_card", "arguments": { "at": address, "body": self.skeleton(p, &plan, model, step_prev.as_ref(), is_math_unit)? } }));
             }
             if ps::eq(&line_of(p), "main") {
                 prev = Some(p.clone());
@@ -2486,6 +3413,24 @@ impl Compiler {
             for (name, content) in super::empirical::head_sections(&plan, &resolve, tables.as_ref())? {
                 body = text::set_section(&body, &name, &format!("**{name}**\n{content}"));
             }
+        } else if formal_model {
+            let has_problem = zt_check::formal::section(&body, "问题").is_some()
+                || body.lines().any(|l| {
+                    let t = l.trim_start();
+                    t.starts_with("问题：") || t.starts_with("问题:")
+                });
+            if !has_problem {
+                let prompt_q = if truthy(&plan["card"]) {
+                    s(&plan["card"])
+                } else {
+                    "待写（一句话说明本模型要回答的核心经济问题）。".to_string()
+                };
+                body = format!("**问题**\n{prompt_q}\n\n{body}");
+            }
+            let resolve = |id: &str| self.resolve(&json!(id), model);
+            for (name, content) in super::formal::head_sections(&plan, &resolve)? {
+                body = text::set_section(&body, &name, &format!("**{name}**\n{content}"));
+            }
         }
         if let Some(with) = self.with_imports(&body, &plan, model)? {
             body = with;
@@ -2493,7 +3438,11 @@ impl Compiler {
         if let Some(divisions) = divisions_section(&plan, |id| self.resolve(&json!(id), model))? {
             body = text::set_section(&body, "分部", &divisions);
         }
-        edits.push(json!({ "tool": "edit_card", "arguments": { "at": model, "body": body } }));
+        let mut head_edit = json!({ "at": model, "body": body });
+        if defer_formal_level {
+            head_edit["level"] = plan["level"].clone();
+        }
+        edits.push(json!({ "tool": "edit_card", "arguments": head_edit }));
         self.edits(edits)?;
         {
             let main_ids: Vec<Value> = main.iter().map(|&i| parts[i]["id"].clone()).collect();
@@ -2501,6 +3450,7 @@ impl Compiler {
             let m = self.m_mut(model);
             m["main"] = Value::Array(main_ids);
             m["derive"] = Value::Array(derive_ids);
+            m["math_unit"] = json!(is_math_unit);
             m["status"] = json!("built");
         }
 
@@ -2511,6 +3461,10 @@ impl Compiler {
             let tables = self.tables_of(model);
             let resolve = |id: &str| self.resolve(&json!(id), model);
             super::empirical::setting_text(&plan, model, &resolve, tables.as_ref())?
+        } else if formal_model {
+            let inv = self.inventory_of(model);
+            let resolve = |id: &str| self.resolve(&json!(id), model);
+            super::formal::setting_text(&plan, model, &resolve, inv.as_ref())?
         } else if formal {
             format!(
                 "# 本模型的设定：[[{}]] {}\n\n{}\n\n{}\n",
@@ -2554,19 +3508,36 @@ impl Compiler {
             if !ps::eq(&s(&m["status"]), "built") || list(&m["derive"]).is_empty() {
                 continue;
             }
-            // Chains in build order; one job holds at most three neighbouring parts of one chain.
-            let mut ids: Vec<Value> = list(&m["main"]).into_iter().cloned().collect();
-            ids.push(json!(""));
+            let main_fallback: Vec<Value> = list(&self.m(&model)["main"]).into_iter().cloned().collect();
+            // Branch-aware Derivation chains in build order (including split pieces via effective_plan_parts, Astra #7).
             let mut chains: Vec<Vec<Value>> = Vec::new();
-            let mut chain = Vec::new();
-            for id in ids {
-                let p = if truthy(&id) { self.plan_part(&model, &s(&id))? } else { None };
-                if let Some(p) = p.filter(derives) {
-                    chain.push(p);
-                    continue;
+            if let Ok(plan) = self.plan(&model) {
+                let mut eff = plan.clone();
+                eff["parts"] = Value::Array(self.effective_plan_parts(&model, &plan));
+                for chain_ids in Self::plan_derivation_chains(&eff) {
+                    let mut parts_in_chain = Vec::new();
+                    for id in chain_ids {
+                        if let Some(p) = self.plan_part(&model, &id)? {
+                            parts_in_chain.push(p);
+                        }
+                    }
+                    if !parts_in_chain.is_empty() {
+                        chains.push(parts_in_chain);
+                    }
                 }
-                if !chain.is_empty() {
-                    chains.push(std::mem::take(&mut chain));
+            } else {
+                let mut ids: Vec<Value> = main_fallback;
+                ids.push(json!(""));
+                let mut chain = Vec::new();
+                for id in ids {
+                    let p = if truthy(&id) { self.plan_part(&model, &s(&id))? } else { None };
+                    if let Some(p) = p.filter(derives) {
+                        chain.push(p);
+                        continue;
+                    }
+                    if !chain.is_empty() {
+                        chains.push(std::mem::take(&mut chain));
+                    }
                 }
             }
             let before = jobs.len();
@@ -2602,9 +3573,18 @@ impl Compiler {
         let mut jobs = Vec::new();
         let independent = self.p.independent_review;
         for model in self.order() {
+            let is_formal_model_hint = ps::eq(&s(&self.m(&model)["level"]), "formal")
+                && !truthy(&self.m(&model)["math_unit"]);
             // A model resumed for its unwritten parts kept its review: only a resumed derive round (status
-            // `derived`) is reviewed again.
-            if truthy(&self.m(&model)["resumed"]) && !ps::eq(&s(&self.m(&model)["status"]), "derived") {
+            // `derived`) or a resumed 0-derivation Level 2 formal model not yet reviewed (status != `reviewed`
+            // and no `steps.review`) is reviewed again (Astra H13).
+            let needs_first_formal_review = is_formal_model_hint
+                && !ps::eq(&s(&self.m(&model)["status"]), "reviewed")
+                && !self.m(&model)["steps"]["review"].is_object();
+            if truthy(&self.m(&model)["resumed"])
+                && !ps::eq(&s(&self.m(&model)["status"]), "derived")
+                && !needs_first_formal_review
+            {
                 continue;
             }
             // Level 3: the evidence review, once, one job per twelve cards side by side.
@@ -2618,10 +3598,16 @@ impl Compiler {
                 }
             }
             let m = self.m(&model);
-            if !ps::is_in(&s(&m["status"]), &["derived", "reviewed"]) || list(&m["derive"]).is_empty() {
+            let review_ready = if is_formal_model_hint {
+                ps::is_in(&s(&m["status"]), &["built", "derived", "reviewed"])
+            } else {
+                ps::is_in(&s(&m["status"]), &["derived", "reviewed"]) && !list(&m["derive"]).is_empty()
+            };
+            if !review_ready {
                 continue;
             }
             let st = self.model_of(&json!(model))?;
+            let is_formal_model = ps::eq(&s(&st["level"]), "formal") && !is_math_unit_structure(&st);
             let mut bodies: CiMap<Value> = CiMap::new();
             for p in list(&st["parts"]) {
                 bodies.insert(&s(&p["address"]), p.clone());
@@ -2630,19 +3616,27 @@ impl Compiler {
             for r in list(&self.state["rereview"]).into_iter().cloned().collect::<Vec<_>>() {
                 touched.push(self.resolve(&r, &model)?);
             }
-            // Only the model's own Derivation parts: a shared part's chain belongs to its home model.
+            // Only the model's own parts: a shared part belongs to its home model.
             let mut own = Vec::new();
+            let mut src_by_addr: CiMap<Vec<String>> = CiMap::new();
             for id in ps::keys(&self.m(&model)["ids"]) {
                 let p = self.plan_part(&model, &id)?;
-                if !p.is_some_and(|p| truthy(&p["take"])) {
-                    own.push(self.id_address(&model, &id));
+                if !p.as_ref().is_some_and(|p| truthy(&p["take"])) {
+                    let addr = self.id_address(&model, &id);
+                    own.push(addr.clone());
+                    if let Some(p) = p {
+                        let spans: Vec<String> = pipe(&p["src"]).into_iter().map(s).filter(|x| !x.is_empty()).collect();
+                        if !spans.is_empty() {
+                            src_by_addr.insert(&addr, spans);
+                        }
+                    }
                 }
             }
             // A round that continues a conversation re-reads the Cards from the archive (its memory may
             // hold an older body); a new conversation gets the bodies in its job file.
             let continuing = !independent || self.p.changed;
             let mut chains: Vec<(Vec<String>, String, String)> = Vec::new();
-            for c in list(&st["build"]["chains"]) {
+            for c in proof_chains(&st["build"]) {
                 let parts: Vec<String> = pipe(&c["parts"]).into_iter().map(s).filter(|a| ps::is_in(a, &own)).collect();
                 if parts.is_empty() {
                     continue;
@@ -2652,14 +3646,64 @@ impl Compiler {
                 }
                 chains.push((parts, s(&c["after"]), s(&c["before"])));
             }
+            // Astra #3: for Level 2 formal models, explicitly assign every owned `结果` and `论证` card (so
+            // Spence-style argument-only models and Result clauses receive their own verdicts too).
+            let mut extra_claims: Vec<String> = Vec::new();
+            if is_formal_model {
+                let chain_set: BTreeSet<String> = chains.iter().flat_map(|(p, _, _)| p.iter().cloned()).collect();
+                for o in list(&st["build"]["order"]) {
+                    let addr = s(&o["address"]);
+                    if !ps::is_in(&addr, &own) || chain_set.contains(&addr) {
+                        continue;
+                    }
+                    let facet = s(&o["facet"]);
+                    if matches!(
+                        zt_check::formal::role_of(&facet),
+                        Some(zt_check::formal::FormalRole::Result | zt_check::formal::FormalRole::Argument)
+                    ) {
+                        if self.p.changed && !ps::is_in(&addr, &touched) {
+                            continue;
+                        }
+                        if !extra_claims.contains(&addr) {
+                            extra_claims.push(addr);
+                        }
+                    }
+                }
+            }
             let before = jobs.len();
-            if !chains.is_empty() {
+            // Collect all review units and chunk into <= 12 cards per job (proposal §8.6 / Astra #3).
+            let mut all_targets: Vec<String> = Vec::new();
+            for (parts, _, _) in &chains {
+                for a in parts {
+                    if !all_targets.contains(a) {
+                        all_targets.push(a.clone());
+                    }
+                }
+            }
+            for a in &extra_claims {
+                if !all_targets.contains(a) {
+                    all_targets.push(a.clone());
+                }
+            }
+            let chunk_size = if is_formal_model { 12 } else { all_targets.len().max(1) };
+            for chunk in all_targets.chunks(chunk_size) {
+                if chunk.is_empty() {
+                    continue;
+                }
+                let chunk_vec: Vec<String> = chunk.to_vec();
+                // Trim each chain strictly to this chunk's cards so continuing packets stay <= 12 cards (Astra M2).
+                let chunk_chains: Vec<(Vec<String>, String, String)> = chains
+                    .iter()
+                    .filter_map(|(p, after, before)| {
+                        let pts: Vec<String> = p.iter().filter(|a| chunk_vec.contains(a)).cloned().collect();
+                        (!pts.is_empty()).then(|| (pts, after.clone(), before.clone()))
+                    })
+                    .collect();
                 let seq = self.next_seq();
                 let dir = self.dir(&model);
                 let out = ps::join(&dir, &format!("review-{seq}.json"));
                 let id = if independent {
-                    // The reviewer's own conversation: named by the workflow on its first round.
-                    if self.p.changed { format!("{}:review+{seq}", Self::slug(&model)) } else { format!("{}:review", Self::slug(&model)) }
+                    if self.p.changed { format!("{}:review+{seq}", Self::slug(&model)) } else if jobs.len() == before { format!("{}:review", Self::slug(&model)) } else { format!("{}:review+{seq}", Self::slug(&model)) }
                 } else {
                     format!("{}:r{seq}", Self::slug(&model))
                 };
@@ -2667,12 +3711,28 @@ impl Compiler {
                     "# 复核任务 {id}\n\n结果文件: {out}\nMaxSteps: {}\n模型卡: [[{model}]]\n\r\n",
                     self.part_steps()
                 );
+                if is_formal_model {
+                    text += "## 条款核对清单（形式模型必检，见 formal-models-proposal.md §8.6）\r\n\r\n";
+                    text += "1. **条件完整性**：核对每个假设、参数限制、体制限定与关键词（如 separately、仅针对观测到的信号、实际发生收入）是否完整保留在结果卡 **陈述** 中，无遗漏条件。\r\n";
+                    text += "2. **逻辑力度忠实度**：必要条件不得升级为充分或充要条件；存在性不得升级为唯一性；局部线性化结论不得升级为全局结论；猜想不得升级为定理；数值结果不得表述为解析定理。\r\n";
+                    text += "3. **依据诚实度**：外部引证（如 [4]、在线补充材料）或启发式推导不得伪装为完整局部证明；启发式推导额外引入的强假设必须明示。\r\n\r\n";
+                }
                 if continuing {
                     text += CR;
-                    text += &self.review_reread_text(&chains)?;
+                    if !chunk_chains.is_empty() {
+                        text += &self.review_reread_text(&chunk_chains)?;
+                    }
+                    let claim_addrs: Vec<&String> = chunk_vec.iter().filter(|a| extra_claims.contains(a)).collect();
+                    if !claim_addrs.is_empty() {
+                        text += "\r\n## 要复核的结果与论证分卡\r\n\r\n";
+                        for a in claim_addrs {
+                            let src_note = src_by_addr.get(a).map(|v| format!("（原书：{}）", v.join(", "))).unwrap_or_default();
+                            text += &format!("- [[{a}]]{src_note}\r\n");
+                        }
+                    }
                 } else {
                     text += CR;
-                    for (_, after, before) in &chains {
+                    for (_, after, before) in &chunk_chains {
                         for (label, at) in [("链之前的分卡（推导从它出发）", after), ("链之后的分卡（它用推导的结果）", before)] {
                             if !at.is_empty()
                                 && let Some(b) = bodies.get(at).filter(|b| truthy(b))
@@ -2681,29 +3741,64 @@ impl Compiler {
                             }
                         }
                     }
-                    for (parts, _, _) in &chains {
-                        for a in parts {
-                            let b = bodies.get(a).cloned().unwrap_or(Value::Null);
-                            text += &format!("## 推导分卡 [[{a}]] {}\n\n{}\n\r\n", s(&b["title"]), s(&b["body"]));
-                        }
+                    for a in &chunk_vec {
+                        let b = bodies.get(a).cloned().unwrap_or(Value::Null);
+                        let src_note = src_by_addr.get(a).map(|v| format!("\n来源定位：{}\n", v.join(", "))).unwrap_or_default();
+                        text += &format!("## 推导分卡 [[{a}]] {}{src_note}\n{}\n\r\n", s(&b["title"]), s(&b["body"]));
                     }
                 }
+                let assigned_addrs = chunk_vec;
+                let assigned_ids: Vec<String> = assigned_addrs
+                    .iter()
+                    .filter_map(|a| {
+                        ps::keys(&self.m(&model)["ids"])
+                            .into_iter()
+                            .find(|id| ps::eq(&s(&self.m(&model)["ids"][id]), a))
+                    })
+                    .collect();
                 let file = ps::join(&dir, &format!("review-{seq}.md"));
                 util::write_text(&file, &text)?;
+                let mut addr_to_id = Map::new();
+                for (a, id_val) in assigned_addrs.iter().zip(assigned_ids.iter()) {
+                    addr_to_id.insert(a.to_ascii_lowercase(), json!(id_val));
+                }
                 let mut job = json!({
                     "id": id,
+                    "review_kind": "formal",
+                    "output": out,
+                    "addresses": assigned_addrs,
                     "files": [self.docs.review, ps::join(&dir, "setting.md"), file],
-                    "prompt": format!("按以上说明复核这些推导分卡，把结果写进 {out}，最后只回复一行 JSON。"),
+                    "prompt": format!("按以上说明复核这些分卡（含条款核对与推导核对），把结果写进 {out}，最后只回复一行 JSON。"),
                 });
                 if continuing {
                     let into = if independent { format!("{}:review", Self::slug(&model)) } else { format!("{}:brief", Self::slug(&model)) };
                     job["continue"] = json!(into);
                     job["fallback"] = json!([self.docs.review, ps::join(&dir, "setting.md"), file]);
                 }
+                let full_out = ps::full_name(&out);
+                let mut pending: Vec<Value> = list(&self.state["pending_reviews"])
+                    .into_iter()
+                    .filter(|x| !ps::eq(&s(&x["output"]), &full_out))
+                    .cloned()
+                    .collect();
+                pending.push(json!({
+                    "output": full_out,
+                    "model": model,
+                    "round": seq,
+                    "addresses": assigned_addrs,
+                    "ids": assigned_ids,
+                    "address_to_id": Value::Object(addr_to_id),
+                }));
+                self.state["pending_reviews"] = Value::Array(pending);
                 jobs.push(job);
             }
-            self.m_mut(&model)["status"] = json!("reviewed");
-            self.record_step(&model, "review", json!({"jobs":jobs.len()-before,"changed":self.p.changed,"rounds":1}));
+            let scheduled = jobs.len() - before;
+            // Never mark a model `reviewed` on a 0-job round unless it is a `-Changed` no-op
+            // on an already-reviewed model (Astra H7).
+            if scheduled > 0 || (self.p.changed && ps::eq(&s(&self.m(&model)["status"]), "reviewed")) {
+                self.m_mut(&model)["status"] = json!("reviewed");
+                self.record_step(&model, "review", json!({"jobs":scheduled,"changed":self.p.changed,"rounds":1}));
+            }
         }
         self.state["rereview"] = json!([]);
         self.save_state()?;
@@ -2748,17 +3843,25 @@ impl Compiler {
     /// `Find-Owner`: the model and plan id of a part this batch built (never a shared part).
     fn find_owner(&mut self, address: &str) -> Result<Option<(String, String)>> {
         for model in self.order() {
-            for id in ps::keys(&self.m(&model)["ids"]) {
-                let value = &self.m(&model)["ids"][&id];
-                if value.is_null() || !ps::eq(&s(value), address) {
-                    continue;
-                }
-                let p = self.plan_part(&model, &id)?;
-                if p.is_some_and(|p| truthy(&p["take"])) {
-                    continue;
-                }
-                return Ok(Some((model, id)));
+            if let Some(found) = self.find_model_owner(&model, address)? {
+                return Ok(Some(found));
             }
+        }
+        Ok(None)
+    }
+
+    /// Resolves a part address strictly within one named `model` (excluding taken shared parts).
+    fn find_model_owner(&mut self, model: &str, address: &str) -> Result<Option<(String, String)>> {
+        for id in ps::keys(&self.m(model)["ids"]) {
+            let value = &self.m(model)["ids"][&id];
+            if value.is_null() || !ps::eq(&s(value), address) {
+                continue;
+            }
+            let p = self.plan_part(model, &id)?;
+            if p.is_some_and(|p| truthy(&p["take"])) {
+                continue;
+            }
+            return Ok(Some((model.to_string(), id)));
         }
         Ok(None)
     }
@@ -2775,17 +3878,33 @@ impl Compiler {
         found
     }
 
-    /// `Split-Part`: inserts the new parts after the part, re-points the next
-    /// member, updates the 结构 list, and says what the conversation must do.
+    /// `Split-Part`: inserts the new parts after the part (on either `main` or a Side proof branch,
+    /// preserving `id`'s `card_id` and middle-of-branch continuations per §8.5 Invariant 4),
+    /// re-points downstream premise links (next step or parent Result endpoint), updates the 结构 list,
+    /// and says what the conversation must do.
     fn split_part(&mut self, model: &str, id: &str, count: i64, cuts: &[Value], reason: &Value) -> Result<Follow> {
-        self.plan_part(model, id)?;
+        let orig_part = self.plan_part(model, id)?;
+        let is_side = orig_part
+            .as_ref()
+            .is_some_and(|p| ps::eq(&line_of(p), "side"));
         let address = self.m(model)["ids"][id].clone();
+        let own_addr_initial = s(&address);
         let card = self.card(&address)?;
         let derive = truthy(&card["facet"]) && ps::starts_with(&s(&card["facet"]), "推导");
         let fin = if derive { text::result_of(&s(&card["body"])) } else { String::new() };
         let main = strings(&Value::Array(list(&self.m(model)["main"]).into_iter().cloned().collect()));
         let main_index = ps::index_of(&main, id);
-        let next = if main_index >= 0 && ((main_index + 1) as usize) < main.len() { Some(main[(main_index + 1) as usize].clone()) } else { None };
+        let next = if main_index >= 0 && ((main_index + 1) as usize) < main.len() {
+            Some(main[(main_index + 1) as usize].clone())
+        } else if is_side {
+            // Side-branch middle-of-branch continuation: find the part occupying `direct_slot(own_addr)`.
+            let direct = Self::direct_slot(&own_addr_initial)?;
+            ps::keys(&self.m(model)["ids"])
+                .into_iter()
+                .find(|cand| ps::eq(&s(&self.m(model)["ids"][cand]), &direct))
+        } else {
+            None
+        };
         if !truthy(&self.m(model)["added"]) {
             self.m_mut(model)["added"] = json!({});
         }
@@ -2793,18 +3912,33 @@ impl Compiler {
         let cut = |i: i64| if i >= 0 { cuts.get(i as usize).cloned().unwrap_or(Value::Null) } else { Value::Null };
         let mut new: Vec<String> = Vec::new();
         let mut prev_id = id.to_string();
+        let base_id = id.split_once('~').map(|(b, _)| b).unwrap_or(id);
+        let mut next_suffix = 2i64;
         for k in 2..=count {
-            let new_id = format!("{id}~{k}");
+            // Allocate an unused suffix `{base}~{n}` so repeated splits never overwrite an existing piece (Astra #8).
+            while !self.m(model)["ids"][format!("{base_id}~{next_suffix}")].is_null() {
+                next_suffix += 1;
+            }
+            let new_id = format!("{base_id}~{next_suffix}");
+            next_suffix += 1;
             let mut facet = format!("{}（{k}/{count}）", s(&card["facet"]));
             if ps::len16(&facet) > 32 {
                 facet = ps::cut16(&facet, 32);
             }
             let title = format!("{}（{k}/{count}）", s(&card["title"]));
+            let is_argument = zt_check::formal::role_of(&facet) == Some(zt_check::formal::FormalRole::Argument);
+            let init_split_body = if derive {
+                "**思路**\n待写\n\n**起点**\n- 待写\n\n**步骤**\n待写\n\n**结果**\n待写\n\n**解读**\n待写".to_string()
+            } else if is_argument {
+                "目标：待写。\n\n**依据**\n- 待写\n\n**论证**\n待写\n\n**结论**\n待写".to_string()
+            } else {
+                super::formal::initial_skeleton(&json!({ "facet": facet }), &json!({}))
+            };
             let mut fields = Map::new();
             fields.insert("title".into(), json!(title));
             fields.insert("facet".into(), json!(facet));
             fields.insert("type".into(), json!("model"));
-            fields.insert("body".into(), json!("待写"));
+            fields.insert("body".into(), json!(init_split_body));
             if truthy(&card["emphasis"]) {
                 fields.insert("emphasis".into(), card["emphasis"].clone());
             }
@@ -2842,13 +3976,27 @@ impl Compiler {
             // The position line of 思路 comes from Update-ChainLines once every new part exists.
             let start = if derive {
                 format!("**思路**\n待写\n\n**起点**\n- 依赖上一步 [[{prev_address}]] 的结果：{from}。\n\n**步骤**\n待写\n\n**结果**\n{to}\n\n**解读**\n待写")
+            } else if is_argument {
+                format!("目标：待写（接着 [[{prev_address}]] 确立后续结论）。\n\n**依据**\n- 依赖上一步 [[{prev_address}]]。\n\n**论证**\n待写\n\n**结论**\n待写")
             } else {
                 format!("依赖上一步 [[{prev_address}]]：本卡接着上一张卡写。\n\n待写")
             };
-            self.m_mut(model)["added"][&new_id] = json!({
-                "id": new_id, "facet": facet, "title": title, "derive": derive, "to": to, "line": "main",
+            let mut added_entry = json!({
+                "id": new_id, "facet": facet, "title": title, "derive": derive, "to": to,
+                "line": if is_side { "side" } else { "main" },
                 "spec": format!("接着 [[{prev_address}]] 写。"),
             });
+            if let Some(ref orig) = orig_part
+                && !orig["src"].is_null()
+            {
+                added_entry["src"] = orig["src"].clone();
+            }
+            if is_side {
+                added_entry["after"] = json!(prev_id);
+            }
+            self.m_mut(model)["added"][&new_id] = added_entry;
+            // Persist the new ID and any renamed addresses immediately after archive allocation (Astra #2).
+            self.save_state()?;
             self.edits(vec![json!({ "tool": "edit_card", "arguments": { "at": address, "body": start } })])?;
             new.push(new_id.clone());
             prev_id = new_id.clone();
@@ -2882,12 +4030,52 @@ impl Compiler {
             }
             edits.push(json!({ "tool": "edit_card", "arguments": { "at": self.m(model)["ids"][id], "body": text::join_sections(&sections) } }));
         }
-        if derive && let Some(next) = &next {
-            let next_at = self.m(model)["ids"][next].clone();
-            let next_card = self.card(&next_at)?;
+        if derive {
             let last = new.last().map(|n| self.id_address(model, n)).unwrap_or_default();
-            let body = s(&next_card["body"]).replace(&format!("[[{own_address}]]"), &format!("[[{last}]]"));
-            edits.push(json!({ "tool": "edit_card", "arguments": { "at": next_at, "body": body } }));
+            if !last.is_empty() {
+                let own_link = format!("[[{own_address}]]");
+                let last_link = format!("[[{last}]]");
+                let premise_cues = ["依赖", "基于", "沿用", "用到", "代入", "上一步", "起点", "依据", "由"];
+                let dep_cues = ["依赖", "基于", "沿用", "用到", "由"];
+                // Rewrite downstream premise references across ALL owned non-`take` cards of this
+                // model (both the immediate `next` step AND any other downstream consumer in the
+                // model), skipping imported `take` cards and keeping `见 [[own_address]]` route roots
+                // intact (Astra H9).
+                for cand_id in ps::keys(&self.m(model)["ids"]) {
+                    if ps::eq(&cand_id, id) || new.iter().any(|n| ps::eq(n, &cand_id)) {
+                        continue;
+                    }
+                    if self.plan_part(model, &cand_id)?.is_some_and(|p| truthy(&p["take"])) {
+                        continue;
+                    }
+                    let is_next = next.as_ref().is_some_and(|n| ps::eq(n, &cand_id));
+                    let cand_at = self.m(model)["ids"][&cand_id].clone();
+                    if let Ok(cand_card) = self.card(&cand_at) {
+                        let cues: &[&str] = if is_next { &premise_cues } else { &dep_cues };
+                        let old_body = s(&cand_card["body"]);
+                        let body = old_body
+                            .split('\n')
+                            .map(|line| {
+                                if line.contains(&own_link)
+                                    && !line.contains(&format!("见 {own_link}"))
+                                    && cues.iter().any(|cue| line.contains(cue))
+                                {
+                                    line.replace(&own_link, &last_link)
+                                } else {
+                                    line.to_string()
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if body != old_body {
+                            edits.push(json!({
+                                "tool": "edit_card",
+                                "arguments": { "at": cand_at, "body": body }
+                            }));
+                        }
+                    }
+                }
+            }
         }
         // the 结构 list names the new parts right after the part they continue
         let head = self.card(&json!(model))?;
@@ -2945,74 +4133,374 @@ impl Compiler {
         Ok(Follow { model: model.to_string(), job, text, ids, cards: Vec::new() })
     }
 
-    fn step_split(&mut self) -> Result<()> {
+    fn audit_and_collect_reviews(&mut self, strict: bool) -> Result<(Vec<String>, Vec<Value>, Vec<Action>, Vec<String>, [usize; 3])> {
+        let mut audit_errors: Vec<String> = Vec::new();
+        let mut orphans: Vec<Value> = Vec::new();
+        let mut actions: Vec<Action> = Vec::new();
+        let mut consumed: Vec<String> = Vec::new();
+        let mut counts = [0usize; 3]; // ok, fix, split
+        let already_done = strings(&Value::Array(list(&self.state["reviews"]).into_iter().cloned().collect()));
+
+        struct Target {
+            output: String,
+            model: Option<String>,
+            expected: Vec<String>,
+            address_to_id: HashMap<String, String>,
+        }
+        let mut targets: Vec<Target> = Vec::new();
+        let mut models_with_pending: HashSet<String> = HashSet::new();
+        for p in list(&self.state["pending_reviews"]) {
+            let output = s(&p["output"]);
+            if output.is_empty() || ps::is_in(&output, &already_done) {
+                continue;
+            }
+            let model = s(&p["model"]);
+            if !model.is_empty() {
+                models_with_pending.insert(model.to_ascii_lowercase());
+            }
+            let expected = list(&p["addresses"]).into_iter().map(s).filter(|a| !a.is_empty()).collect();
+            let mut address_to_id = HashMap::new();
+            if let Some(obj) = p["address_to_id"].as_object() {
+                for (k, v) in obj {
+                    if let Some(id_s) = v.as_str() {
+                        address_to_id.insert(k.to_ascii_lowercase(), id_s.to_string());
+                    }
+                }
+            }
+            targets.push(Target {
+                output,
+                model: (!model.is_empty()).then_some(model),
+                expected,
+                address_to_id,
+            });
+        }
+        for model in self.order() {
+            // In strict mode, ignore unassigned stray `review-*.json` files if this model already tracks `pending_reviews`.
+            if strict && models_with_pending.contains(&model.to_ascii_lowercase()) {
+                continue;
+            }
+            let dir = self.dir(&model);
+            for name in ps::child_files(&dir, "review-", ".json") {
+                let full = ps::full_name(&ps::join(&dir, &name));
+                if ps::is_in(&full, &already_done) || targets.iter().any(|t| ps::eq(&t.output, &full)) {
+                    continue;
+                }
+                targets.push(Target {
+                    output: full,
+                    model: Some(model.clone()),
+                    expected: Vec::new(),
+                    address_to_id: HashMap::new(),
+                });
+            }
+        }
+
+        let mut action_keys: Vec<(String, String)> = Vec::new();
+        for t in targets {
+            let path = std::path::Path::new(&t.output);
+            if !path.is_file() {
+                if strict || !t.expected.is_empty() {
+                    audit_errors.push(format!(
+                        "{}: missing review file {}",
+                        t.model.as_deref().unwrap_or("review"),
+                        t.output
+                    ));
+                }
+                continue;
+            }
+            let parsed = match util::read_json(&t.output) {
+                Ok(v) => v,
+                Err(e) => {
+                    let msg = format!("{}: invalid JSON in {}: {e:#}", t.model.as_deref().unwrap_or("review"), t.output);
+                    if strict {
+                        audit_errors.push(msg);
+                    } else {
+                        orphans.push(json!(msg));
+                    }
+                    continue;
+                }
+            };
+            let Some(items) = parsed.as_array() else {
+                let msg = format!("{}: review JSON must be a list: {}", t.model.as_deref().unwrap_or("review"), t.output);
+                if strict {
+                    audit_errors.push(msg);
+                } else {
+                    orphans.push(json!(msg));
+                }
+                continue;
+            };
+            let mut file_ok = true;
+            let mut seen_addrs: Vec<String> = Vec::new();
+            for (idx, v) in items.iter().enumerate() {
+                let Some(obj) = v.as_object() else {
+                    if strict {
+                        audit_errors.push(format!("{}: entry {idx} in {} is not an object", t.model.as_deref().unwrap_or("review"), t.output));
+                        file_ok = false;
+                    }
+                    continue;
+                };
+                let addr = obj.get("address").and_then(Value::as_str).map(str::trim).unwrap_or("").to_string();
+                let verdict_str = obj.get("verdict").and_then(Value::as_str).unwrap_or("");
+                if addr.is_empty() || !matches!(verdict_str, "ok" | "fix" | "split") {
+                    if strict {
+                        audit_errors.push(format!(
+                            "{}: malformed verdict entry {idx} in {} (address={addr:?}, verdict={verdict_str:?})",
+                            t.model.as_deref().unwrap_or("review"),
+                            t.output
+                        ));
+                        file_ok = false;
+                    }
+                    continue;
+                }
+                if seen_addrs.iter().any(|x| ps::eq(x, &addr)) {
+                    if strict {
+                        audit_errors.push(format!("{}: duplicate verdict for `{addr}` in {}", t.model.as_deref().unwrap_or("review"), t.output));
+                        file_ok = false;
+                    }
+                    continue;
+                }
+                seen_addrs.push(addr.clone());
+                if !t.expected.is_empty() && !t.expected.iter().any(|e| ps::eq(e, &addr)) {
+                    if strict {
+                        audit_errors.push(format!("{}: unexpected address `{addr}` in {}", t.model.as_deref().unwrap_or("review"), t.output));
+                        file_ok = false;
+                    } else {
+                        orphans.push(json!(addr));
+                    }
+                    continue;
+                }
+                match verdict_str {
+                    "ok" => counts[0] += 1,
+                    "fix" | "split" => {
+                        if verdict_str == "fix" {
+                            counts[1] += 1;
+                        } else {
+                            counts[2] += 1;
+                        }
+                        let reason_ok = obj.get("reason").and_then(Value::as_str).is_some_and(|r| !r.trim().is_empty());
+                        if strict && !reason_ok {
+                            audit_errors.push(format!("{}: `{addr}` verdict `{verdict_str}` is missing a non-empty `reason` in {}", t.model.as_deref().unwrap_or("review"), t.output));
+                            file_ok = false;
+                            continue;
+                        }
+                        let mut parts_n = 0i64;
+                        let mut cuts_vec: Vec<Value> = Vec::new();
+                        if verdict_str == "split" {
+                            let p_ok = obj.get("parts").and_then(Value::as_i64).filter(|n| *n >= 2);
+                            if strict && p_ok.is_none() {
+                                audit_errors.push(format!("{}: `{addr}` split requires integer `parts >= 2` in {}", t.model.as_deref().unwrap_or("review"), t.output));
+                                file_ok = false;
+                                continue;
+                            }
+                            parts_n = p_ok.unwrap_or_else(|| ps::int(&v["parts"]).unwrap_or(0));
+                            let cuts_arr = obj.get("cuts").and_then(Value::as_array);
+                            let expected_cuts = usize::try_from(parts_n.saturating_sub(1)).unwrap_or(0);
+                            let cuts_valid = cuts_arr.is_some_and(|arr| {
+                                arr.len() == expected_cuts
+                                    && arr.iter().all(|c| c.as_str().is_some_and(|cs| !cs.trim().is_empty()))
+                            });
+                            if strict && !cuts_valid {
+                                audit_errors.push(format!("{}: `{addr}` split with parts={parts_n} requires {expected_cuts} non-empty `cuts` in {}", t.model.as_deref().unwrap_or("review"), t.output));
+                                file_ok = false;
+                                continue;
+                            }
+                            if let Some(arr) = cuts_arr {
+                                cuts_vec = arr.clone();
+                            }
+                        }
+                        let owner = match &t.model {
+                            Some(m) => {
+                                if let Some(mapped_id) = t.address_to_id.get(&addr.to_ascii_lowercase()) {
+                                    let exists = !self.m(m)["ids"][mapped_id].is_null();
+                                    let is_take = self.plan_part(m, mapped_id)?.is_some_and(|p| truthy(&p["take"]));
+                                    if exists && !is_take {
+                                        Some((m.clone(), mapped_id.clone()))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    self.find_model_owner(m, &addr)?
+                                }
+                            }
+                            None => self.find_owner(&addr)?,
+                        };
+                        match owner {
+                            Some((owner_model, id)) => {
+                                if action_keys.iter().any(|(m, i)| ps::eq(m, &owner_model) && ps::eq(i, &id)) {
+                                    if strict {
+                                        audit_errors.push(format!("{owner_model}: conflicting verdicts for part `{id}` (`{addr}`)"));
+                                        file_ok = false;
+                                    }
+                                    continue;
+                                }
+                                action_keys.push((owner_model.clone(), id.clone()));
+                                actions.push(Action {
+                                    model: owner_model,
+                                    id,
+                                    verdict: verdict_str.to_string(),
+                                    parts: parts_n,
+                                    cuts: cuts_vec,
+                                    reason: v["reason"].clone(),
+                                });
+                            }
+                            None => {
+                                let msg = format!("{}: `{addr}` is not owned by this model/batch", t.model.as_deref().unwrap_or("review"));
+                                if strict {
+                                    audit_errors.push(msg);
+                                    file_ok = false;
+                                } else {
+                                    orphans.push(json!(addr));
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for exp in &t.expected {
+                if !seen_addrs.iter().any(|x| ps::eq(x, exp)) {
+                    audit_errors.push(format!(
+                        "{}: omitted assigned address `{exp}` in {}",
+                        t.model.as_deref().unwrap_or("review"),
+                        t.output
+                    ));
+                    file_ok = false;
+                }
+            }
+            if file_ok {
+                consumed.push(t.output);
+            }
+        }
+        Ok((audit_errors, orphans, actions, consumed, counts))
+    }
+
+    fn consume_reviews(&mut self, consumed: &[String]) {
+        if consumed.is_empty() {
+            return;
+        }
+        let mut reviews: Vec<Value> = list(&self.state["reviews"]).into_iter().cloned().collect();
+        for path in consumed {
+            if !reviews.iter().any(|r| ps::eq(&s(r), path)) {
+                reviews.push(json!(path));
+            }
+        }
+        self.state["reviews"] = Value::Array(reviews);
+        let remaining: Vec<Value> = list(&self.state["pending_reviews"])
+            .into_iter()
+            .filter(|p| !consumed.iter().any(|c| ps::eq(&s(&p["output"]), c)))
+            .cloned()
+            .collect();
+        self.state["pending_reviews"] = Value::Array(remaining);
+    }
+
+    fn step_review_audit(&mut self) -> Result<i32> {
+        let (audit_errors, _, _, consumed, counts) = self.audit_and_collect_reviews(true)?;
+        let verdicts = json!({ "ok": counts[0], "fix": counts[1], "split": counts[2] });
+        if !audit_errors.is_empty() {
+            self.out_last(&json!({
+                "ok": false,
+                "step": "review-audit",
+                "verdicts": verdicts,
+                "needs_split": false,
+                "audit_errors": audit_errors,
+            }))?;
+            return Ok(1);
+        }
+        let needs_split = counts[1] + counts[2] > 0;
+        if !needs_split && !consumed.is_empty() {
+            self.consume_reviews(&consumed);
+            self.save_state()?;
+        }
+        self.out_last(&json!({
+            "ok": true,
+            "step": "review-audit",
+            "verdicts": verdicts,
+            "needs_split": needs_split,
+            "audit_errors": [],
+        }))?;
+        Ok(0)
+    }
+
+    fn step_split(&mut self) -> Result<i32> {
         // job id (or new:<model>) -> what its conversation must do next
         let mut follow: CiMap<Follow> = CiMap::new();
-        let mut orphans: Vec<Value> = Vec::new();
-        let add = add_follow;
+        let strict = self.p.strict_audit;
         // Name every target by its model and id first: a split renumbers the addresses after it.
-        let mut actions: Vec<Action> = Vec::new();
+        let mut need_actions: Vec<Action> = Vec::new();
+        let mut seen_need_keys: Vec<(String, String)> = Vec::new();
+        let mut need_orphans: Vec<Value> = Vec::new();
+        let mut need_errors: Vec<String> = Vec::new();
         for pair in self.p.need.split(';').filter(|p| !p.trim().is_empty()).map(str::to_string).collect::<Vec<_>>() {
             let mut it = pair.splitn(2, '=');
             let address = it.next().unwrap_or_default().to_string();
             let count = it.next().map(|c| Value::String(c.to_string())).unwrap_or(Value::Null);
-            match self.find_owner(address.trim())? {
-                Some((model, id)) => actions.push(Action {
-                    model,
-                    id,
-                    verdict: "split".into(),
-                    parts: ps::int(&count)?,
-                    cuts: Vec::new(),
-                    reason: json!("写不下"),
-                }),
-                None => orphans.push(json!(address)),
+            let parts_n = ps::int(&count)?;
+            if self.p.strict_audit && parts_n < 2 {
+                need_errors.push(format!("-Need `{address}` requires parts >= 2"));
+                continue;
             }
-        }
-        for model in self.order() {
-            let dir = self.dir(&model);
-            for name in ps::child_files(&dir, "review-", ".json") {
-                let full = ps::full_name(&ps::join(&dir, &name));
-                if ps::is_in(&full, &strings(&Value::Array(list(&self.state["reviews"]).into_iter().cloned().collect()))) {
-                    continue;
-                }
-                self.state["reviews"] = plus(&self.state["reviews"], [json!(full)]);
-                let verdicts = match util::read_json(ps::join(&dir, &name)) {
-                    Ok(v) => pipe(&v).into_iter().cloned().collect::<Vec<_>>(),
-                    Err(e) => {
-                        orphans.push(json!(format!("{name}: {e:#}")));
-                        Vec::new()
-                    }
-                };
-                for v in verdicts {
-                    if !ps::is_in(&s(&v["verdict"]), &["split", "fix"]) || v["verdict"].is_null() {
-                        continue;
-                    }
-                    match self.find_owner(&s(&v["address"]))? {
-                        Some((model, id)) => actions.push(Action {
+            match self.find_owner(address.trim())? {
+                Some((model, id)) => {
+                    if seen_need_keys.iter().any(|(m, i)| ps::eq(m, &model) && ps::eq(i, &id)) {
+                        let msg = format!("{model}: duplicate -Need target `{address}` (`{model}#{id}`)");
+                        if strict {
+                            need_errors.push(msg);
+                        } else {
+                            bail!("{msg}");
+                        }
+                    } else {
+                        seen_need_keys.push((model.clone(), id.clone()));
+                        need_actions.push(Action {
                             model,
                             id,
-                            verdict: s(&v["verdict"]),
-                            parts: ps::int(&v["parts"])?,
-                            cuts: list(&v["cuts"]).into_iter().cloned().collect(),
-                            reason: v["reason"].clone(),
-                        }),
-                        None => orphans.push(v["address"].clone()),
+                            verdict: "split".into(),
+                            parts: parts_n,
+                            cuts: Vec::new(),
+                            reason: json!("写不下"),
+                        });
+                    }
+                }
+                None => {
+                    if self.p.strict_audit {
+                        need_errors.push(format!("-Need address `{address}` is not owned by this batch"));
+                    } else {
+                        need_orphans.push(json!(address));
                     }
                 }
             }
         }
+        let (mut audit_errors, mut orphans, rev_actions, consumed, _) = self.audit_and_collect_reviews(strict)?;
+        audit_errors.extend(need_errors);
+        orphans.extend(need_orphans);
+        for na in &need_actions {
+            if rev_actions.iter().any(|ra| ps::eq(&ra.model, &na.model) && ps::eq(&ra.id, &na.id)) {
+                audit_errors.push(format!("{}: conflicting -Need and review action for part `{}`", na.model, na.id));
+            }
+        }
+        if strict && !audit_errors.is_empty() {
+            self.out_last(&json!({
+                "ok": false,
+                "step": "split",
+                "audit_errors": audit_errors,
+                "jobs": [],
+                "orphans": orphans,
+            }))?;
+            return Ok(1);
+        }
+        let mut actions = need_actions;
+        actions.extend(rev_actions);
+
         let mut resplit: Vec<String> = Vec::new();
         for a in actions {
             if ps::eq(&a.verdict, "split") && a.parts >= 2 {
                 let r = self.split_part(&a.model, &a.id, a.parts, &a.cuts, &a.reason)?;
                 resplit.push(a.model.clone());
-                add(&mut follow, r);
+                add_follow(&mut follow, r);
             } else {
                 self.state["rereview"] = plus(&self.state["rereview"], [json!(format!("{}#{}", a.model, a.id))]);
                 let job = self.find_job(&a.model, &a.id);
                 let at = self.resolve(&json!(a.id), &a.model)?;
                 let text = format!("## 修正：[[{at}]]\n\n{}\n", s(&a.reason));
-                add(&mut follow, Follow { model: a.model.clone(), job, text, ids: vec![a.id.clone()], cards: Vec::new() });
+                add_follow(&mut follow, Follow { model: a.model.clone(), job, text, ids: vec![a.id.clone()], cards: Vec::new() });
             }
         }
         // A split changes the length of its chain: every member gets its new position line.
@@ -3026,8 +4514,10 @@ impl Compiler {
         // A split renumbers the parts after it: the 共用 lines of the other models follow.
         self.refresh_shared()?;
         let jobs = self.follow_jobs(&follow)?;
+        self.consume_reviews(&consumed);
         self.save_state()?;
-        self.out_last(&json!({ "jobs": jobs, "orphans": orphans }))
+        self.out_last(&json!({ "ok": true, "jobs": jobs, "orphans": orphans }))?;
+        Ok(0)
     }
 
     /// `close`: the build faults each model of the batch still has after its last fill, derive or
@@ -3067,26 +4557,70 @@ impl Compiler {
     /// derive-and-review from this line, never from the architect's answer.
     fn step_plan_status(&mut self) -> Result<()> {
         let mut plans = Vec::new();
+        let mut formal_plans: Vec<(String, Value)> = Vec::new();
+        let folder = self.run_folder();
+        let staging = (!folder.is_empty()).then_some(folder.as_str());
         for model in self.order() {
             let path = ps::join(&self.dir(&model), "plan.json");
             let status = s(&self.m(&model)["status"]);
             if ps::exists(&path) {
                 let plan = util::read_json(&path).with_context(|| format!("{model}: plan.json is not JSON"))?;
                 let parts = list(&plan["parts"]);
-                let derivations = parts.iter().filter(|p| truthy(&p["derive"])).count();
+                let derivations = parts.iter().filter(|p| super::formal::is_deriving_part(p)).count();
                 // A plan the batch must not build: a skip is the architect's own decision, a fault is not.
-                let faults = if ps::eq(&s(&plan["status"]), "skip") && !plan["status"].is_null() {
-                    Vec::new()
+                let mut faults = if has_utf8_bom(&path) {
+                    vec!["plan.json has a UTF-8 BOM; write UTF-8 without BOM".to_string()]
                 } else {
-                    Self::plan_explain_faults(&plan)
+                    Vec::new()
                 };
+                let is_math_unit = self
+                    .model_of(&json!(model))
+                    .map(|st| is_math_unit_structure(&st))
+                    .unwrap_or_else(|_| truthy(&self.m(&model)["math_unit"]));
+                let formal_model = super::formal::is_formal_model(&plan, is_math_unit);
+                let empirical_model = super::empirical::is_empirical(&plan);
+                if !(ps::eq(&s(&plan["status"]), "skip") && !plan["status"].is_null()) {
+                    faults.extend(Self::plan_explain_faults(&plan));
+                    if formal_model {
+                        match self.inventory_result(&model) {
+                            Ok(Some(inv)) => faults.extend(super::formal::plan_faults(&plan, Some(&inv), staging)),
+                            Ok(None) => {
+                                if self.inventory_required_for(&model, staging) {
+                                    faults.push("inventory_missing: formal model requires pinned inventory.json beside brief.md".into());
+                                }
+                                faults.extend(super::formal::plan_faults(&plan, None, staging));
+                            }
+                            Err(msg) => {
+                                faults.push(msg);
+                                faults.extend(super::formal::plan_faults(&plan, None, staging));
+                            }
+                        }
+                        formal_plans.push((model.clone(), plan.clone()));
+                    }
+                }
                 let status = if faults.is_empty() { "planned" } else { "failed" };
+                let needs_review = empirical_model || formal_model || derivations > 0;
                 plans.push(json!({
-                    "model": model, "status": status, "level": plan["level"], "parts": parts.len(),
-                    "derivations": derivations, "faults": faults.len(), "fault": faults.first().cloned().unwrap_or_default(),
+                    "model": model, "status": status, "level": plan["level"], "math_unit": is_math_unit,
+                    "parts": parts.len(), "derivations": derivations, "review": needs_review,
+                    "faults": faults.len(), "fault": faults.first().cloned().unwrap_or_default(),
                 }));
             } else {
-                plans.push(json!({"model": model, "status": if ps::eq(&status, "skipped") { "skipped" } else { "failed" }, "parts": 0, "derivations": 0, "faults": 0}));
+                plans.push(json!({"model": model, "status": if ps::eq(&status, "skipped") { "skipped" } else { "failed" }, "parts": 0, "derivations": 0, "review": false, "faults": 0}));
+            }
+        }
+        // Cross-model ownership conflict check across formal plans in the batch (Astra H3).
+        if formal_plans.len() >= 2 {
+            let refs: Vec<(String, &Value)> = formal_plans.iter().map(|(m, p)| (m.clone(), p)).collect();
+            for (conflict_model, msg) in super::inventory::cross_plan_ownership_faults(&refs) {
+                if let Some(row) = plans.iter_mut().find(|r| ps::eq(&s(&r["model"]), &conflict_model)) {
+                    let prev_faults = row["faults"].as_u64().unwrap_or(0);
+                    row["faults"] = json!(prev_faults + 1);
+                    if s(&row["fault"]).is_empty() {
+                        row["fault"] = json!(msg);
+                    }
+                    row["status"] = json!("failed");
+                }
             }
         }
         let planned = plans.iter().filter(|p| p["status"] == json!("planned")).count();
@@ -3094,8 +4628,12 @@ impl Compiler {
             .iter()
             .filter(|p| p["status"] == json!("planned"))
             .any(|p| p["derivations"].as_u64().unwrap_or(0) > 0);
+        let review = plans
+            .iter()
+            .filter(|p| p["status"] == json!("planned"))
+            .any(|p| p["review"] == json!(true));
         let faults = plans.iter().filter_map(|p| p["faults"].as_u64()).sum::<u64>();
-        self.out_last(&json!({"ok": true, "step": "plan-status", "planned": planned, "derive": derive, "faults": faults, "plans": plans}))
+        self.out_last(&json!({"ok": true, "step": "plan-status", "planned": planned, "derive": derive, "review": review, "faults": faults, "plans": plans}))
     }
 
     fn step_close(&mut self) -> Result<()> {
@@ -3108,12 +4646,23 @@ impl Compiler {
             let st = self.model_of(&json!(model))?;
             let mut entries = close_entries(&model, &st["build"]);
             entries.extend(marker_entries(&st));
+            // Give model-head R2 (>40 char) faults an owner before finish: return the exact
+            // offending head sentences to the writer during `close` instead of leaving them unfixed.
+            if !ps::eq(&s(&self.m(&model)["status"]), "failed") {
+                entries.extend(self.head_r2_entries(&model)?);
+            }
             // Level 3: the role faults of the build report and the evidence check.
             if ps::eq(&s(&st["build"]["level"]), "empirical") {
                 entries.extend(super::empirical::role_entries(&model, &st["build"]));
                 if ps::exists(&ps::join(&self.dir(&model), "plan.json")) {
                     entries.extend(self.evidence_check(&model, &st)?);
                 }
+            }
+            // Level 2 formal economic model: Layer 1 role/graph faults + FM1–FM6 + inventory fidelity.
+            let is_math_unit = is_math_unit_structure(&st);
+            if ps::eq(&s(&st["build"]["level"]), "formal") && !is_math_unit {
+                entries.extend(super::formal::role_entries(&model, &st["build"]));
+                entries.extend(self.formal_check(&model, &st)?);
             }
             let plan_path = ps::join(&self.dir(&model), "plan.json");
             if ps::exists(&plan_path)
@@ -3144,8 +4693,9 @@ impl Compiler {
                     .filter(|r| ps::eq(&s(&r["kind"]), "rests-on"))
                     .map(|r| (s(&r["from"]), s(&r["to"])))
                     .collect();
-                let plan_parts: Vec<Value> = list(&plan["parts"]).into_iter().cloned().collect();
-                entries.extend(planned_link_entries(&model, &plan_parts, &own, &models, &resolve, &parts, &pairs, &rests));
+                let plan_parts: Vec<Value> = self.effective_plan_parts(&model, &plan);
+                let formal_model = super::formal::is_formal_model(&plan, is_math_unit);
+                entries.extend(planned_link_entries(&model, &plan_parts, &own, &models, &resolve, &parts, &pairs, &rests, formal_model));
                 let empirical = super::empirical::is_empirical(&plan);
                 entries.extend(unwritten_entries(&plan_parts, &own, &st));
                 entries.extend(intuition_entries(&plan_parts, &own, &st, empirical));
@@ -3260,6 +4810,51 @@ impl Compiler {
                     None => lines.push(line),
                 }
             }
+            // Also preserve Side-branch split pieces, ordered so each `after` predecessor
+            // is inserted before its successor piece (e.g. `D1` -> `D1~2` -> `D1~3`).
+            if let Some(added_map) = self.m(&model)["added"].as_object().cloned() {
+                let mut side_added: Vec<(String, Value)> = added_map
+                    .into_iter()
+                    .filter(|(_, v)| v.is_object() && ps::eq(&s(&v["line"]), "side") && truthy(&v["after"]))
+                    .collect();
+                side_added.sort_by(|a, b| a.0.cmp(&b.0));
+                let mut inserted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+                for _ in 0..=side_added.len() {
+                    let mut progressed = false;
+                    for (id, added) in &side_added {
+                        if inserted.contains(id) {
+                            continue;
+                        }
+                        let prev = s(&added["after"]);
+                        let prev_addr = self.id_address(&model, &prev);
+                        let addr = self.id_address(&model, id);
+                        if addr.is_empty() || lines.iter().any(|l| l.contains(&format!("[[{addr}]]"))) {
+                            inserted.insert(id.clone());
+                            progressed = true;
+                            continue;
+                        }
+                        let link = format!("[[{prev_addr}]]");
+                        if let Some(at) = lines.iter().rposition(|l| l.contains(&link)) {
+                            let line = format!("- {} [[{addr}]]：{}", s(&added["facet"]), s(&added["title"]));
+                            lines.insert(at + 1, line);
+                            inserted.insert(id.clone());
+                            progressed = true;
+                        }
+                    }
+                    if !progressed {
+                        break;
+                    }
+                }
+                for (id, added) in &side_added {
+                    if inserted.contains(id) {
+                        continue;
+                    }
+                    let addr = self.id_address(&model, id);
+                    if !addr.is_empty() && !lines.iter().any(|l| l.contains(&format!("[[{addr}]]"))) {
+                        lines.push(format!("- {} [[{addr}]]：{}", s(&added["facet"]), s(&added["title"])));
+                    }
+                }
+            }
             let list = lines.join("\n");
             let list = list.strip_prefix("**结构**\n\n").unwrap_or(&list).to_string();
             let body = text::set_section(&body, "结构", &format!("**结构**\n\n{list}"));
@@ -3327,6 +4922,22 @@ impl Compiler {
             }
         }
         found
+    }
+
+    /// Blocking R2 (>40 char) faults on the Model Card head itself, returned as a `close` 修正 note.
+    fn head_r2_entries(&mut self, model: &str) -> Result<Vec<(String, String)>> {
+        let check = Check {
+            model: model.to_string(),
+            skip_shared: true,
+            max_sentences: self.p.max_sentences,
+            max_chars: self.p.max_chars,
+            max_steps: self.p.max_steps,
+            max_explain_sentences: self.p.max_explain_sentences,
+            max_explain_chars: self.p.max_explain_chars,
+            ..Check::default()
+        };
+        let lines = check.run(self.zt()?)?;
+        Ok(head_r2_note(model, &lines).into_iter().map(|note| (model.to_string(), note)).collect())
     }
 
     /// The follow-up jobs of a split or close round (#194): every follow-up continues the model's
@@ -3515,6 +5126,13 @@ impl Compiler {
                     other => json!(ps::json_compact(other)),
                 })
                 .collect();
+            let formal_faults = count(&build["formal_shape"])
+                + count(&build["setting_dependency"])
+                + count(&build["criterion_unbound"])
+                + count(&build["result_unbound"])
+                + count(&build["proof_unbound"])
+                + count(&build["experiment_unbound"])
+                + count(&build["symbol_uncovered"]);
             reports.push(json!({
                 "model": model,
                 "level": st["level"],
@@ -3544,6 +5162,7 @@ impl Compiler {
                     "unanchored": count(&build["unanchored"]),
                     "beyond_level": count(&build["beyond_level"]),
                     "empirical": count(&build["empirical_shape"]) + count(&build["estimate_unbound"]) + count(&build["spec_unbound"]) + count(&build["test_unbound"]) + count(&build["variable_uncovered"]),
+                    "formal": formal_faults,
                 },
                 "issues": issues,
                 "notes": list(&m["notes"]),
@@ -3558,7 +5177,7 @@ impl Compiler {
                     "derivations":total,
                     "explained":Self::explained_of(&st).len(),
                     "style":style,
-                    "build_faults":count(&build["closure"])+count(&build["forward"])+count(&build["unanchored"])+count(&build["beyond_level"])
+                    "build_faults":count(&build["closure"])+count(&build["forward"])+count(&build["unanchored"])+count(&build["beyond_level"])+formal_faults
                 }),
             );
         }
@@ -3634,7 +5253,7 @@ impl Compiler {
         let mut fill: Vec<String> = Vec::new();
         let mut derive: Vec<String> = Vec::new();
         let mut missing_id = std::collections::BTreeMap::new();
-        let plan_parts = list(&plan["parts"]).into_iter().cloned().collect::<Vec<_>>();
+        let plan_parts = self.effective_plan_parts(model, &plan);
         for part in &plan_parts {
             let id = s(&part["id"]);
             if id.is_empty() {
@@ -3806,6 +5425,9 @@ impl Compiler {
         if ps::eq(&s(&plan["level"]), "empirical") {
             card_text += "- 实证模型：写 **问题**、**数据**（一两句）、**关联**、来源。**估计对象** 和 **主要估计** 两节由脚本写好，原样保留。**设计** 一节第一行冒号前的设计类型原样保留，冒号后写一两句比较（谁和谁比，变异从哪里来）。\n";
         }
+        if super::formal::is_formal_model(plan, truthy(&self.m(model)["math_unit"])) {
+            card_text += "- 形式模型：写 **问题**、**原语与判据**（两三句，链接核心判据卡）、**关联**、来源。**目标对象与标签**、**主要结果**、**结构**（及 **引入**、**分部**）由脚本写好，原样保留。\n";
+        }
         let mut current = text::set_section(&s(&card["body"]), "结构", "").trim().to_string();
         if !current.is_empty() {
             if ps::len16(&current) > 4000 {
@@ -3961,12 +5583,23 @@ impl Compiler {
         }
         // The new bodies pass R2 to R19; the setting gives the term table (R6). Only a fault the
         // explanation adds counts: a fault the old body already has stays and is reported as kept.
-        let setting = s(&self.state["explain"]["settings"][&s(&j["model"])]);
+        let model_addr = s(&j["model"]);
+        let setting = s(&self.state["explain"]["settings"][&model_addr]);
         let setting_card = if setting.is_empty() { Value::Null } else { self.card(&json!(setting))? };
-        let old_items: Vec<Value> =
-            r.candidates.iter().map(|c| json!({ "address": c.address, "title": c.title, "body": c.old, "facet": c.facet })).collect();
-        let new_items: Vec<Value> =
-            r.candidates.iter().map(|c| json!({ "address": c.address, "title": c.title, "body": c.body, "facet": c.facet })).collect();
+        let (model_level, model_form) = self
+            .model_of(&json!(model_addr))
+            .map(|st| (st["level"].clone(), st["form"].clone()))
+            .unwrap_or_else(|_| (self.m(&model_addr)["level"].clone(), Value::Null));
+        let old_items: Vec<Value> = r
+            .candidates
+            .iter()
+            .map(|c| json!({ "address": c.address, "title": c.title, "body": c.old, "facet": c.facet, "level": model_level, "form": model_form }))
+            .collect();
+        let new_items: Vec<Value> = r
+            .candidates
+            .iter()
+            .map(|c| json!({ "address": c.address, "title": c.title, "body": c.body, "facet": c.facet, "level": model_level, "form": model_form }))
+            .collect();
         let old = self.style_faults(old_items, "old.json", false, &setting, &setting_card)?;
         let all = self.style_faults(new_items, "new.json", true, &setting, &setting_card)?;
         let mut pass = Vec::new();
@@ -4006,6 +5639,35 @@ impl Compiler {
                 "body": s(&setting_card["body"]),
                 "facet": s(&setting_card["facet"]),
             }));
+            // P2b-1: include `<setting>|a` (formal notation card) and its 1-hop `沿用 [[...]]`
+            // borrowed notation card when present so R6 reads the exact same term table (Astra #11).
+            let notation_addr = format!("{setting}|a");
+            if let Ok(notation_card) = self.card(&json!(notation_addr))
+                && !s(&notation_card["body"]).is_empty()
+            {
+                let nb = s(&notation_card["body"]);
+                to_check.push(json!({
+                    "address": notation_addr,
+                    "title": s(&notation_card["title"]),
+                    "body": nb,
+                    "facet": s(&notation_card["facet"]),
+                }));
+                if zt_check::text::term_table(&nb).is_empty() {
+                    for borrowed in zt_check::formal::borrowed_notation_targets(&nb) {
+                        if let Ok(bcard) = self.card(&json!(borrowed))
+                            && !zt_check::text::term_table(&s(&bcard["body"])).is_empty()
+                        {
+                            to_check.push(json!({
+                                "address": borrowed,
+                                "title": s(&bcard["title"]),
+                                "body": s(&bcard["body"]),
+                                "facet": s(&bcard["facet"]),
+                            }));
+                            break;
+                        }
+                    }
+                }
+            }
         }
         let temp = std::env::temp_dir().display().to_string();
         let entries_file = ps::join(&temp, &format!("explain-{}-{name}", std::process::id()));
@@ -4188,6 +5850,13 @@ impl Compiler {
 /// that ends it, when the model has one.
 pub(crate) fn proof_chains(build: &Value) -> Vec<Value> {
     let mut chains: Vec<Value> = list(&build["chains"]).into_iter().cloned().collect();
+    // Deduplicate against Side chains already emitted by `src/model.rs` `build_report` (F4).
+    let mut seen_parts: HashSet<String> = HashSet::new();
+    for c in &chains {
+        for a in pipe(&c["parts"]) {
+            seen_parts.insert(s(a).to_ascii_lowercase());
+        }
+    }
     let side: Vec<String> = list(&build["order"])
         .into_iter()
         .filter(|o| truthy(&o["derivation"]) && ps::eq(&s(&o["line"]), "side"))
@@ -4206,6 +5875,9 @@ pub(crate) fn proof_chains(build: &Value) -> Vec<Value> {
         }
     };
     for head in &side {
+        if seen_parts.contains(&head.to_ascii_lowercase()) {
+            continue;
+        }
         if previous(head).is_some_and(|p| ps::is_in(&p, &side)) {
             continue;
         }
@@ -4214,6 +5886,9 @@ pub(crate) fn proof_chains(build: &Value) -> Vec<Value> {
         while ps::is_in(&at, &side) && !ps::is_in(&at, &parts) {
             parts.push(at.clone());
             at = next(&at);
+        }
+        for p in &parts {
+            seen_parts.insert(p.to_ascii_lowercase());
         }
         let after = previous(head).or_else(|| head.rsplit_once('|').map(|(p, _)| p.to_string()));
         let before = ps::is_in(&at, &known).then_some(at);
@@ -4326,9 +6001,25 @@ fn failed_build_elsewhere(work: &str, model: &str) -> bool {
 /// brief skipped the model as built and the finish refused it with "no accepted plan". Only the parts filed under
 /// the Model Card count, as in the model listing (`list::own_parts`).
 fn built_as_is(model: &str, st: &Value, todo: bool) -> bool {
+    let b = &st["build"];
+    let no_formal_faults = b["formal_structured"] != json!(false)
+        && [
+            "import_target",
+            "import_cycle",
+            "formal_shape",
+            "setting_dependency",
+            "criterion_unbound",
+            "result_unbound",
+            "proof_unbound",
+            "experiment_unbound",
+            "symbol_uncovered",
+        ]
+        .iter()
+        .all(|k| list(&b[*k]).is_empty());
     super::list::own_parts(model, &pipe(&st["parts"])) > 0
-        && truthy(&st["build"]["self_sufficient"])
-        && list(&st["build"]["beyond_level"]).is_empty()
+        && truthy(&b["self_sufficient"])
+        && list(&b["beyond_level"]).is_empty()
+        && no_formal_faults
         && !todo
 }
 
@@ -4685,7 +6376,7 @@ mod tests {
         let resolve = |r: &str| -> Option<String> { let v = ids[r].as_str().unwrap_or_default().to_string(); if v.is_empty() || v.contains('#') { None } else { Some(v) } };
         let parts: BTreeSet<String> = ["K/7|a|a|5", "K/7|a|a|1", "K/3|a|a|2"].into_iter().map(String::from).collect();
         let pairs: BTreeSet<(String, String)> = [("K/7|a|a|5".to_string(), "K/7|a|a|1".to_string())].into_iter().collect();
-        let entries = super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &pairs, &pairs);
+        let entries = super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &pairs, &pairs, true);
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0].0, "K/7|a|a|5");
         assert!(entries[0].1.contains("[[K/3|a|a|2]]") && entries[0].1.contains("用到均衡条件"));
@@ -4718,11 +6409,11 @@ mod tests {
         let resolve = |r: &str| -> Option<String> { ids[r].as_str().map(str::to_string) };
         let parts: BTreeSet<String> = ["K/7|a|a|3", "K/7|a|a|4"].into_iter().map(String::from).collect();
         let refers: BTreeSet<(String, String)> = [("K/7|a|a|3".to_string(), "K/5|a|a|4".to_string())].into_iter().collect();
-        let entries = super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &refers, &BTreeSet::new());
+        let entries = super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &refers, &BTreeSet::new(), true);
         assert_eq!(entries.len(), 1, "the refilled part goes back, the kept part does not: {entries:?}");
         assert_eq!(entries[0].0, "K/7|a|a|3");
         assert!(entries[0].1.contains("依赖 [[K/5|a|a|4]]") && entries[0].1.contains("参照"), "{}", entries[0].1);
-        assert!(super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &refers, &refers).is_empty(), "a rests-on Link to the take authors it");
+        assert!(super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &refers, &refers, true).is_empty(), "a rests-on Link to the take authors it");
     }
 
     // #197 pilot: the architect merged `7|b|a|6` into a take; the apply step skipped the merge because the
@@ -4788,9 +6479,9 @@ mod tests {
         let resolve = |r: &str| -> Option<String> { ids[r].as_str().map(str::to_string) };
         let parts: BTreeSet<String> = ["K/7|a|a|16", "K/7|a|a|17", "K/7|a|a|18", "K/7|a|a|19"].into_iter().map(String::from).collect();
         let to_last: BTreeSet<(String, String)> = [("K/7|a|a|19".to_string(), "K/7|a|a|18".to_string())].into_iter().collect();
-        assert!(super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &to_last, &to_last).is_empty());
+        assert!(super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &to_last, &to_last, true).is_empty());
         let none = BTreeSet::new();
-        let entries = super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &none, &none);
+        let entries = super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &none, &none, true);
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert!(entries[0].1.contains("[[K/7|a|a|16]]") && entries[0].1.contains("[[K/7|a|a|18]]"), "{}", entries[0].1);
     }
@@ -4824,5 +6515,387 @@ mod tests {
         let kept = json!({ "id": "S", "existing": "b/8|a|a", "line": "main" });
         assert!(!lacks_main_line(&filed, &[], &[&kept]));
         assert!(!lacks_main_line(&filed, &["b/8|a|a".to_string()], &[&new_part]));
+    }
+
+    #[test]
+    fn derivation_to_must_contain_a_math_expression() {
+        assert!(super::has_math_expr("$$x^k = \\theta^k (\\dots) \\quad (18)$$"));
+        assert!(super::has_math_expr("P ≤ L"));
+        assert!(!super::has_math_expr("式 (18) 与 (19)"));
+        assert!(!super::has_math_expr("命题 1"));
+    }
+
+    #[test]
+    fn head_r2_note_returns_only_blocking_head_r2_lines() {
+        let lines = vec![
+            "klette2004innovating/3|a R2 (63 characters > 40) 长句一…".to_string(),
+            "klette2004innovating/3|a|a|2 R2 (45 characters > 40) 分卡长句…".to_string(),
+            "klette2004innovating/3|a R20 (advisory) local reference…".to_string(),
+            "faults: 2".to_string(),
+        ];
+        let note = super::head_r2_note("klette2004innovating/3|a", &lines).expect("head R2 note");
+        assert!(note.contains("模型头卡短句 R2"), "{note}");
+        assert!(note.contains("R2 (63 characters > 40)"), "{note}");
+        assert!(!note.contains("分卡长句"), "{note}");
+        assert!(!note.contains("R20"), "{note}");
+        assert!(super::head_r2_note("klette2004innovating/3|a", &["faults: 0".to_string()]).is_none());
+    }
+
+    fn test_params(step: &str, work: &str, staging: &str) -> super::Params {
+        super::Params {
+            step: step.to_string(),
+            work: work.to_string(),
+            staging: staging.to_string(),
+            models: String::new(),
+            plan: String::new(),
+            need: String::new(),
+            changed: false,
+            rebuild: false,
+            report: false,
+            independent_review: false,
+            strict_audit: false,
+            batch: false,
+            level: String::new(),
+            max_sentences: 6,
+            max_chars: 180,
+            max_steps: 5,
+            max_explain_sentences: 2,
+            max_explain_chars: 120,
+            max_parts: 3,
+            job: String::new(),
+            file: String::new(),
+        }
+    }
+
+    fn test_docs() -> super::Docs {
+        super::Docs {
+            brief: "b".into(),
+            fill: "f".into(),
+            review: "r".into(),
+            explain: "e".into(),
+            brief_empirical: "be".into(),
+            review_empirical: "re".into(),
+        }
+    }
+
+    #[test]
+    fn has_utf8_bom_detects_only_leading_ef_bb_bf() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("plain.json");
+        let bom = dir.path().join("bom.json");
+        std::fs::write(&plain, b"{\"ok\":true}").unwrap();
+        let mut with_bom = vec![0xEF, 0xBB, 0xBF];
+        with_bom.extend_from_slice(b"{\"ok\":true}");
+        std::fs::write(&bom, with_bom).unwrap();
+        assert!(!super::has_utf8_bom(plain.to_str().unwrap()));
+        assert!(super::has_utf8_bom(bom.to_str().unwrap()));
+    }
+
+    #[test]
+    fn validate_batches_manifest_checks_duplicates_overlap_and_required_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("manifest.json"), r#"{"citation_key":"K"}"#).unwrap();
+        let w1 = dir.path().join("b1");
+        let w2 = dir.path().join("b2");
+        let mf = dir.path().join("batches.json");
+
+        // Duplicate work directory
+        std::fs::write(&mf, serde_json::to_string(&json!([
+            {"work": w1.to_str().unwrap(), "models": ["K/1|a"]},
+            {"work": w1.to_str().unwrap(), "models": ["K/2|a"]},
+        ])).unwrap()).unwrap();
+        let err = super::validate_batches_manifest("brief", staging.to_str().unwrap(), mf.to_str().unwrap()).err().unwrap().to_string();
+        assert!(err.contains("duplicate"), "{err}");
+
+        // Overlapping model assignment across batches
+        std::fs::write(&mf, serde_json::to_string(&json!([
+            {"work": w1.to_str().unwrap(), "models": ["K/1|a"]},
+            {"work": w2.to_str().unwrap(), "models": ["K/1|a"]},
+        ])).unwrap()).unwrap();
+        let err = super::validate_batches_manifest("brief", staging.to_str().unwrap(), mf.to_str().unwrap()).err().unwrap().to_string();
+        assert!(err.contains("more than one batch"), "{err}");
+
+        // Continuation step requires existing state.json
+        let err = super::validate_batches_manifest("derive", staging.to_str().unwrap(), mf.to_str().unwrap()).err().unwrap().to_string();
+        assert!(err.contains("requires existing"), "{err}");
+
+        // Colliding or unsafe jobs_file rejected
+        let shared_jobs = dir.path().join("jobs.json");
+        std::fs::write(&mf, serde_json::to_string(&json!([
+            {"work": w1.to_str().unwrap(), "models": ["K/1|a"], "jobs_file": shared_jobs.to_str().unwrap()},
+            {"work": w2.to_str().unwrap(), "models": ["K/2|a"], "jobs_file": shared_jobs.to_str().unwrap()},
+        ])).unwrap()).unwrap();
+        let err = super::validate_batches_manifest("brief", staging.to_str().unwrap(), mf.to_str().unwrap()).err().unwrap().to_string();
+        assert!(err.contains("colliding"), "{err}");
+        std::fs::write(&mf, serde_json::to_string(&json!([
+            {"work": w1.to_str().unwrap(), "models": ["K/1|a"], "jobs_file": w1.join("state.json").to_str().unwrap()},
+        ])).unwrap()).unwrap();
+        let err = super::validate_batches_manifest("brief", staging.to_str().unwrap(), mf.to_str().unwrap()).err().unwrap().to_string();
+        assert!(err.contains("state.json or plan.json"), "{err}");
+
+        // Missing models for brief
+        std::fs::write(&mf, serde_json::to_string(&json!([
+            {"work": w1.to_str().unwrap()}
+        ])).unwrap()).unwrap();
+        let err = super::validate_batches_manifest("brief", staging.to_str().unwrap(), mf.to_str().unwrap()).err().unwrap().to_string();
+        assert!(err.contains("requires a non-empty `models`"), "{err}");
+
+        // Valid manifest
+        std::fs::write(&mf, serde_json::to_string(&json!([
+            {"work": w1.to_str().unwrap(), "models": ["K/1|a"]},
+            {"work": w2.to_str().unwrap(), "models": "K/2|a,K/3|a"},
+        ])).unwrap()).unwrap();
+        let (key, specs) = super::validate_batches_manifest("brief", staging.to_str().unwrap(), mf.to_str().unwrap()).unwrap();
+        assert_eq!(key, "K");
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[1].models, "K/2|a,K/3|a");
+    }
+
+    #[test]
+    fn audit_and_collect_reviews_validates_strictly_and_preserves_state_on_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        let staging = dir.path().join("staging");
+        let slug = super::slug_of("K/1|a");
+        let mdir = work.join(&slug);
+        std::fs::create_dir_all(&mdir).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(mdir.join("plan.json"), serde_json::to_string(&json!({
+            "model": "K/1|a",
+            "level": "formal",
+            "parts": [
+                {"id": "S", "line": "main", "facet": "设定"},
+                {"id": "D1", "line": "side", "facet": "推导", "derive": true},
+            ]
+        })).unwrap()).unwrap();
+        let rev_path = crate::ps::full_name(mdir.join("review-1.json").to_str().unwrap());
+        let state_val = json!({
+            "order": ["K/1|a"],
+            "models": {
+                "K/1|a": {
+                    "ids": {"S": "K/1|a|a", "D1": "K/1|a|a|1"},
+                    "status": "reviewed"
+                }
+            },
+            "jobs": {},
+            "rereview": [],
+            "reviews": [],
+            "pending_reviews": [{
+                "output": rev_path,
+                "model": "K/1|a",
+                "round": 1,
+                "addresses": ["K/1|a|a|1"],
+                "ids": ["D1"]
+            }],
+            "seq": 1
+        });
+        std::fs::write(work.join("state.json"), serde_json::to_string_pretty(&state_val).unwrap()).unwrap();
+
+        let make = |step: &str, strict_audit: bool| {
+            let mut p = test_params(step, work.to_str().unwrap(), staging.to_str().unwrap());
+            p.strict_audit = strict_audit;
+            super::new_compiler(p, test_docs(), "-MaxExplainSentences 2".into(), "--max-steps 5".into(), "h".into(), None, true).unwrap()
+        };
+
+        // (a) missing review file fails strict audit
+        let mut c = make("review-audit", true);
+        let (errs, _, _, _, _) = c.audit_and_collect_reviews(true).unwrap();
+        assert!(errs.iter().any(|e| e.contains("missing review file")), "{errs:?}");
+
+        // (b) non-array JSON fails strict audit
+        std::fs::write(&rev_path, r#"{"not":"an array"}"#).unwrap();
+        let mut c = make("review-audit", true);
+        let (errs, _, _, _, _) = c.audit_and_collect_reviews(true).unwrap();
+        assert!(errs.iter().any(|e| e.contains("must be a list")), "{errs:?}");
+
+        // (c) unexpected / omitted assigned address fails strict audit
+        std::fs::write(&rev_path, serde_json::to_string(&json!([
+            {"address": "K/9|a|a|1", "verdict": "ok"}
+        ])).unwrap()).unwrap();
+        let mut c = make("split", true);
+        let rc = c.step_split().unwrap();
+        assert_eq!(rc, 1, "strict split must fail on unexpected/omitted address");
+        let saved_after_fail: serde_json::Value = crate::util::read_json(work.join("state.json").to_str().unwrap()).unwrap();
+        assert!(crate::ps::list(&saved_after_fail["reviews"]).is_empty(), "reviews must stay unconsumed on audit error");
+        assert_eq!(crate::ps::list(&saved_after_fail["pending_reviews"]).len(), 1);
+
+        // (d) bad split (parts < 2 or wrong cuts.len) fails strict audit
+        std::fs::write(&rev_path, serde_json::to_string(&json!([
+            {"address": "K/1|a|a|1", "verdict": "split", "parts": 2, "cuts": [], "reason": "too long"}
+        ])).unwrap()).unwrap();
+        let mut c = make("review-audit", true);
+        let rc = c.step_review_audit().unwrap();
+        assert_eq!(rc, 1);
+
+        // (e) valid fix/split collects expected Actions without errors
+        std::fs::write(&rev_path, serde_json::to_string(&json!([
+            {"address": "K/1|a|a|1", "verdict": "split", "parts": 2, "cuts": ["split here"], "reason": "two steps"}
+        ])).unwrap()).unwrap();
+        let mut c = make("review-audit", true);
+        let (errs, _, actions, consumed, counts) = c.audit_and_collect_reviews(true).unwrap();
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(counts, [0, 0, 1]);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].verdict, "split");
+        assert_eq!(actions[0].parts, 2);
+        assert_eq!(consumed, vec![rev_path.clone()]);
+        assert_eq!(c.step_review_audit().unwrap(), 0);
+        // Needs split still leaves pending_reviews for step_split to consume!
+        let saved_mid: serde_json::Value = crate::util::read_json(work.join("state.json").to_str().unwrap()).unwrap();
+        assert_eq!(crate::ps::list(&saved_mid["pending_reviews"]).len(), 1);
+
+        // (f) all-ok consumes pending_reviews during review-audit
+        std::fs::write(&rev_path, serde_json::to_string(&json!([
+            {"address": "K/1|a|a|1", "verdict": "ok"}
+        ])).unwrap()).unwrap();
+        let mut c = make("review-audit", true);
+        assert_eq!(c.step_review_audit().unwrap(), 0);
+        let saved_ok: serde_json::Value = crate::util::read_json(work.join("state.json").to_str().unwrap()).unwrap();
+        assert!(crate::ps::list(&saved_ok["pending_reviews"]).is_empty());
+        assert_eq!(crate::ps::list(&saved_ok["reviews"]).len(), 1);
+    }
+
+    #[test]
+    fn load_renew_units_map_validates_entries_strictly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("units.json");
+
+        std::fs::write(&path, r#"[{"id":"","token":1}]"#).unwrap();
+        assert!(super::load_renew_units_map(path.to_str().unwrap()).is_err());
+
+        std::fs::write(&path, r#"[{"id":"u1","token":0}]"#).unwrap();
+        assert!(super::load_renew_units_map(path.to_str().unwrap()).is_err());
+
+        std::fs::write(&path, r#"[{"id":"u1","token":1},{"id":"u1","token":2}]"#).unwrap();
+        assert!(super::load_renew_units_map(path.to_str().unwrap()).is_err());
+
+        std::fs::write(&path, serde_json::to_string(&json!({
+            "units": [{"id": "u1", "token": 7, "inputs": {"header": "K/1|a"}}]
+        })).unwrap()).unwrap();
+        let (pairs, map) = super::load_renew_units_map(path.to_str().unwrap()).unwrap();
+        assert_eq!(pairs, vec![("u1".to_string(), 7)]);
+        assert_eq!(map.get("u1").map(String::as_str), Some("K/1|a"));
+    }
+
+    #[test]
+    fn step_split_rejects_duplicate_need_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        let staging = dir.path().join("staging");
+        let mdir = work.join(super::slug_of("K/1|a"));
+        std::fs::create_dir_all(&mdir).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(mdir.join("plan.json"), serde_json::to_string(&json!({
+            "model": "K/1|a",
+            "level": "formal",
+            "parts": [{"id": "D1", "line": "side", "facet": "推导", "derive": true}]
+        })).unwrap()).unwrap();
+        std::fs::write(work.join("state.json"), serde_json::to_string(&json!({
+            "order": ["K/1|a"],
+            "models": {"K/1|a": {"ids": {"D1": "K/1|a|a|1"}, "status": "reviewed"}},
+            "jobs": {},
+            "rereview": [],
+            "reviews": [],
+            "pending_reviews": [],
+            "seq": 1
+        })).unwrap()).unwrap();
+
+        let mut p = test_params("split", work.to_str().unwrap(), staging.to_str().unwrap());
+        p.need = "K/1|a|a|1=2;K/1|a|a|1=3".to_string();
+        p.strict_audit = true;
+        let mut c = super::new_compiler(p, test_docs(), "-MaxExplainSentences 2".into(), "--max-steps 5".into(), "h".into(), None, true).unwrap();
+        assert_eq!(c.step_split().unwrap(), 1);
+        let last = c.last_out.as_ref().unwrap();
+        let errs = last["audit_errors"].as_array().unwrap();
+        assert!(errs.iter().any(|e| e.as_str().unwrap_or("").contains("duplicate -Need")), "{errs:?}");
+
+        let mut p2 = test_params("split", work.to_str().unwrap(), staging.to_str().unwrap());
+        p2.need = "K/1|a|a|1=2;K/1|a|a|1=3".to_string();
+        p2.strict_audit = false;
+        let mut c2 = super::new_compiler(p2, test_docs(), "-MaxExplainSentences 2".into(), "--max-steps 5".into(), "h".into(), None, true).unwrap();
+        assert!(c2.step_split().is_err());
+    }
+
+    #[test]
+    fn audit_and_collect_reviews_uses_address_to_id_after_address_shift() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        let staging = dir.path().join("staging");
+        let mdir = work.join(super::slug_of("K/1|a"));
+        std::fs::create_dir_all(&mdir).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(mdir.join("plan.json"), serde_json::to_string(&json!({
+            "model": "K/1|a",
+            "level": "formal",
+            "parts": [
+                {"id": "D1", "line": "side", "facet": "推导", "derive": true},
+                {"id": "D2", "line": "side", "facet": "推导", "derive": true}
+            ]
+        })).unwrap()).unwrap();
+        let rev_path = crate::ps::full_name(mdir.join("review-1.json").to_str().unwrap());
+        std::fs::write(&rev_path, serde_json::to_string(&json!([
+            {"address": "K/1|a|a|2", "verdict": "fix", "reason": "clarify"}
+        ])).unwrap()).unwrap();
+        // Simulate address shift after an earlier split: D2 moved to |3, while pending_reviews remembered |2 -> D2.
+        std::fs::write(work.join("state.json"), serde_json::to_string(&json!({
+            "order": ["K/1|a"],
+            "models": {"K/1|a": {"ids": {"D1": "K/1|a|a|1", "D1~2": "K/1|a|a|2", "D2": "K/1|a|a|3"}, "status": "reviewed"}},
+            "jobs": {},
+            "rereview": [],
+            "reviews": [],
+            "pending_reviews": [{
+                "output": rev_path,
+                "model": "K/1|a",
+                "round": 1,
+                "addresses": ["K/1|a|a|2"],
+                "address_to_id": {"k/1|a|a|2": "D2"}
+            }],
+            "seq": 1
+        })).unwrap()).unwrap();
+
+        let mut p = test_params("review-audit", work.to_str().unwrap(), staging.to_str().unwrap());
+        p.strict_audit = true;
+        let mut c = super::new_compiler(p, test_docs(), "-MaxExplainSentences 2".into(), "--max-steps 5".into(), "h".into(), None, true).unwrap();
+        let (errs, _, actions, _, _) = c.audit_and_collect_reviews(true).unwrap();
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].id, "D2");
+    }
+
+    #[test]
+    fn handle_apply_result_propagates_transport_and_stopped_without_marking_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        let staging = dir.path().join("staging");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(work.join("state.json"), serde_json::to_string(&json!({
+            "order": ["K/1|a"],
+            "models": {"K/1|a": {"ids": {}, "status": "planned"}},
+            "jobs": {},
+            "rereview": [],
+            "reviews": [],
+            "pending_reviews": [],
+            "seq": 0
+        })).unwrap()).unwrap();
+
+        let p = test_params("apply", work.to_str().unwrap(), staging.to_str().unwrap());
+        let mut c = super::new_compiler(p, test_docs(), "-MaxExplainSentences 2".into(), "--max-steps 5".into(), "h".into(), None, true).unwrap();
+
+        let tf_err = anyhow::Error::from(zt_check::mcp::TransportFault {
+            code: "transport_closed",
+            operation: "get_card".into(),
+            child_pid: 42,
+            cleanup_confirmed: true,
+            cause: "closed".into(),
+        });
+        assert!(c.handle_apply_result("K/1|a", Err(tf_err)).is_err());
+        assert_eq!(c.m("K/1|a")["status"], "planned");
+
+        let soft_err = anyhow::anyhow!("bad plan syntax");
+        assert!(c.handle_apply_result("K/1|a", Err(soft_err)).unwrap().is_empty());
+        assert_eq!(c.m("K/1|a")["status"], "failed");
     }
 }

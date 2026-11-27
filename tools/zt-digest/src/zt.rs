@@ -4,32 +4,129 @@
 
 use anyhow::Result;
 use serde_json::{Value, json};
+use std::cell::{Cell, RefCell};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-pub use zt_check::mcp::{ServiceFacts, Zt};
+pub use zt_check::mcp::ServiceFacts;
+
+type PoolKey = (bool, u64);
 
 /// The staging folder this invocation was given, which ties its marker to one prepared run.
-static STAGING: OnceLock<Option<PathBuf>> = OnceLock::new();
+static STAGING: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// The unit this invocation names, when it names one, for the marker's heartbeat facts.
-static UNIT: OnceLock<Option<String>> = OnceLock::new();
+static UNIT: Mutex<Option<String>> = Mutex::new(None);
+/// Sequence counter for unique marker temporary filenames.
+static MARKER_SEQ: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    static POOL_ENABLED: Cell<bool> = const { Cell::new(false) };
+    static POOL: RefCell<Option<(PoolKey, zt_check::mcp::Zt)>> = const { RefCell::new(None) };
+}
+
+fn current_pool_key() -> PoolKey {
+    (
+        zt_check::mcp::scope::literature_only(),
+        zt_check::mcp::current_child_edit_patience(),
+    )
+}
+
+/// Owned `zt mcp` handle that returns healthy default-scoped clients to the batch thread-local pool on Drop.
+pub struct Zt {
+    inner: Option<zt_check::mcp::Zt>,
+    poolable: bool,
+}
+
+impl Deref for Zt {
+    type Target = zt_check::mcp::Zt;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_ref().expect("zt client present")
+    }
+}
+
+impl DerefMut for Zt {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner.as_mut().expect("zt client present")
+    }
+}
+
+impl Drop for Zt {
+    fn drop(&mut self) {
+        let Some(mut client) = self.inner.take() else {
+            return;
+        };
+        if self.poolable && POOL_ENABLED.with(Cell::get) && client.is_alive() {
+            let key = current_pool_key();
+            POOL.with(|cell| {
+                *cell.borrow_mut() = Some((key, client));
+            });
+        }
+    }
+}
+
+/// Enables thread-local `Zt` client pooling on the current batch dispatch thread.
+pub fn begin_batch_pool() {
+    POOL_ENABLED.with(|enabled| enabled.set(true));
+}
+
+/// Drains and shuts down any pooled `Zt` client and clears cached service observation.
+pub fn drain_batch_pool() {
+    POOL_ENABLED.with(|enabled| enabled.set(false));
+    POOL.with(|cell| {
+        drop(cell.borrow_mut().take());
+    });
+    zt_check::mcp::invalidate_observed_service();
+}
+
+/// Evicts any pooled `Zt` client and clears cached service observation (used before transport retry).
+pub fn evict_pooled() {
+    POOL.with(|cell| {
+        drop(cell.borrow_mut().take());
+    });
+    zt_check::mcp::invalidate_observed_service();
+}
+
+fn extract_flag_value(argv: &[String], name: &str) -> Option<String> {
+    for (idx, arg) in argv.iter().enumerate() {
+        if arg.eq_ignore_ascii_case(name) {
+            return argv
+                .get(idx + 1)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty() && !v.starts_with('-'));
+        }
+        if let Some((flag, val)) = crate::util::split_flag_arg(arg)
+            && flag.eq_ignore_ascii_case(name)
+        {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
 
 /// Reads the invocation's staging folder and unit from its own arguments, before any work runs.
+/// Resets previous values so sequential invocations inside `zt-digest batch` never leak state.
 pub fn note_invocation(argv: &[String]) {
-    let value = |name: &str| {
-        argv.iter()
-            .position(|argument| argument.eq_ignore_ascii_case(name))
-            .and_then(|at| argv.get(at + 1))
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty() && !value.starts_with('-'))
-    };
-    let _ = STAGING.set(value("-Out").map(PathBuf::from));
-    let _ = UNIT.set(value("-Unit"));
+    let out = extract_flag_value(argv, "-Out")
+        .or_else(|| extract_flag_value(argv, "-Staging"))
+        .map(PathBuf::from);
+    let unit = extract_flag_value(argv, "-Unit");
+    if let Ok(mut guard) = STAGING.lock() {
+        *guard = out;
+    }
+    if let Ok(mut guard) = UNIT.lock() {
+        *guard = unit;
+    }
 }
 
 /// The staging folder of this invocation, when it names one.
-pub fn staging() -> Option<&'static Path> {
-    STAGING.get().and_then(|value| value.as_deref())
+pub fn staging() -> Option<PathBuf> {
+    STAGING.lock().ok().and_then(|guard| guard.clone())
 }
 
 /// The service CLI a command must resolve before its archive work, or `None` when the client is
@@ -53,14 +150,39 @@ pub fn start() -> Result<Zt> {
 /// Starts an archive client whose `zt mcp` also declares these Write scope lists (`--allow <file>`,
 /// `--beneath <file>`): the server then refuses every write of this connection outside them.
 pub fn start_with(declarations: &[String]) -> Result<Zt> {
+    let pool_enabled = POOL_ENABLED.with(Cell::get) && declarations.is_empty();
+    if pool_enabled {
+        let wanted = current_pool_key();
+        let cached = POOL.with(|cell| cell.borrow_mut().take());
+        if let Some((key, mut client)) = cached {
+            if key == wanted && client.is_alive() {
+                if let Some(facts) = zt_check::mcp::observed_service() {
+                    renew_marker(&facts);
+                }
+                return Ok(Zt {
+                    inner: Some(client),
+                    poolable: true,
+                });
+            }
+            let alive = client.is_alive();
+            drop(client);
+            if !alive {
+                zt_check::mcp::invalidate_observed_service();
+            }
+        }
+    }
+
     if let Some(program) = service_program() {
         zt_check::mcp::ensure_service(&program, zt_check::mcp::SERVICE_WAIT)?;
     }
-    let client = Zt::start_with(declarations)?;
+    let client = zt_check::mcp::Zt::start_with(declarations)?;
     if let Some(facts) = zt_check::mcp::observed_service() {
         renew_marker(&facts);
     }
-    Ok(client)
+    Ok(Zt {
+        inner: Some(client),
+        poolable: declarations.is_empty(),
+    })
 }
 
 /// Writes the marker for the archive the resolved service serves, when this invocation names a
@@ -72,8 +194,8 @@ fn renew_marker(facts: &ServiceFacts) {
     let Some(out) = staging() else {
         return;
     };
-    let unit = UNIT.get().and_then(|value| value.clone());
-    renew_active_run(root, out, unit.as_deref());
+    let unit = UNIT.lock().ok().and_then(|value| value.clone());
+    renew_active_run(root, &out, unit.as_deref());
 }
 
 /// The marker's lifetime: three missed minute heartbeats still count as active, and a killed run
@@ -94,9 +216,12 @@ pub fn renew_active_run(root: &Path, out: &Path, unit: Option<&str>) {
         "ttl_s": ACTIVE_RUN_TTL_SECONDS,
     });
     let path = root.join("zt.digest.run");
-    let temporary = root.join("zt.digest.run.tmp");
-    if std::fs::write(&temporary, marker.to_string()).is_ok() {
-        let _ = std::fs::rename(&temporary, &path);
+    let seq = MARKER_SEQ.fetch_add(1, Ordering::Relaxed);
+    let temporary = root.join(format!("zt.digest.run.{}.{seq}.tmp", std::process::id()));
+    if std::fs::write(&temporary, marker.to_string()).is_ok()
+        && std::fs::rename(&temporary, &path).is_err()
+    {
+        let _ = std::fs::remove_file(&temporary);
     }
 }
 
@@ -125,4 +250,33 @@ pub fn now_seconds() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn note_invocation_resets_staging_and_unit_and_parses_inline_flags() {
+        note_invocation(&["-Out".into(), "D:\\run1".into(), "-Unit".into(), "u1".into()]);
+        assert_eq!(staging(), Some(PathBuf::from("D:\\run1")));
+        assert_eq!(UNIT.lock().unwrap().as_deref(), Some("u1"));
+
+        note_invocation(&["-Staging:D:\\run2".into(), "-Unit=u2".into()]);
+        assert_eq!(staging(), Some(PathBuf::from("D:\\run2")));
+        assert_eq!(UNIT.lock().unwrap().as_deref(), Some("u2"));
+
+        note_invocation(&["-Step".into(), "plan".into()]);
+        assert_eq!(staging(), None);
+        assert_eq!(*UNIT.lock().unwrap(), None);
+
+        // Multi-byte UTF-8 positional/content args longer than "-Out" must never panic.
+        note_invocation(&["第一章".into(), "模型：结论".into(), "-Out:D:\\run3".into()]);
+        assert_eq!(staging(), Some(PathBuf::from("D:\\run3")));
+
+        // Inline "=" flag with Windows drive colon must split at "=", not "C:".
+        note_invocation(&["-Out=C:\\box\\stage".into(), "-Unit=digest/g001@1".into()]);
+        assert_eq!(staging(), Some(PathBuf::from("C:\\box\\stage")));
+        assert_eq!(UNIT.lock().unwrap().as_deref(), Some("digest/g001@1"));
+    }
 }

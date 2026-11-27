@@ -12,9 +12,9 @@
       "zt_digest": "0.64.7"
     },
     "rule": {
-      "rule_version": "9",
+      "rule_version": "10",
       "diagnostic_schema": "1",
-      "applicability_version": "4"
+      "applicability_version": "5"
     },
     "archive_schema": {
       "generation": "2",

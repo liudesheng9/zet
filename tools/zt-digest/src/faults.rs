@@ -54,7 +54,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         let text = std::fs::read_to_string(&path).with_context(|| format!("Cannot find path '{path}' because it does not exist."))?;
         let list = list_of(&serde_json::from_str::<Value>(&text).with_context(|| format!("{path} is not JSON"))?);
         let origin = if a.has("Origin") { a.str("Origin") } else { path.clone() };
-        let normalized = entries(&identity, &list, &origin)?;
+        let normalized = entries_in(&staging, &identity, &list, &origin)?;
         record(&staging, &identity, normalized)?
     } else {
         render(&staging, &identity)?
@@ -100,16 +100,27 @@ pub(crate) fn identity(staging: &str) -> Result<Identity> {
 /// Validate the entries and normalize them: one fault per source location is enforced at merge
 /// time, and every value is checked against the prepared source before it is recorded.
 pub(crate) fn entries(identity: &Identity, list: &[Value], origin: &str) -> Result<Vec<Value>> {
+    entries_opt(None, identity, list, origin)
+}
+
+/// Same as [`entries`], additionally resolving section-relative `start_line`/`end_line` spans
+/// under `<staging>/sections/` into registered-source line coordinates when the text is printed
+/// there and present in the registered source.
+pub(crate) fn entries_in(staging: &str, identity: &Identity, list: &[Value], origin: &str) -> Result<Vec<Value>> {
+    entries_opt(Some(staging), identity, list, origin)
+}
+
+fn entries_opt(staging: Option<&str>, identity: &Identity, list: &[Value], origin: &str) -> Result<Vec<Value>> {
     let mut out = Vec::new();
     for (index, entry) in list.iter().enumerate() {
-        let normalized = one(identity, entry).with_context(|| format!("source fault {} of {}", index + 1, list.len()))?;
+        let normalized = one(staging, identity, entry).with_context(|| format!("source fault {} of {}", index + 1, list.len()))?;
         out.push(tagged(normalized, origin));
     }
     Ok(out)
 }
 
 /// One entry, validated and normalized.
-fn one(identity: &Identity, entry: &Value) -> Result<Value> {
+fn one(staging: Option<&str>, identity: &Identity, entry: &Value) -> Result<Value> {
     if !entry.is_object() {
         bail!("a source fault must be a JSON object with the source lines, the observed text and a proposed interpretation");
     }
@@ -149,7 +160,7 @@ fn one(identity: &Identity, entry: &Value) -> Result<Value> {
         out.insert("parts".into(), json!(parts));
     }
     if eq(&kind, "source") {
-        source_fields(identity, entry, &mut out)?;
+        source_fields(staging, identity, entry, &mut out)?;
     } else {
         notes_fields(identity, entry, &mut out)?;
     }
@@ -157,10 +168,122 @@ fn one(identity: &Identity, entry: &Value) -> Result<Value> {
     Ok(Value::Object(out))
 }
 
+fn heading_norm(text: &str) -> String {
+    squash(text.trim().trim_start_matches('#').trim())
+}
+
+fn read_lines(path: &str) -> Option<Vec<String>> {
+    let bytes = std::fs::read(path).ok()?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let text = text.strip_prefix('\u{FEFF}').map(str::to_string).unwrap_or(text).replace("\r\n", "\n");
+    Some(text.split('\n').map(str::to_string).collect())
+}
+
+/// Locate a section-relative `(start, end)` span in the registered source (`identity.lines`).
+/// Returns `(registered_start, registered_end, section_rel_path)` only when `observed` is genuinely
+/// printed at `(start, end)` in a staged section file AND that exact span exists in `identity.lines`.
+fn resolve_section_span(
+    staging: &str,
+    identity: &Identity,
+    entry: &Value,
+    start: i64,
+    end: i64,
+    observed: &str,
+) -> Option<(i64, i64, String)> {
+    let obs = squash(observed);
+    if obs.is_empty() || start < 1 || end < start {
+        return None;
+    }
+    let chapter = heading_norm(&s(&entry["chapter"]));
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    let explicit = s(&entry["file"]).trim().replace('\\', "/");
+    if !explicit.is_empty() {
+        let full = ps::join(staging, &explicit);
+        if ps::exists(&full) {
+            candidates.push((explicit, full));
+        }
+    } else {
+        let sec_dir = ps::join(staging, "sections");
+        if let Ok(rd) = std::fs::read_dir(&sec_dir) {
+            let mut files: Vec<String> = rd
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| n.ends_with(".md") && n != "index.md")
+                .collect();
+            files.sort();
+            for name in files {
+                candidates.push((format!("sections/{name}"), ps::join(&sec_dir, &name)));
+            }
+        }
+    }
+    // Check chapter-matching section files first so a repeated snippet picks the right section.
+    let mut ordered: Vec<(String, Vec<String>, bool)> = Vec::new();
+    for (rel, full) in candidates {
+        let Some(lines) = read_lines(&full) else { continue };
+        let head = lines.iter().find(|l| !l.trim().is_empty()).map(|l| heading_norm(l)).unwrap_or_default();
+        let chapter_match = !chapter.is_empty() && !head.is_empty() && (head == chapter || head.contains(&chapter) || chapter.contains(&head));
+        ordered.push((rel, lines, chapter_match));
+    }
+    ordered.sort_by_key(|(_, _, matched)| !*matched);
+
+    let win_len = (end - start + 1) as usize;
+    for (rel, sec_lines, _) in ordered {
+        if (end as usize) > sec_lines.len() {
+            continue;
+        }
+        let sec_slice = &sec_lines[start as usize - 1..end as usize];
+        let sec_joined = squash(&sec_slice.join("\n"));
+        if !sec_joined.contains(&obs) {
+            continue;
+        }
+        // Collect candidate starting indices in `identity.lines` where the window contains `obs`.
+        let sec_head = sec_lines.iter().find(|l| l.trim_start().starts_with('#')).map(|l| heading_norm(l)).unwrap_or_default();
+        let anchor_head = if !sec_head.is_empty() { sec_head } else { chapter.clone() };
+        let head_line = if !anchor_head.is_empty() {
+            identity.lines.iter().position(|l| l.trim_start().starts_with('#') && {
+                let h = heading_norm(l);
+                h == anchor_head || h.contains(&anchor_head) || anchor_head.contains(&h)
+            })
+        } else {
+            None
+        };
+        let mut exact_matches: Vec<usize> = Vec::new();
+        let mut obs_matches: Vec<usize> = Vec::new();
+        if win_len <= identity.lines.len() {
+            for idx in 0..=(identity.lines.len() - win_len) {
+                let cand = squash(&identity.lines[idx..idx + win_len].join("\n"));
+                if cand == sec_joined {
+                    exact_matches.push(idx);
+                } else if cand.contains(&obs) {
+                    obs_matches.push(idx);
+                }
+            }
+        }
+        let pick = |matches: &[usize]| -> Option<usize> {
+            if matches.is_empty() {
+                return None;
+            }
+            if matches.len() == 1 {
+                return Some(matches[0]);
+            }
+            if let Some(hl) = head_line {
+                if let Some(&after) = matches.iter().find(|&&m| m >= hl) {
+                    return Some(after);
+                }
+            }
+            Some(matches[0])
+        };
+        if let Some(idx) = pick(&exact_matches).or_else(|| pick(&obs_matches)) {
+            return Some(((idx + 1) as i64, (idx + win_len) as i64, rel));
+        }
+    }
+    None
+}
+
 /// The fields every architect observation must carry.
-fn source_fields(identity: &Identity, entry: &Value, out: &mut Map<String, Value>) -> Result<()> {
-    let start = entry["start_line"].as_i64().unwrap_or(0);
-    let end = entry["end_line"].as_i64().unwrap_or(start);
+fn source_fields(staging: Option<&str>, identity: &Identity, entry: &Value, out: &mut Map<String, Value>) -> Result<()> {
+    let mut start = entry["start_line"].as_i64().unwrap_or(0);
+    let mut end = entry["end_line"].as_i64().unwrap_or(start);
     if start < 1 || end < start || end as usize > identity.lines.len() {
         bail!(
             "start_line {} and end_line {} are outside {} ({} lines)",
@@ -194,9 +317,22 @@ fn source_fields(identity: &Identity, entry: &Value, out: &mut Map<String, Value
             bail!("an affected Card address is empty");
         }
     }
-    // The current source must actually print the observation at that location.
+    // The current source must actually print the observation at that location. If the architect
+    // passed section-relative line numbers (e.g. `sections/s07.md` lines 5–5), resolve them to
+    // the registered source's real coordinates before judging support.
     let span = identity.lines[start as usize - 1..end as usize].join("\n");
-    let supported = squash(&span).contains(&squash(&observed));
+    let mut supported = squash(&span).contains(&squash(&observed));
+    if !supported
+        && let Some(dir) = staging
+        && let Some((reg_start, reg_end, sec_rel)) = resolve_section_span(dir, identity, entry, start, end, &observed)
+    {
+        out.insert("section_file".into(), json!(sec_rel));
+        out.insert("section_start_line".into(), json!(start));
+        out.insert("section_end_line".into(), json!(end));
+        start = reg_start;
+        end = reg_end;
+        supported = true;
+    }
     if let Some(verified) = entry["verified"].as_object() {
         let text = squash(&s(verified.get("text").unwrap_or(&Value::Null)));
         let evidence = squash(&s(verified.get("evidence").unwrap_or(&Value::Null)));
@@ -617,5 +753,53 @@ mod tests {
     fn whitespace_folding_cannot_hide_or_invent_an_observation() {
         assert!(squash("分母\n 印刷为 $1+\\rho$").contains(&squash("分母 印刷为 $1+\\rho$")));
         assert!(!squash("分母印刷为 $1+\\rho$").contains(&squash("分母印刷为 $1+\\rho+\\lambda$")));
+    }
+
+    #[test]
+    fn section_relative_source_faults_resolve_to_registered_source_lines() {
+        let tmp = std::env::temp_dir().join(format!("zt-faults-sec-{}", std::process::id()));
+        let sec_dir = tmp.join("sections");
+        std::fs::create_dir_all(&sec_dir).unwrap();
+        let full_source = [
+            "# 标题",
+            "",
+            "摘要。",
+            "",
+            "## 4.2. 行为人决策",
+            "",
+            "下面我们刻画行为人的职业选择。",
+            "",
+            "预期效用为 $V_i^I = E_\\pi[u(r_i \\cdot (1 - \\tau_i))]$。",
+        ];
+        let sec_text = [
+            "## 4.2. 行为人决策",
+            "",
+            "下面我们刻画行为人的职业选择。",
+            "",
+            "预期效用为 $V_i^I = E_\\pi[u(r_i \\cdot (1 - \\tau_i))]$。",
+        ];
+        std::fs::write(sec_dir.join("s07.md"), sec_text.join("\n")).unwrap();
+        let identity = Identity {
+            path: "book.zh-bilingual.md".into(),
+            file_id: 3202,
+            sha256: "abc123".into(),
+            lines: full_source.iter().map(|s| s.to_string()).collect(),
+        };
+        let list = vec![json!({
+            "start_line": 5,
+            "end_line": 5,
+            "chapter": "4.2. 行为人决策",
+            "observed": "$V_i^I = E_\\pi[u(r_i \\cdot (1 - \\tau_i))]$",
+            "proposed": "应为无下标税率 $\\tau$",
+            "confidence": "high",
+            "affected": ["bell2019tax/5|a"]
+        })];
+        let out = entries_in(tmp.to_str().unwrap(), &identity, &list, "plan.json").unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert_eq!(out[0]["supported"], true, "{}", out[0]);
+        assert_eq!(out[0]["start_line"], 9);
+        assert_eq!(out[0]["end_line"], 9);
+        assert_eq!(out[0]["section_file"], "sections/s07.md");
+        assert_eq!(out[0]["section_start_line"], 5);
     }
 }

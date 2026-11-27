@@ -791,7 +791,11 @@ fn model_fact(
         }
     }
     let mut faults = BTreeMap::new();
-    for name in ["closure", "forward", "unanchored", "beyond_level", "reach_in", "empirical_shape", "estimate_unbound", "spec_unbound", "test_unbound", "variable_uncovered"] {
+    for name in [
+        "closure", "forward", "unanchored", "beyond_level", "reach_in", "import_target", "import_cycle",
+        "empirical_shape", "estimate_unbound", "spec_unbound", "test_unbound", "variable_uncovered",
+        "formal_shape", "setting_dependency", "criterion_unbound", "result_unbound", "proof_unbound", "experiment_unbound", "symbol_uncovered",
+    ] {
         let count = model["build"][name].as_array().map(Vec::len).unwrap_or(0);
         if count > 0 {
             faults.insert(name.to_string(), count);
@@ -2040,29 +2044,29 @@ pub(crate) fn cli(argv: &[String]) -> Result<i32> {
     let a = match parsed {
         Ok(a) => a,
         Err(error) => {
-            eprintln!("zt-digest ledger adopt: {error}");
+            crate::util::emit_err(&format!("zt-digest ledger adopt: {error}"));
             return Ok(2);
         }
     };
     let (out, variant, apply) = match (a.required("Out"), a.choice("Variant", &["econ", "math"])) {
         (Ok(out), Ok(variant)) if !out.trim().is_empty() => (out, variant, a.flag("Apply")),
         (Ok(_), Ok(_)) => {
-            eprintln!("zt-digest ledger adopt: -Out is required");
+            crate::util::emit_err(&format!("zt-digest ledger adopt: -Out is required"));
             return Ok(2);
         }
         (Err(error), _) | (_, Err(error)) => {
-            eprintln!("zt-digest ledger adopt: {error}");
+            crate::util::emit_err(&format!("zt-digest ledger adopt: {error}"));
             return Ok(2);
         }
     };
     if !a.positional.is_empty() {
-        eprintln!("zt-digest ledger adopt: unexpected positional arguments");
+        crate::util::emit_err(&format!("zt-digest ledger adopt: unexpected positional arguments"));
         return Ok(2);
     }
     let directory = match canonical(&out) {
         Ok(directory) => directory,
         Err(_) => {
-            eprintln!("zt-digest ledger adopt: legacy staging folder does not exist: {out}");
+            crate::util::emit_err(&format!("zt-digest ledger adopt: legacy staging folder does not exist: {out}"));
             return Ok(2);
         }
     };
@@ -2140,9 +2144,9 @@ pub(crate) fn cli(argv: &[String]) -> Result<i32> {
     }
     if plan["status"] != json!("ready") {
         // The plan line stays last, as every tool's compact result does.
-        eprintln!(
+        crate::util::emit_err(&format!(
             "zt-digest ledger adopt: the plan names missing scope; no ledger was written. Prepare that scope explicitly, then adopt again."
-        );
+        ));
         util::print_line(&serde_json::to_string(&plan)?)?;
         return Ok(3);
     }

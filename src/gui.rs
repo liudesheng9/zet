@@ -6513,7 +6513,7 @@ mod tests {
         // Inside a block: nesting and flags.
         assert!(blocks.contains("class: 'mbn-tuck' + (pulled ? ' pulled' : '')"));
         assert!(blocks.contains("pulled ? null : h('span', { class: 'mbn-tuck-line' }"), "a tucked card shows its top strip");
-        assert!(blocks.contains("cardFlags([c.address, ...((c.proof && c.proof.addresses) || [])])"), "the pulled-out Card carries its page flags");
+        assert!(blocks.contains("const kids = allKidsOf(c);") && blocks.contains("cardFlags([c.address, ...kids])"), "the pulled-out Card carries its page flags");
         assert!(blocks.contains("const side = p.dir === 'out' ? 'left' : 'right';"), "left: the blocks it rests on; right: the blocks that rest on it");
         assert!(blocks.contains("h('ol', { class: 'mbn-proof', 'aria-label': 'Proof chain' }"), "a proof cascades under its result");
         assert!(blocks.contains("open.lead ? h('p', { class: 'mbk-lead' }, titleNodes(open.lead)) : null"), "the open block opens with its intuition");

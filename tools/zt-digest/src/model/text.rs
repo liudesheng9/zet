@@ -29,6 +29,10 @@ pattern!(STEP_NUMBER, r"(?i)^\s*(\d+)[.、)]");
 pattern!(LINKS_OR_SOURCE, r"(?i)^\s*(\*\*(关联|来源)\*\*|#+\s*(关联|来源)|(关联|来源)[：:])");
 pattern!(NEXT_HEAD, r"(?i)^\s*(\*\*[^*]+\*\*\s*$|#+\s|\S{2,6}[：:]\s*$)");
 pattern!(SETTING_FACET, r"(?i)设定");
+pattern!(INLINE_TAG, r"\\tag\{([^}]*)\}");
+pattern!(INLINE_ENV, r"\\(?:begin|end)\{(?:aligned|align\*?|array|gathered|gather\*?|cases)\}(?:\{[^}]*\})?");
+pattern!(INLINE_BREAK, r"\\\\(?:\[[^\]]*\])?");
+pattern!(MULTI_SPACE, r"\s+");
 
 /// The link words of the relation kinds (`$Words`; its keys ignore case).
 pub fn link_word(kind: &str) -> String {
@@ -115,11 +119,21 @@ pub fn result_formula(result: &str) -> String {
     if ps::len16(&first) > 30 { ps::cut16(&first, 30) + "…" } else { first }
 }
 
+/// Clean display-only TeX constructs (`\tag{...}`, `\\`, alignment environments, newlines) so an
+/// inline `$...$` span inside a chain header always renders in KaTeX.
+fn clean_inline_math(inner: &str) -> String {
+    let s = INLINE_ENV.replace_all(inner, " ");
+    let s = INLINE_TAG.replace_all(&s, r"\quad ($1)");
+    let s = INLINE_BREAK.replace_all(&s, r",\; ");
+    let s = s.replace('&', " ");
+    MULTI_SPACE.replace_all(s.trim(), " ").into_owned()
+}
+
 /// `Get-Inline`: a display formula as an inline one.
 pub fn inline(formula: &str) -> String {
     let f = formula.trim();
     match DISPLAY_WHOLE.captures(f) {
-        Some(c) => format!("${}$", c[1].trim()),
+        Some(c) => format!("${}$", clean_inline_math(&c[1])),
         None => f.to_string(),
     }
 }
@@ -413,6 +427,16 @@ mod tests {
         assert_eq!(result_formula("先 $a$ 再 $$b$$ 和 $$c$$"), "$$c$$");
         assert_eq!(result_formula("没有式子的一句话。第二句"), "没有式子的一句话");
         assert_eq!(result_formula(&"长".repeat(40)), format!("{}…", "长".repeat(30)));
+        // Display-only \tag{...} and \\ are cleaned so inline $...$ in 思路 renders cleanly in KaTeX.
+        let tagged = vec![
+            "$$\\varphi = a \\tag{A.1} \\\\ \\Phi = b \\tag{A.2}$$".to_string(),
+            "$$r = g + \\rho \\tag{2}$$".to_string(),
+        ];
+        let line = chain_line(1, 2, &tagged);
+        assert!(!line.contains("\\tag{"), "{line}");
+        assert!(!line.contains("\\\\"), "{line}");
+        assert!(line.contains("$\\varphi = a \\quad (A.1) ,\\; \\Phi = b \\quad (A.2)$"), "{line}");
+        assert!(line.contains("$r = g + \\rho \\quad (2)$"), "{line}");
     }
 
     // A setting, an assumption or a definition explains itself in **直觉** (是什么, 为什么需要, 怎样进入模型).

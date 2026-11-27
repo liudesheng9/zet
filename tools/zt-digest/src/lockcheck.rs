@@ -271,6 +271,15 @@ pub fn is_planning_stop(refusal: &Value) -> bool {
         .any(|code| refusal["error"] == json!(code) || refusal["code"] == json!(code))
 }
 
+/// The exact typed planning-stop code carried by a `Stopped` refusal (`scope_refused` or `card_locked`).
+pub fn refusal_code(refusal: &Value) -> &'static str {
+    if refusal["code"] == json!("scope_refused") || refusal["error"] == json!("scope_refused") {
+        "scope_refused"
+    } else {
+        "card_locked"
+    }
+}
+
 impl std::fmt::Display for Stopped {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let said = self.0["message"].as_str().or_else(|| self.0["error"].as_str()).unwrap_or_default();
@@ -308,7 +317,7 @@ pub fn stop(mode: &str, refusal: &Value) -> Result<i32> {
         .filter(|message| !message.trim().is_empty())
         .or_else(|| refusal["error"].as_str())
         .unwrap_or_default();
-    eprintln!("zt-digest {mode}: {said}");
+    crate::util::emit_err(&format!("zt-digest {mode}: {said}"));
     Ok(LOCKED_EXIT)
 }
 

@@ -607,7 +607,7 @@ mod tests {
         // book text, so not in the repository: the Scholar Archive mirror holds it
         let path = "C:/Users/chenx/AppData/Roaming/zt/scholar-archive/files/1910/Das_Grigorian_2026_Domestic_Debt_Restructuring_Central_Bank_EMDEs_CGD.zh-bilingual.md";
         let Ok(raw) = std::fs::read_to_string(path) else {
-            eprintln!("skipped: no {path}");
+            crate::util::emit_err(&format!("skipped: no {path}"));
             return;
         };
         let found = uncovered_pairs(&raw);
@@ -653,7 +653,7 @@ mod tests {
     fn the_sylla_cowen_hamilton_book_leaves_only_its_legal_pairs() {
         let path = "C:/Users/chenx/AppData/Roaming/zt/scholar-archive/files/1893/Sylla_Cowen_2018_Hamilton_on_Finance_Credit_and_Debt_CUP.zh-bilingual.md";
         let Ok(raw) = std::fs::read_to_string(path) else {
-            eprintln!("skipped: no {path}");
+            crate::util::emit_err(&format!("skipped: no {path}"));
             return;
         };
         let lines: Vec<usize> = uncovered_pairs(&raw).into_iter().map(|(l, _)| l).collect();
@@ -717,7 +717,7 @@ mod tests {
         // book text, so not in the repository: the pdf-ocr-bilingual tests keep the excerpt beside them
         let path = "E:/google_scholar_archive/workflows/pdf-ocr-bilingual/tests/data/donner2026_cuts.md";
         let Ok(raw) = std::fs::read_to_string(path) else {
-            eprintln!("skipped: no {path}");
+            crate::util::emit_err(&format!("skipped: no {path}"));
             return;
         };
         let raw = raw.as_str();

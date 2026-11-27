@@ -1,6 +1,6 @@
 ---
 name: zt-post-digest
-description: "Run the post-digest sequence of one ZET economics book after its zt-econ-digest run, given its citation key: the model passes in their fixed order (zt-model-fold on the book; then per formal model zt-model-settings, zt-model-restructure, zt-model-import with its explanation refresh, zt-model-illustrate; per empirical model the same passes in their empirical form, then zt-evidence-dialogue), and zt-literature-organize on the book last, with the gate each stage must pass before the next starts. Use when the user says a digest is finished and asks what comes next, asks to run, plan, order or report the model passes, the empirical passes or the literature organize of a book, or names several of these skills together; also use to write the plan of the sequence without running it."
+description: "Run the post-digest sequence of one ZET economics book after its zt-econ-digest run, given its citation key: the model passes in their fixed order (zt-model-fold on the book; then per formal model zt-model-settings, zt-model-restructure, zt-model-import with its explanation refresh; per empirical model the same passes in their empirical form, then zt-evidence-dialogue), then zt-literature-organize on the book, and zt-model-illustrate on formal models last so diagrams lock onto final addresses (docs/formal-models-proposal.md §9), with the gate each stage must pass before the next starts. Use when the user says a digest is finished and asks what comes next, asks to run, plan, order or report the model passes, the empirical passes or the literature organize of a book, or names several of these skills together; also use to write the plan of the sequence without running it."
 ---
 
 # The post-digest sequence of one book
@@ -14,9 +14,9 @@ The order is the owner's (2026-11-10, with illustrate added 2026-11-11). Do not 
 - **Fold first.** The digest splits one model over several Model Cards. Every later pass works on one Model Card, so it must hold the whole model.
 - **Settings before restructure.** The restructure builds the spine on the setting part and keeps it as the settings pass leaves it.
 - **Import after the structure.** An import names blocks (a setting, a chapter, a result with its proof). The blocks exist only after settings and restructure. Its step 8 refreshes the Derivation explanations, because the earlier passes move and extend proof chains. Never run the digest's mode `explain` for this.
-- **Illustrate after import.** The figures draw the setting part and the game as they finally stand.
 - **Evidence dialogue after every import of the book.** It compares estimates with other models and Finding Cards; the comparisons are never premises, so the premises must be settled first.
-- **Organize last.** Folds move Cards between sections. Organizing last moves each whole model once, and the summary leads describe the final tree.
+- **Organize before illustrate.** Folds move Cards between sections. Organizing the Literature tree before illustrating moves each whole model once and locks in every final address, so the summary leads describe the final tree.
+- **Illustrate last (formal models only).** The diagrams lock onto the final addresses of the setting part and game after Literature organize (`docs/formal-models-proposal.md` §9).
 
 ## Before the first stage
 
@@ -32,12 +32,12 @@ The order is the owner's (2026-11-10, with illustrate added 2026-11-11). Do not 
 | # | Stage | Skill | Runs on | Applies to | Gate before the next stage |
 |---|---|---|---|---|---|
 | 1 | Fold | `zt-model-fold` | the book (`<key>`) | every Model Card | the decision table (one row per Model Card, reason in one line) is written; `check-model.mjs` clean on each surviving head; `list_broken_links` empty |
-| 2 | Settings | `zt-model-settings` (strict) | each Model Card | formal: the setting tree, notation card, **起点**/**设定**/**直觉**/**说明**; empirical: the data tree and the specification ladder | `check-settings.mjs <head>` reports no fault |
-| 3 | Restructure | `zt-model-restructure` | each Model Card | formal: the intuition spine; empirical: the evidence spine | `check-model.mjs`, `check-network.mjs`, `check-premises.mjs` clean; no forward or unanchored fault on the board |
+| 2 | Settings | `zt-model-settings` (strict) | each Model Card | formal: the setting tree, notation card (`<head>|a|a`), **起点**/**设定**/**直觉**/**说明**, plus `判据`/`定义`/`假设 (B)`; empirical: the data tree and the specification ladder | `check-settings.mjs <head>` reports no fault |
+| 3 | Restructure | `zt-model-restructure` | each Model Card | formal: the intuition spine (multi-justification `结果`, mixed `推导`/`论证` branches, `基准`/`校准`/`数值实验`, `FM1`–`FM6`, and Layer 1 faults); empirical: the evidence spine | `check-model.mjs`, `check-network.mjs`, `check-premises.mjs` clean; no forward or unanchored fault on the board |
 | 4 | Import + explanations | `zt-model-import` (steps 1–8) | each Model Card | formal: shared settings, results, chapters; empirical: the hypotheses it tests and the theory it estimates | `imports.mjs check` exits 0; `get_model` shows `build.self_sufficient: true`; step 8 `explain.mjs finish` clean |
-| 5 | Illustrate | `zt-model-illustrate` | each **formal** Model Card | formal only (owner, 2026-11-11); an empirical or concept model only on the user's word | `verify.mjs` clean in light and dark; lint 0; every setting card and 定义 part has a full **直觉** |
-| 6 | Evidence dialogue | `zt-evidence-dialogue` | each **empirical** Model Card | empirical only | `dialogue.mjs check` clean; every judged pair written as 对照, 印证 or 反驳 in **对应** |
-| 7 | Literature organize | `zt-literature-organize` | the book (`<key>`) | the whole Literature tree | top line follows the source's top divisions; Term list, then Cited list, at the tail; no crosser left; `list_broken_links` empty |
+| 5 | Evidence dialogue | `zt-evidence-dialogue` | each **empirical** Model Card | empirical only | `dialogue.mjs check` clean; every judged pair written as 对照, 印证 or 反驳 in **对应** |
+| 6 | Literature organize | `zt-literature-organize` | the book (`<key>`) | the whole Literature tree | top line follows the source's top divisions; Term list, then Cited list, at the tail; no crosser left; `list_broken_links` empty |
+| 7 | Illustrate | `zt-model-illustrate` | each **formal** Model Card | formal only (owner, 2026-11-11; placed after Literature organize per `docs/formal-models-proposal.md` §9 so diagrams lock onto final addresses) | `verify.mjs` clean in light and dark; lint 0; every setting card and 定义 part has a full **直觉** |
 
 **Concept models.** A concept model takes the fold only. A concept model of four parts or fewer stays as it is (the ebrill decision, 2026-10-31). Stages 2–5 run on a larger concept model only when the user asks.
 

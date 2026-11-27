@@ -69,10 +69,13 @@ switch -Regex ($cmd) {
             if (Test-Path -LiteralPath $rf) { $k = [int](Get-Content -LiteralPath $rf -Raw) }
             $k++
             Set-Content -LiteralPath $rf -Value $k
-            if ($k -le [int]$env:LS_RELEASE_RECENT) { Write-Output 'zt-digest ledger: claim_recent: digest/g001@1 recorded activity within the last 120 seconds; its holder may still be working'; exit 1 }
+            if ($k -le [int]$env:LS_RELEASE_RECENT) {
+                Write-Output (ConvertTo-Json -Compress -Depth 6 @{ schema_version = 1; reclaimed = @(); blocked = @(); skipped = @(@{ unit = 'digest/g001@1'; reason = 'claim_recent' }) })
+                exit 0
+            }
         }
-        Set-Content -LiteralPath $env:LS_RELEASED -Value 'released'
-        Write-Output '{"ok":true}'
+        if ($env:LS_RELEASED) { Set-Content -LiteralPath $env:LS_RELEASED -Value 'released' }
+        Write-Output (ConvertTo-Json -Compress -Depth 6 @{ schema_version = 1; reclaimed = @(@{ unit = 'digest/g001@1'; state = 'ready'; released = $true }); blocked = @(); skipped = @() })
         exit 0
     }
     '^ledger next' {
@@ -83,8 +86,19 @@ switch -Regex ($cmd) {
         Set-Content -LiteralPath $env:LS_COUNT -Value $n
         if ($env:LS_CLAIM_FAIL -and $n -le [int]$env:LS_CLAIM_FAIL) { Write-Output 'zt-digest ledger: archive changed while checking preparation'; exit 1 }
         if ($env:LS_CLAIM_STRING) { Write-Output (ConvertTo-Json -Compress @{ schema_version = 1; layer = $layer; units = "(2 units claimed)" }); exit 0 }
-        if ($env:LS_NO_UNITS -or $n -gt ([int]$env:LS_PAGES + [int]$env:LS_CLAIM_FAIL)) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; layer = $layer; units = @() }); exit 0 }
-        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; layer = $layer; units = @(Units $layer) })
+        if ($env:LS_NO_UNITS) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; layer = $layer; units = @() }); exit 0 }
+        $got = @(Units $layer)
+        if ($env:LS_PAGES -and [int]$env:LS_PAGES -gt 1) {
+            $extra = @()
+            for ($p = 2; $p -le [int]$env:LS_PAGES; $p++) {
+                foreach ($u in $got) {
+                    $gnum = [int]([regex]::Match($u.id, 'g(\d+)').Groups[1].Value) + (($p - 1) * $got.Count)
+                    $extra += @{ id = ($u.id -replace 'g\d+', ('g{0:D3}' -f $gnum)); layer = $u.layer; token = $u.token; input_hash = "$($u.input_hash)-p$p" }
+                }
+            }
+            $got = $got + $extra
+        }
+        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; layer = $layer; units = $got })
         exit 0
     }
     '^ledger status' {
@@ -107,54 +121,81 @@ switch -Regex ($cmd) {
         exit 0
     }
     '^group-start|^link-start' {
-        if ($env:LS_START_FAIL) {
-            $sf = Join-Path $env:LS_OUT 'start-fail-count.txt'
-            $k = 0
-            if (Test-Path -LiteralPath $sf) { $k = [int](Get-Content -LiteralPath $sf -Raw) }
-            $k++
-            Set-Content -LiteralPath $sf -Value $k
-            if ($k -le [int]$env:LS_START_FAIL) { Write-Output 'zt-digest group-start: read_view_changed: the earlier-Card context could not be read from archive revision 72305; retry the group start'; exit 1 }
-        }
-        if ($env:LS_LINK_JOBS) {
-            $n = [int][regex]::Match($flat, '-Group ([0-9]+)').Groups[1].Value
-            $g = '{0:D3}' -f $n
-            $job = Join-Path $env:LS_OUT "job-$g.json"
-            $draft = "C:/s/link-draft-g$g.json"
-            Set-Content -LiteralPath $job -Value (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; expected_jobs = 1; jobs = @(@{ id = "link-g$g-t1"; kind = 'link'; gaps = [int]$env:LS_LINK_GAPS; files = @('C:/s/link-prefix.md', "C:/s/link-g$g.md", "C:/s/link-job-g$g.md"); prompt = "write $draft"; output = $draft; permissions = @{ archive_read = $true; archive_write = $false } }) }) -Encoding utf8
-            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; job = $job; draft = $draft; expected_jobs = 1; recovered = $false })
+        $isLink = $flat -match '^link-start'
+        $kind = if ($isLink) { 'link_start_batch' } else { 'group_start_batch' }
+        $uFile = [regex]::Match($flat, '-UnitsFile\s+(\S+)').Groups[1].Value
+        $inUnits = if ($uFile -and (Test-Path -LiteralPath $uFile)) { @(Get-Content -LiteralPath $uFile -Raw -Encoding utf8 | ConvertFrom-Json -Depth 16) } else { @() }
+        if ($env:LS_START_FAIL -and [int]$env:LS_START_FAIL -gt 3) {
+            $errRes = @($inUnits | ForEach-Object { @{ unit = $_.id; token = $_.token; group = [int]([regex]::Match($_.id, 'g(\d+)').Groups[1].Value); status = 'error'; error = 'read_view_changed: failed after 3 retries' } })
+            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = $kind; ok = $false; units = $errRes.Count; started = 0; failed = $errRes.Count; not_run = 0; results = $errRes; file = '' })
             exit 0
         }
-        $job = Join-Path $env:LS_OUT 'job.json'
-        Set-Content -LiteralPath $job -Value (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; jobs = @(@{ id = 'j1'; files = @(); prompt = 'p' }); expected_jobs = 1 }) -Encoding utf8
-        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; job = $job; draft = (Join-Path $env:LS_OUT 'draft.json'); expected_jobs = 1; recovered = $false })
+        $entries = @(); $fullUnits = @()
+        foreach ($u in $inUnits) {
+            $n = [int]([regex]::Match($u.id, 'g(\d+)').Groups[1].Value)
+            $g = '{0:D3}' -f $n
+            if ($env:LS_LINK_JOBS) {
+                $job = Join-Path $env:LS_OUT "job-$g.json"
+                $draft = "C:/s/link-draft-g$g.json"
+                Set-Content -LiteralPath $job -Value (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; expected_jobs = 1; jobs = @(@{ id = "link-g$g-t1"; kind = 'link'; gaps = [int]$env:LS_LINK_GAPS; files = @('C:/s/link-prefix.md', "C:/s/link-g$g.md", "C:/s/link-job-g$g.md"); prompt = "write $draft"; output = $draft; permissions = @{ archive_read = $true; archive_write = $false } }) }) -Encoding utf8
+            } else {
+                $job = Join-Path $env:LS_OUT "job-$g.json"
+                $draft = Join-Path $env:LS_OUT "draft-$g.json"
+                Set-Content -LiteralPath $job -Value (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; jobs = @(@{ id = "j$n"; files = @(); prompt = 'p' }); expected_jobs = 1 }) -Encoding utf8
+            }
+            $entry = @{ unit = $u.id; token = $u.token; group = $n; status = 'started'; job = $job; draft = $draft; input_hash = "$($u.input_hash)"; expected_jobs = 1; recovered = $false }
+            $entries += $entry
+            $fullUnits += @{ unit = $u.id; token = $u.token; group = $n; status = 'started'; result = @{ schema_version = 1; job = $job; draft = $draft; expected_jobs = 1; recovered = $false } }
+        }
+        $batchFile = Join-Path $env:LS_OUT "$kind.json"
+        Set-Content -LiteralPath $batchFile -Value (ConvertTo-Json -Compress -Depth 12 @{ schema_version = 1; kind = $kind; units = $fullUnits }) -Encoding utf8
+        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = $kind; ok = $true; units = $entries.Count; started = $entries.Count; failed = 0; not_run = 0; results = $entries; file = $batchFile })
         exit 0
     }
     '^group-finish|^link-finish' {
-        if ($env:LS_LOCK) { Write-Output (ConvertTo-Json -Compress @{ ok = $false; code = 'card_locked'; error = 'card_locked'; message = 'the Literature tree Key is locked by the owner' }); exit 2 }
-        if ($flat -match '^link-finish') {
-            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = 'link_completion'; state = 'done'; complete = $true; disposition = 'linked'; owned = @('Key/1|a'); changed = @('Key/1|a', 'Key/1|b'); counts = @{ owned = 3; gaps = 2; skipped = 1; linked = 1; linked_from = 0; already_linked = 1; no_link = 1 }; quality = @{ rules = 'L1,L2'; faults = 0; checked = 3 } })
-            exit 0
+        $isLink = $flat -match '^link-finish'
+        $kind = if ($isLink) { 'link_finish_batch' } else { 'digest_finish_batch' }
+        $uFile = [regex]::Match($flat, '-UnitsFile\s+(\S+)').Groups[1].Value
+        $inUnits = if ($uFile -and (Test-Path -LiteralPath $uFile)) { @(Get-Content -LiteralPath $uFile -Raw -Encoding utf8 | ConvertFrom-Json -Depth 16) } else { @() }
+        if ($env:LS_LOCK) {
+            $first = $inUnits[0]
+            $res = @(@{ unit = $first.id; token = $first.token; status = 'failed'; code = 'card_locked'; cause = 'the Literature tree Key is locked by the owner'; recorded = $true })
+            if ($inUnits.Count -gt 1) {
+                $res += @($inUnits[1..($inUnits.Count - 1)] | ForEach-Object { @{ unit = $_.id; token = $_.token; status = 'not_run' } })
+            }
+            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = $kind; ok = $false; units = $res.Count; done = 0; failed = 1; not_run = ($res.Count - 1); stop_reason = 'card_locked'; code = 'card_locked'; error = 'card_locked'; message = 'the Literature tree Key is locked by the owner'; refusal = @{ code = 'card_locked'; tree = 'Key'; lock_id = 'lk-1'; message = 'the Literature tree Key is locked by the owner' }; results = $res })
+            exit 2
         }
-        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; state = 'done'; complete = $true; disposition = 'verified'; owned = @('Key/1|a') })
+        $res = @()
+        foreach ($u in $inUnits) {
+            $n = [int]([regex]::Match($u.id, 'g(\d+)').Groups[1].Value)
+            if ($isLink) {
+                $res += @{ unit = $u.id; token = $u.token; group = $n; status = 'done'; disposition = 'linked'; changed = @('Key/1|a', 'Key/1|b'); counts = @{ owned = 3; gaps = 2; skipped = 1; linked = 1; linked_from = 0; already_linked = 1; no_link = 1 }; quality = @{ rules = 'L1,L2'; faults = 0; checked = 3 } }
+            } else {
+                $res += @{ unit = $u.id; token = $u.token; group = $n; status = 'done'; disposition = 'verified'; owned = 1 }
+            }
+        }
+        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = $kind; ok = $true; units = $res.Count; done = $res.Count; partial = 0; retry = 0; failed = 0; not_run = 0; results = $res })
         exit 0
     }
     '^finish-batch' {
-        # The real command's limit: a batch holds at most eight.
-        if ($env:LS_REFUSE -or ($flat -match '-Take (\d+)' -and [int]$Matches[1] -gt 8)) { Write-Output 'zt-digest finish-batch: -Take must be a whole number from 1 through 8'; exit 2 }
-        $claimed = 0
-        if (($args2 -join ' ') -match '-Layer cards') {
-            $n = 0
-            if (Test-Path -LiteralPath $env:LS_COUNT) { $n = [int](Get-Content -LiteralPath $env:LS_COUNT -Raw) }
-            $n++
-            Set-Content -LiteralPath $env:LS_COUNT -Value $n
-            if ($n -gt [int]$env:LS_PAGES) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = 'finish_batch'; units = 0; done = 0; claimed = 0; results = @() }); exit 0 }
-            $claimed = 2
+        if ($env:LS_REFUSE) { Write-Output 'zt-digest finish-batch: refused by archive'; exit 2 }
+        if ($env:LS_BATCH_LOCK) {
+            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = 'finish_batch'; units = 2; done = 0; failed = 1; not_run = 1; claimed = 2; stop_reason = 'card_locked'; code = 'card_locked'; error = 'card_locked'; message = 'the Literature tree Key is locked by the owner'; refusal = @{ code = 'card_locked'; tree = 'Key'; lock_id = 'lk-2'; message = 'the Literature tree Key is locked by the owner' }; results = @(@{ unit = "$layer/g001@1"; token = 1; status = 'failed'; code = 'card_locked' }, @{ unit = "$layer/g002@1"; token = 2; status = 'not_run' }) })
+            exit 2
         }
+        $claimed = 0
         $results = @(@{ unit = 'cards/g001@1'; token = 1; status = 'done'; disposition = 'verified' }, @{ unit = 'cards/g002@1'; token = 2; status = 'done'; disposition = 'verified' })
-        if (($args2 -join ' ') -match '-Units ([^ ]+)') {
-            # The real command's limit, and one result per unit it was given.
+        if ($flat -match '-Layer cards') {
+            $pages = if ($env:LS_PAGES) { [int]$env:LS_PAGES } else { 1 }
+            $results = @(1..($pages * 2) | ForEach-Object { @{ unit = ('cards/g{0:D3}@1' -f $_); token = $_; status = 'done'; disposition = 'verified' } })
+            $claimed = $results.Count
+        }
+        if ($flat -match '-UnitsFile\s+(\S+)') {
+            $asked = @(Get-Content -LiteralPath $Matches[1] -Raw -Encoding utf8 | ConvertFrom-Json -Depth 16)
+            $results = @($asked | ForEach-Object { @{ unit = $_.id; token = [int]$_.token; status = 'done'; disposition = 'verified' } })
+        } elseif ($flat -match '-Units ([^ ]+)') {
             $asked = @($Matches[1] -split ',')
-            if ($asked.Count -gt 8) { Write-Output "zt-digest finish-batch: -Units names $($asked.Count) units; a batch holds at most 8"; exit 2 }
             $results = @($asked | ForEach-Object { $p = $_ -split ':'; @{ unit = $p[0]; token = [int]$p[1]; status = 'done'; disposition = 'verified' } })
         }
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = 'finish_batch'; units = $results.Count; done = $results.Count; claimed = $claimed; results = $results })
@@ -220,10 +261,10 @@ $units = Get-Content -Raw (Join-Path $out 'layer-steps\digest\units.json') | Con
 $jobs = Get-Content -Raw (Join-Path $out 'layer-steps\digest\jobs.json') | ConvertFrom-Json
 Assert (@($units).Count -eq 2 -and @($jobs).Count -eq 2 -and @($jobs)[0].unit -eq 'digest/g001@1' -and @($jobs)[0].token -eq 1) 'digest start: units and jobs carry each job''s own unit and token'
 $all = Get-Content -LiteralPath $calls -Raw
-Assert (($all -split "`n" | Where-Object { $_ -match '^ledger next .*-Layer digest .*-Take 8 .*-Owner digest -Lease 7200' }).Count -eq 2) 'digest start: every claim command carries the owner and the two-hour lease'
-Assert (($all -split "`n" | Where-Object { $_ -match '^group-start .*-Group 1 -Token 1' }).Count -eq 1 -and ($all -split "`n" | Where-Object { $_ -match '^group-start .*-Group 2 -Token 2' }).Count -eq 1) 'digest start: each held group runs group-start with its group and token'
+Assert (($all -split "`n" | Where-Object { $_ -match '^ledger next .*-Layer digest -All -Brief -Owner digest -Lease 7200' }).Count -eq 1) 'digest start: one -All claim command carries the owner and the two-hour lease'
+Assert (($all -split "`n" | Where-Object { $_ -match '^group-start .*-UnitsFile ' }).Count -eq 1) 'digest start: one batch group-start runs for all held groups'
 
-# 2. finish: each held unit's checked completion, then the gate.
+# 2. finish: all held units complete in one batch command, then the gate.
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $finish = Step (@('-Step', 'finish', '-Layer', 'digest', '-Owner', 'digest') + $common)
 Assert-Line $finish 'digest finish'
@@ -231,36 +272,36 @@ Assert ($finish.json -and $finish.json.ok -eq $true -and [int]$finish.json.done 
 $finishDetail = Get-Content -LiteralPath $finish.json.detail -Raw | ConvertFrom-Json
 Assert (@($finishDetail.detail.results).Count -eq 2 -and @($finishDetail.detail.results)[0].unit -eq 'digest/g001@1') 'digest finish: the detail file keeps each unit''s own result'
 $fin = Get-Content -LiteralPath $calls -Raw
-Assert (($fin -split "`n" | Where-Object { $_ -match '^group-finish .*-Group 1 -Token 1 -Draft ' }).Count -eq 1 -and ($fin -split "`n" | Where-Object { $_ -match '^ledger gate .*-Layer digest -Brief' }).Count -eq 1) 'digest finish: group-finish runs with the draft the start step bound, then the brief gate'
+Assert (($fin -split "`n" | Where-Object { $_ -match '^group-finish .*-UnitsFile ' }).Count -eq 1 -and ($fin -split "`n" | Where-Object { $_ -match '^ledger gate .*-Layer digest -Brief' }).Count -eq 1) 'digest finish: one batch group-finish runs, then the brief gate'
 
-# 3. the Cards layer claims and finishes a block in one command.
+# 3. the Cards layer drains the whole queue in one finish-batch -All command, and propagates typed Lock refusals.
 $cards = Step (@('-Step', 'start', '-Layer', 'cards', '-Owner', 'cards', '-Lease', '7200') + $common)
 Assert-Line $cards 'cards start'
-Assert ($cards.json -and $cards.json.ok -eq $true -and $cards.json.claimed -eq 2 -and $cards.json.done -eq 2) "cards start: one finish-batch claims and records the block ($($cards.text))"
+Assert ($cards.json -and $cards.json.ok -eq $true -and $cards.json.claimed -eq 2 -and $cards.json.done -eq 2) "cards start: one finish-batch -All claims and records the queue ($($cards.text))"
 $cardCalls = Get-Content -LiteralPath $calls -Raw
-# scheiner2022baghdad (2026-11-04): one start works the whole queue, and a refused command fails the step.
 $env:LS_PAGES = '3'
 $pages = Step (@('-Step', 'start', '-Layer', 'cards', '-Owner', 'cards retry 2', '-Lease', '7200') + $common)
 $env:LS_PAGES = '1'
-Assert ($pages.json.ok -eq $true -and $pages.json.claimed -eq 6 -and $pages.json.done -eq 6) "cards queue: one start finishes every page ($($pages.text))"
+Assert ($pages.json.ok -eq $true -and $pages.json.claimed -eq 6 -and $pages.json.done -eq 6) "cards queue: one start finishes every unit ($($pages.text))"
 $env:LS_REFUSE = '1'
 $refused = Step (@('-Step', 'start', '-Layer', 'cards', '-Owner', 'cards retry 3', '-Lease', '7200') + $common)
 $env:LS_REFUSE = ''
-Assert ($refused.json.ok -eq $false -and "$($refused.json.error)" -match '-Take must be') "cards queue: a refused command fails the step ($($refused.text))"
-Assert ($cardCalls -match 'finish-batch .*-Layer cards -Take 8 -Owner cards -Lease 7200') 'cards start: the claim-and-finish command carries the owner and lease'
+Assert ($refused.json.ok -eq $false -and "$($refused.json.error)" -match 'refused') "cards queue: a refused command fails the step ($($refused.text))"
+$env:LS_BATCH_LOCK = '1'
+$cardsLocked = Step (@('-Step', 'start', '-Layer', 'cards', '-Owner', 'cards lock test', '-Lease', '7200') + $common)
+$env:LS_BATCH_LOCK = ''
+Assert ($cardsLocked.json.ok -eq $false -and $cardsLocked.json.code -eq 'card_locked' -and $cardsLocked.json.tree -eq 'Key' -and $cardsLocked.json.lock_id -eq 'lk-2') "cards queue: a typed Lock stops immediately with ok:false and refusal metadata ($($cardsLocked.text))"
+Assert ($cardCalls -match 'finish-batch .*-Layer cards -All -Owner cards -Lease 7200') 'cards start: the claim-and-finish command uses -All with owner and lease'
 
-# 4. the owner's Lock stops the finish step with the typed refusal and keeps the unit's content fault.
+# 4. the owner's Lock stops the finish step with the typed refusal and preserves lock metadata.
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $env:LS_LOCK = '1'
 $locked = Step (@('-Step', 'finish', '-Layer', 'digest', '-Owner', 'digest') + $common)
 $env:LS_LOCK = ''
 Assert-Line $locked 'digest finish locked'
-Assert ($locked.json -and $locked.json.ok -eq $false -and $locked.json.code -eq 'card_locked' -and $locked.json.unit -eq 'digest/g001@1' -and $locked.json.message) "digest finish: the Lock stops the step with the typed refusal ($($locked.text))"
-$lockCalls = Get-Content -LiteralPath $calls -Raw
-Assert ($lockCalls -match "ledger fail .*-Unit digest/g001@1 .*-Fault .*card_locked.*") 'digest finish: the refused unit keeps card_locked as its content fault'
-Assert (($lockCalls -split "`n" | Where-Object { $_ -match '^group-finish .*-Group 2 ' }).Count -eq 0) 'digest finish: a locked unit stops the step before the next unit'
+Assert ($locked.json -and $locked.json.ok -eq $false -and $locked.json.code -eq 'card_locked' -and $locked.json.unit -eq 'digest/g001@1' -and $locked.json.tree -eq 'Key' -and $locked.json.lock_id -eq 'lk-1' -and $locked.json.message) "digest finish: the Lock stops the step with the typed refusal ($($locked.text))"
 
-# 5. events: start plans the block and lists its job; finish applies, reports and records the block.
+# 5. events: start plans the block and lists its job; finish applies, reports and records in one batch call.
 $env:LS_NO_UNITS = ''
 $events = Step (@('-Step', 'start', '-Layer', 'events', '-Owner', 'events') + $common)
 Assert-Line $events 'events start'
@@ -270,10 +311,10 @@ $evFinish = Step (@('-Step', 'finish', '-Layer', 'events', '-Owner', 'events') +
 $evCalls = Get-Content -LiteralPath $calls -Raw
 Assert-Line $evFinish 'events finish'
 Assert ($evFinish.json -and $evFinish.json.ok -eq $true -and $evFinish.json.done -eq 1 -and -not $evFinish.json.PSObject.Properties['failed']) "events finish: the held unit's checked completion is recorded ($($evFinish.text))"
-Assert ($evCalls -match 'event -Step apply -Staging .* -Apply' -and $evCalls -match 'event -Step report' -and $evCalls -match 'finish-batch .*-Units events/g001@1:1') 'events finish: apply, report and the checked completion run in that one step'
+Assert ($evCalls -match 'event -Step apply -Staging .* -Apply' -and $evCalls -match 'event -Step report' -and $evCalls -match 'finish-batch .*-UnitsFile ') 'events finish: apply, report and the checked completion run in that one step'
 
-# 5b. events finish of a whole queue (autor2004will, 20 units): finish-batch holds at most 8, so the step runs
-#     batches of 8 and reads their lines as one.
+# 5b. events finish of a whole queue (20 units): one finish-batch -UnitsFile call finishes all 20 units, and
+#     a typed Lock inside finish-batch propagates ok:false immediately with intact refusal metadata.
 $env:LS_EVENT_UNITS = '20'
 Remove-Item -LiteralPath $env:LS_COUNT -ErrorAction SilentlyContinue
 $evStart = Step (@('-Step', 'start', '-Layer', 'events', '-Owner', 'events') + $common)
@@ -281,10 +322,14 @@ Assert ($evStart.json -and $evStart.json.units -eq 20) "events start: the whole 
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $evQueue = Step (@('-Step', 'finish', '-Layer', 'events', '-Owner', 'events') + $common)
 $queueCalls = @((Get-Content -LiteralPath $calls) | Where-Object { $_ -match '^finish-batch' })
-$env:LS_EVENT_UNITS = ''
 Assert-Line $evQueue 'events finish of 20'
 Assert ($evQueue.json -and $evQueue.json.ok -eq $true -and $evQueue.json.done -eq 20 -and -not $evQueue.json.PSObject.Properties['failed']) "events finish: all 20 held units are recorded ($($evQueue.text))"
-Assert ($queueCalls.Count -eq 3) "events finish: three batches of at most 8 ($($queueCalls -join ' / '))"
+Assert ($queueCalls.Count -eq 1) "events finish: one finish-batch -UnitsFile call for all 20 units ($($queueCalls -join ' / '))"
+$env:LS_BATCH_LOCK = '1'
+$evLocked = Step (@('-Step', 'finish', '-Layer', 'events', '-Owner', 'events') + $common)
+$env:LS_BATCH_LOCK = ''
+$env:LS_EVENT_UNITS = ''
+Assert ($evLocked.json.ok -eq $false -and $evLocked.json.code -eq 'card_locked' -and $evLocked.json.tree -eq 'Key' -and $evLocked.json.lock_id -eq 'lk-2') "events finish: typed Lock from finish-batch propagates ok:false ($($evLocked.text))"
 
 # 6. explain: apply lists the fix jobs, and finish records the block.
 $env:LS_NO_UNITS = ''
@@ -431,12 +476,11 @@ $env:LS_START_FAIL = '1'
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $transient = Step (@('-Step', 'start', '-Layer', 'digest', '-Owner', 'digest', '-Lease', '7200') + $common)
 Assert-Line $transient 'digest start (a transient group-start)'
-Assert ($transient.json.ok -eq $true -and [int]$transient.json.units -eq 2 -and [int]$transient.json.jobs -eq 2) "a read_view_changed group-start is tried again ($($transient.last))"
-Assert ((@((Get-Content -LiteralPath $calls) | Where-Object { $_ -match '^group-start .*-Group 1 ' })).Count -eq 2) 'group 1 ran group-start twice'
+Assert ($transient.json.ok -eq $true -and [int]$transient.json.units -eq 2 -and [int]$transient.json.jobs -eq 2) "a transient read_view_changed group-start succeeds inside the batch ($($transient.last))"
 Remove-Item -LiteralPath (Join-Path $out 'start-fail-count.txt') -ErrorAction SilentlyContinue
 $env:LS_START_FAIL = '5'
 $hard = Step (@('-Step', 'start', '-Layer', 'digest', '-Owner', 'digest', '-Lease', '7200') + $common)
-Assert ($hard.json.ok -eq $false -and $hard.json.step -eq 'digest start') "a start that fails three times still fails the step ($($hard.last))"
+Assert ($hard.json.ok -eq $false -and $hard.json.step -eq 'digest start') "a batch start that fails after 3 retries fails the step ($($hard.last))"
 Remove-Item Env:LS_START_FAIL
 
 Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue

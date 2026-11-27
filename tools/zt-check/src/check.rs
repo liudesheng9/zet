@@ -23,7 +23,7 @@ use std::path::Path;
 
 // The public library surface the digest and reports already call. The items now
 // live in `core` and `text`; these re-exports keep every existing caller working.
-pub use crate::core::source_evidence;
+pub use crate::core::{line_r2_faults, source_evidence};
 pub use crate::text::{
     TITLE_SIMILARITY, TermRow, sentence_fits, term_table, title_bigrams, title_fits, title_key,
     title_similarity,
@@ -246,6 +246,8 @@ fn draft_entry(card: &Value, index: usize) -> Result<Value> {
     for name in [
         "facet",
         "level",
+        "form",
+        "has_parts",
         "line",
         "book",
         "parent",
@@ -390,31 +392,133 @@ fn check_draft(raw: &str, kind: InputKind, options: &Options) -> Result<DraftOut
         }
     }
     let setting = utf16_form(options.setting.as_deref().unwrap_or_default());
-    let setting_body = (!setting.is_empty())
-        .then(|| {
-            bundle
-                .cards
-                .iter()
-                .find(|card| ps_eq(&text(prop(card, "address")), &setting))
-                .map(|card| ps_string(prop(card, "body")))
-        })
-        .flatten();
-    let shared = bundle
+    let find_body = |addr: &str| -> Option<String> {
+        bundle
+            .cards
+            .iter()
+            .find(|card| ps_eq(&text(prop(card, "address")), addr))
+            .map(|card| ps_string(prop(card, "body")))
+    };
+    let is_notation_card = |addr: &str| -> bool {
+        bundle
+            .cards
+            .iter()
+            .find(|card| ps_eq(&text(prop(card, "address")), addr))
+            .is_some_and(|card| {
+                let f = ps_string(prop(card, "facet"));
+                let t = ps_string(prop(card, "title"));
+                let b = ps_string(prop(card, "body"));
+                f.starts_with("符号") || t.starts_with("符号") || b.contains("统一用语") || b.contains("术语表")
+            })
+    };
+    let resolve_offline_terms = |is_formal_model: bool| -> Option<String> {
+        if setting.is_empty() {
+            return None;
+        }
+        if is_formal_model {
+            let notation_addr = format!("{setting}|a");
+            if is_notation_card(&notation_addr)
+                && let Some(body) = find_body(&notation_addr)
+            {
+                if !crate::text::term_table(&body).is_empty() {
+                    return Some(body);
+                }
+                for target in crate::formal::borrowed_notation_targets(&body) {
+                    if let Some(t_body) = find_body(&target)
+                        && !crate::text::term_table(&t_body).is_empty()
+                    {
+                        return Some(t_body);
+                    }
+                }
+            }
+            // Also check any imported/shared notation card present in the bundle (matching Layer 1).
+            for card in &bundle.cards {
+                if ps_eq(&text(prop(card, "line")), "shared")
+                    && crate::formal::role_of(&ps_string(prop(card, "facet")))
+                        == Some(crate::formal::FormalRole::Notation)
+                {
+                    let b = ps_string(prop(card, "body"));
+                    if !crate::text::term_table(&b).is_empty() {
+                        return Some(b);
+                    }
+                }
+            }
+            return None;
+        }
+        find_body(&setting)
+    };
+    let card_is_formal_econ = |card: &Value| -> bool {
+        let lvl = {
+            let c = text(prop(card, "level"));
+            if c.is_empty() { options.level.clone() } else { c }
+        };
+        ps_eq(&lvl, "formal") && text(prop(card, "form")).is_empty()
+    };
+    let all_formal = !bundle.cards.is_empty() && bundle.cards.iter().all(card_is_formal_econ);
+    let any_formal = bundle.cards.iter().any(card_is_formal_econ);
+    let setting_body = if all_formal {
+        resolve_offline_terms(true)
+    } else if !any_formal {
+        resolve_offline_terms(false)
+    } else {
+        // Mixed bundle: pick per-card resolution below; fall back to formal if setting has no non-formal cards.
+        resolve_offline_terms(false)
+    };
+    let formal_setting_body = if any_formal && !all_formal {
+        resolve_offline_terms(true)
+    } else {
+        None
+    };
+    let shared: Vec<String> = bundle
         .cards
         .iter()
         .filter(|card| ps_eq(&text_of(card, "line"), "shared"))
         .map(|card| ps_string(prop(card, "address")))
         .collect();
-    let check = Check::new(
-        options.limits.clone(),
-        options.require_explain,
-        &options.level,
-    )
-    .with_terms(setting_body.as_deref())
-    .with_shared(shared)
-    .with_context(bundle.context)
-    .with_policies(contract.policy.clone());
-    let report = check_report(&check, &bundle.cards)?;
+    let report = if any_formal && !all_formal {
+        // Mixed bundle (e.g. a Level 2 formal economic card alongside a math unit): evaluate each
+        // partition with its own R6 term table so a math unit never re-enables `<head>|a` fallback
+        // for a formal economic card (H6).
+        let (formal_cards, other_cards): (Vec<Value>, Vec<Value>) = bundle
+            .cards
+            .iter()
+            .cloned()
+            .partition(|c| card_is_formal_econ(c));
+        let formal_check = Check::new(
+            options.limits.clone(),
+            options.require_explain,
+            &options.level,
+        )
+        .with_terms(formal_setting_body.as_deref())
+        .with_shared(shared.clone())
+        .with_context(bundle.context.clone())
+        .with_policies(contract.policy.clone());
+        let other_check = Check::new(
+            options.limits.clone(),
+            options.require_explain,
+            &options.level,
+        )
+        .with_terms(setting_body.as_deref())
+        .with_shared(shared)
+        .with_context(bundle.context)
+        .with_policies(contract.policy.clone());
+        let mut combined = check_report(&formal_check, &formal_cards)?;
+        let other_rep = check_report(&other_check, &other_cards)?;
+        combined.diagnostics.extend(other_rep.diagnostics);
+        combined.blockers += other_rep.blockers;
+        combined
+    } else {
+        let check = Check::new(
+            options.limits.clone(),
+            options.require_explain,
+            &options.level,
+        )
+        .with_terms(setting_body.as_deref())
+        .with_shared(shared)
+        .with_context(bundle.context)
+        .with_policies(contract.policy.clone());
+        check_report(&check, &bundle.cards)?
+    };
     Ok(DraftOutcome {
         report,
         missing,
@@ -526,9 +630,86 @@ fn card_entry(card: &Value) -> Value {
     entry
 }
 
-/// The body of the setting Card: from the Cards checked, else from zt.
-fn setting_body(zt: &mut Zt, cards: &[Value], setting: &str) -> Result<Option<String>> {
+/// Optional body lookup for a candidate Card address: checks the already-loaded `cards` first,
+/// then performs a non-failing `get_cards` lookup (returns `None` if the Card does not exist).
+fn optional_card_body(zt: &mut Zt, cards: &[Value], address: &str) -> Result<Option<String>> {
+    if address.is_empty() {
+        return Ok(None);
+    }
+    let wanted = utf16_form(address);
+    if let Some(card) = cards
+        .iter()
+        .find(|card| ps_eq(&text(prop(card, "address")), &wanted))
+    {
+        return Ok(Some(ps_string(prop(card, "body"))));
+    }
+    let view = zt.call(
+        "get_cards",
+        json!({ "addresses": [address], "view": "text" }),
+    )?;
+    Ok(view["cards"]
+        .as_array()
+        .and_then(|list| list.first())
+        .map(|card| ps_string(card.get("body"))))
+}
+
+/// The body of the applicable term-table Card (`P2b-1`): checks the model's notation Card
+/// `<setting>|a` (`<head>|a|a`, `符号表与读法`) first — only when it is a notation card, following
+/// 1-hop `沿用 [[…]]` bindings when present. For Level 2 formal models (`is_formal_model == true`),
+/// reads ONLY `<setting>|a` (no legacy fallback to `<head>|a`); mathematical units and other models
+/// fall back to `setting` (`<head>|a`).
+fn setting_body(
+    zt: &mut Zt,
+    cards: &[Value],
+    setting: &str,
+    is_formal_model: bool,
+) -> Result<Option<String>> {
     if setting.is_empty() {
+        return Ok(None);
+    }
+    if is_formal_model {
+        let notation = format!("{setting}|a");
+        let notation_card = if let Some(c) = cards
+            .iter()
+            .find(|card| ps_eq(&text(prop(card, "address")), &utf16_form(&notation)))
+        {
+            Some(c.clone())
+        } else {
+            let view = zt.call("get_cards", json!({ "addresses": [&notation], "view": "text" }))?;
+            view["cards"].as_array().and_then(|list| list.first()).cloned()
+        };
+        if let Some(nc) = notation_card {
+            let facet = ps_string(nc.get("facet"));
+            let title = ps_string(nc.get("title"));
+            let nb = ps_string(nc.get("body"));
+            let is_notation = facet.starts_with("符号")
+                || title.starts_with("符号")
+                || nb.contains("统一用语")
+                || nb.contains("术语表");
+            if is_notation {
+                if !crate::text::term_table(&nb).is_empty() {
+                    return Ok(Some(nb));
+                }
+                for borrowed in crate::formal::borrowed_notation_targets(&nb) {
+                    if let Some(bb) = optional_card_body(zt, cards, &borrowed)?
+                        && !crate::text::term_table(&bb).is_empty()
+                    {
+                        return Ok(Some(bb));
+                    }
+                }
+            }
+        }
+        // Also support directly imported notation cards (matching Layer 1 has_imported_notation).
+        for c in cards {
+            if crate::formal::role_of(&ps_string(prop(c, "facet")))
+                == Some(crate::formal::FormalRole::Notation)
+            {
+                let nb = ps_string(prop(c, "body"));
+                if !crate::text::term_table(&nb).is_empty() {
+                    return Ok(Some(nb));
+                }
+            }
+        }
         return Ok(None);
     }
     let wanted = utf16_form(setting);
@@ -643,10 +824,20 @@ fn check_model(
     structure["head"]["address"]
         .as_str()
         .with_context(|| format!("`{at}` belongs to no model"))?;
-    let mut cards = vec![card_entry(&structure["head"])];
+    let mut head_entry = card_entry(&structure["head"]);
+    head_entry["type"] = json!("model");
+    head_entry["category"] = json!("model");
+    let has_owned_parts = structure["build"]["order"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| !ps_eq(&ps_string(item.get("line")), "shared")));
+    if has_owned_parts {
+        head_entry["has_parts"] = json!(true);
+    }
+    let mut cards = vec![head_entry];
     for part in structure["parts"].as_array().into_iter().flatten() {
         cards.push(card_entry(part));
     }
+    let math_form = structure.get("form").filter(|v| !v.is_null()).cloned();
     let setting = if options.setting.as_deref().unwrap_or_default().is_empty() {
         ps_string(structure["build"].get("setting"))
     } else {
@@ -665,10 +856,20 @@ fn check_model(
         .filter(|item| ps_eq(&ps_string(item.get("line")), "shared"))
         .map(|item| ps_string(item.get("address")))
         .collect::<Vec<_>>();
+    // Propagate the owning model's math_form onto its own parts so FM1–FM6 never fire on math units.
+    if let Some(form) = &math_form {
+        for card in &mut cards {
+            let addr = ps_string(prop(card, "address"));
+            if !ps_in(&addr, &shared) && card.get("form").is_none_or(Value::is_null) {
+                card["form"] = form.clone();
+            }
+        }
+    }
     if options.skip_shared {
         cards.retain(|card| !ps_in(&ps_string(prop(card, "address")), &shared));
     }
-    let body = setting_body(zt, &cards, &setting)?;
+    let is_formal_model = ps_eq(&level, "formal") && math_form.is_none();
+    let body = setting_body(zt, &cards, &setting, is_formal_model)?;
     let check = Check::new(options.limits.clone(), options.require_explain, &level)
         .with_terms(body.as_deref())
         .with_shared(shared)
@@ -982,7 +1183,16 @@ fn check_cards(
             }
             if let Some(Some(head)) = owners.get(&at) {
                 let model = &models[head];
-                card["model"] = json!({"head":{"address":head},"level":model["level"],"build":{"setting":model["build"]["setting"]}});
+                let has_owned_parts = model["build"]["order"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|item| !ps_eq(&ps_string(item.get("line")), "shared")));
+                card["model"] = json!({
+                    "head": {"address": head},
+                    "level": model["level"],
+                    "form": model["form"],
+                    "has_owned_parts": has_owned_parts,
+                    "build": {"setting": model["build"]["setting"]}
+                });
             }
         }
     }
@@ -1062,8 +1272,21 @@ fn check_cards(
         let model = &members[0]["model"];
         let setting = ps_string(model["build"].get("setting"));
         let level = ps_string(model.get("level"));
-        let checked = members.iter().map(card_entry).collect::<Vec<_>>();
-        let body = setting_body(zt, &checked, &setting)?;
+        let math_form = model.get("form").filter(|v| !v.is_null()).cloned();
+        let model_has_parts = model["has_owned_parts"].as_bool().unwrap_or(false);
+        let mut checked = members.iter().map(card_entry).collect::<Vec<_>>();
+        for entry in &mut checked {
+            if let Some(form) = &math_form
+                && entry.get("form").is_none_or(Value::is_null)
+            {
+                entry["form"] = form.clone();
+            }
+            if model_has_parts && ps_string(prop(entry, "facet")).is_empty() {
+                entry["has_parts"] = json!(true);
+            }
+        }
+        let is_formal_model = ps_eq(&level, "formal") && math_form.is_none();
+        let body = setting_body(zt, &checked, &setting, is_formal_model)?;
         let check = Check::new(limits.clone(), true, &level)
             .with_terms(body.as_deref())
             .with_policies(served.contract.policy.clone());
@@ -1223,30 +1446,75 @@ fn check_addresses(
         bail!("incomplete checker inputs: changing read view");
     }
     let read = batch.cards;
-    let first = match read.first().filter(|card| card["type"] == "model") {
-        Some(card) => zt.call("get_model", json!({"at":card["address"]}))?,
-        None => Value::Null,
-    };
-    let setting = if options.setting.as_deref().unwrap_or_default().is_empty() {
-        ps_string(first["build"].get("setting"))
-    } else {
-        options.setting.clone().unwrap_or_default()
-    };
-    let level = if options.level.is_empty() {
-        ps_string(first.get("level"))
-    } else {
-        options.level.clone()
-    };
-    let cards = read.iter().map(card_entry).collect::<Vec<_>>();
-    let body = setting_body(zt, &cards, &setting)?;
+    // Group Cards by owning model (when --setting/--level are not forced) so a mixed batch of
+    // Cards from different models never leaks one model's level, math_form, or term table onto another.
+    let explicit_setting = options.setting.as_deref().unwrap_or_default();
+    let explicit_level = options.level.as_str();
+    let mut cards = read.iter().map(card_entry).collect::<Vec<_>>();
+    let mut model_cache: HashMap<String, Value> = HashMap::new();
+    let mut group_order: Vec<String> = Vec::new();
+    let mut groups: HashMap<String, (String, String, bool, Vec<Value>)> = HashMap::new();
+    for (raw, card) in read.iter().zip(cards.iter_mut()) {
+        let addr = ps_string(raw.get("address"));
+        let (group_key, setting, level, is_formal_model) = if raw["type"] == "model" {
+            let st = zt.call("get_model", json!({"at": addr}))?;
+            let head_addr = ps_string(st["head"].get("address"));
+            let cache_key = if head_addr.is_empty() { addr.clone() } else { head_addr.clone() };
+            model_cache.entry(cache_key.clone()).or_insert_with(|| st.clone());
+            let setting = if explicit_setting.is_empty() {
+                ps_string(st["build"].get("setting"))
+            } else {
+                explicit_setting.to_string()
+            };
+            let level = if explicit_level.is_empty() {
+                ps_string(st.get("level"))
+            } else {
+                explicit_level.to_string()
+            };
+            let math_form = st.get("form").filter(|v| !v.is_null()).cloned();
+            if let Some(form) = &math_form
+                && card.get("form").is_none_or(Value::is_null)
+            {
+                card["form"] = form.clone();
+            }
+            if ps_string(prop(card, "facet")).is_empty()
+                && st["build"]["order"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|item| !ps_eq(&ps_string(item.get("line")), "shared")))
+            {
+                card["has_parts"] = json!(true);
+            }
+            let is_formal_model = ps_eq(&level, "formal") && math_form.is_none();
+            (format!("model:{cache_key}"), setting, level, is_formal_model)
+        } else {
+            (
+                "non-model".to_string(),
+                explicit_setting.to_string(),
+                explicit_level.to_string(),
+                false,
+            )
+        };
+        if !groups.contains_key(&group_key) {
+            group_order.push(group_key.clone());
+            groups.insert(group_key.clone(), (setting, level, is_formal_model, Vec::new()));
+        }
+        groups.get_mut(&group_key).unwrap().3.push(card.clone());
+    }
+    let mut diagnostics = Vec::new();
+    for group_key in group_order {
+        let (setting, level, is_formal_model, group_cards) = groups.remove(&group_key).unwrap();
+        let body = setting_body(zt, &cards, &setting, is_formal_model)?;
+        let diags = Check::new(options.limits.clone(), options.require_explain, &level)
+            .with_terms(body.as_deref())
+            .with_policies(served.contract.policy.clone())
+            .report(&group_cards);
+        diagnostics.extend(diags);
+    }
     if zt.cards(&[], "text")?.archive_revision != revision {
         bail!("incomplete checker inputs: changing read view");
     }
     let mut checked = Checked {
-        diagnostics: Check::new(options.limits.clone(), options.require_explain, &level)
-            .with_terms(body.as_deref())
-            .with_policies(served.contract.policy.clone())
-            .report(&cards),
+        diagnostics,
         ..Checked::default()
     };
     checked.reasons = workspace_gaps(&cards, options.workspace.as_deref().unwrap_or_default());

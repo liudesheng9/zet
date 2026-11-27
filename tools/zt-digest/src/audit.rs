@@ -599,8 +599,11 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         .collect();
     // The Cards the layer rules read, with their bodies: card builds its jobs from them.
     let addresses: String = cards.iter().map(|c| format!("{}{}", field(c, "address"), ps::NL)).collect();
+    let cards_text = ps::json_pretty(&Value::Array(rest.clone()));
+    let addresses_sha256 = crate::canon::sha256_hex(addresses.as_bytes());
+    let cards_sha256 = crate::canon::sha256_hex(cards_text.as_bytes());
     util::write_text(ps::join_path(&out_dir, "audit-addresses.txt"), &addresses)?;
-    util::write_text(ps::join_path(&out_dir, "audit-cards.json"), &ps::json_pretty(&Value::Array(rest.clone())))?;
+    util::write_text(ps::join_path(&out_dir, "audit-cards.json"), &cards_text)?;
     // #188: the Literature-note coverage of this run, read after the snapshot above so the C3 numbers
     // are checked against the Cards this audit just read. An uncovered unit and a number no source
     // line states are findings, not faults: no count here fails the audit or the run.
@@ -940,7 +943,12 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     let report = json!({
         "generated": ps::local_minute(),
         "complete": true,
+        "skip_models": p.skip_models,
         "archive_revision": revision,
+        "sidecars": {
+            "addresses_sha256": addresses_sha256,
+            "cards_sha256": cards_sha256,
+        },
         "scope": scope_name,
         "orphan_check": orphan_check,
         "limits": limits,

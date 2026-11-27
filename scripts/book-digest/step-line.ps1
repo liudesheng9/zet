@@ -100,21 +100,48 @@ function Step-FitLine($Flat, [string]$Name, [string]$Dir) {
         $text = $Flat | ConvertTo-Json -Depth 8 -Compress
         if ($text.Length -le $StepLineMax) { return $text }
     }
-    if ($Flat['error'] -is [string] -and $Flat['error'].Length -gt 0) {
-        $over = $text.Length - $StepLineMax
-        $keep = [Math]::Max(0, $Flat['error'].Length - $over - 4)
-        $Flat['error'] = if ($keep -gt 0) { $Flat['error'].Substring(0, $keep) } else { 'see the detail file' }
-        $text = $Flat | ConvertTo-Json -Depth 8 -Compress
+    $protectedCode = if ($Flat.Contains('code') -and "$($Flat['code'])" -in @('card_locked', 'scope_refused')) { "$($Flat['code'])" } else { '' }
+    foreach ($trimKey in @('message', 'error')) {
+        if ($Flat.Contains($trimKey) -and $Flat[$trimKey] -is [string] -and $Flat[$trimKey].Length -gt 0) {
+            $over = $text.Length - $StepLineMax
+            if ($over -gt 0) {
+                $keep = [Math]::Max(0, $Flat[$trimKey].Length - $over - 4)
+                $Flat[$trimKey] = if ($keep -gt 0) { $Flat[$trimKey].Substring(0, $keep) } else { 'see the detail file' }
+                $text = $Flat | ConvertTo-Json -Depth 8 -Compress
+                if ($text.Length -le $StepLineMax) { return $text }
+            }
+        }
+    }
+    if ($protectedCode) {
+        $minimal = [ordered]@{ ok = $false; code = $protectedCode }
+        foreach ($keepKey in @('step', 'layer', 'unit', 'tree', 'lock_id', 'detail')) {
+            if ($Flat.Contains($keepKey) -and $null -ne $Flat[$keepKey] -and "$($Flat[$keepKey])" -ne '') {
+                $minimal[$keepKey] = $Flat[$keepKey]
+            }
+        }
+        $minimal['error'] = "${protectedCode}: see the detail file"
+        $text = $minimal | ConvertTo-Json -Depth 8 -Compress
         if ($text.Length -le $StepLineMax) { return $text }
+        if ($minimal.Contains('detail')) {
+            $minimal.Remove('detail')
+            $text = $minimal | ConvertTo-Json -Depth 8 -Compress
+            if ($text.Length -le $StepLineMax) { return $text }
+        }
     }
     $path = $null
     if ($Dir) {
         $path = Join-Path $Dir "$Name.json"
-        $Flat | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $path -Encoding utf8
+        if (-not (Test-Path -LiteralPath $path)) {
+            $Flat | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $path -Encoding utf8
+        }
     }
     # Live run 2026-10-26 (staging4): `{ok:true, detail}` read as a success with no jobs, and six models stayed
     # unwritten. A line that does not fit is a failed step, never a silent success.
-    $short = [ordered]@{ ok = $false; step = $Name; error = "line_overflow: the step's line is $($text.Length) characters (max $StepLineMax); see the detail file"; detail = $path }
+    $short = [ordered]@{ ok = $false }
+    if ($protectedCode) { $short['code'] = $protectedCode }
+    $short['step'] = $Name
+    $short['error'] = if ($protectedCode) { "${protectedCode}: line_overflow ($($text.Length) chars); see the detail file" } else { "line_overflow: the step's line is $($text.Length) characters (max $StepLineMax); see the detail file" }
+    if ($path) { $short['detail'] = $path }
     return ($short | ConvertTo-Json -Depth 4 -Compress)
 }
 

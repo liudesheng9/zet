@@ -231,10 +231,15 @@ Return plans: one entry per model, in this order.`,
         const review = await step(`review ${round + 1}`, 'review', { changed: round > 0, independentReview: !!profile.independentReview })
         if (!review.ok) return failed(`review failed: ${review.error}`)
         if (!Number(review.jobs || 0)) break
-        const verdicts = answerLines({ results: await content(`review ${round + 1}`, review.file, review.jobs, REVIEW_EFFORT) })
+        const revOut = await content(`review ${round + 1}`, review.file, review.jobs, REVIEW_EFFORT)
+        const verdicts = answerLines({ results: revOut })
           .reduce((s, l) => ({ split: s.split + (Number(l.split) || 0), fix: s.fix + (Number(l.fix) || 0) }), { split: 0, fix: 0 })
-        log(`review ${round + 1} ${tag}: ${verdicts.split} parts to split, ${verdicts.fix} to fix`)
-        if (!verdicts.split && !verdicts.fix) break
+        // Always audit the on-disk review JSONs instead of trusting answer lines alone (Astra H7).
+        const audited = await step(`review-audit ${round + 1}`, 'review-audit')
+        if (!audited.ok) return failed(`review-audit failed: ${audited.error}`)
+        const needSplit = !!audited.needs_split || !!verdicts.split || !!verdicts.fix
+        log(`review ${round + 1} ${tag}: ${audited.split ?? verdicts.split} parts to split, ${audited.fix ?? verdicts.fix} to fix`)
+        if (!needSplit) break
         const split = await step(`split ${round + 1}`, 'split')
         if (!split.ok) return failed(`split failed: ${split.error}`)
         await splitNeeds(await content(`split ${round + 1}`, split.file, split.jobs, DERIVE_EFFORT))

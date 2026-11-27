@@ -189,21 +189,24 @@ fn write_json(path: &Path, value: &Value) {
     std::fs::write(path, serde_json::to_string_pretty(value).unwrap()).expect("write JSON");
 }
 
-/// The plan a Sonnet architect writes: three fill parts, then a chain of two Derivation parts.
-/// `with_design` adds the `explain` entry of §3.7 for the chain.
+/// The plan a Sonnet architect writes: a unified Level 2 formal model with a Side-branch chain of
+/// two Derivation parts (`D1`, `D2`). `with_design` adds the `explain` entry of §3.7 for the chain.
 fn plan(model: &str, with_design: bool) -> Value {
     let mut plan = json!({
         "model": model,
         "level": "formal",
+        "claim_objects": ["choice-optimum"],
         "card": "问题：企业能否融到 $K-w$。",
         "symbols": [["$L$", "清算价值", "S"], ["$P$", "还款额", "S"]],
         "terms": [["清算", "卖资产", "变卖资产"]],
         "parts": [
             {"id":"S","facet":"设定","title":"设定：企业家、投资者与清算价值","line":"main","spec":"参与者与时点","src":["sections/s01.md:1-2"]},
-            {"id":"A","facet":"假设","title":"假设：投资者只认清算价值","line":"main","spec":"假设","rests":[["S","用到 $L$"]],"src":["sections/s01.md:2-2"]},
-            {"id":"D1","facet":"推导：还款上限","title":"推导：还款不超过清算价值","line":"main","derive":true,"from":"(5.5)","to":"$$P\\le L$$","rests":[["A","用到假设"]],"src":["sections/s01.md:3-3"]},
-            {"id":"D2","facet":"推导：融资条件","title":"推导：得到融资条件","line":"main","derive":true,"to":"$$y_1+fy_2>K$$","src":["sections/s01.md:4-4"]},
-            {"id":"P","facet":"命题","title":"命题：清算价值够大才能融资","line":"main","spec":"命题","rests":[["D2","用到融资条件"]],"src":["sections/s01.md:4-4"]}
+            {"id":"N","facet":"符号表与读法","title":"符号表与读法","line":"side","of":"S","spec":"符号与用语","src":["sections/s01.md:1-2"]},
+            {"id":"A","facet":"假设：投资者只认清算价值","title":"假设：投资者只认清算价值","line":"side","of":"S","spec":"假设","rests":[["S","用到 $L$"]],"src":["sections/s01.md:2-2"]},
+            {"id":"C1","facet":"第 1 章：融资条件","title":"第 1 章：融资条件","line":"main","spec":"清算价值决定还款上限与融资条件","rests":[["A","用到假设"]],"src":["sections/s01.md:2-4"]},
+            {"id":"P","facet":"结果：命题 1 融资条件","title":"结果：清算价值够大才能融资","line":"side","of":"C1","emphasis":"core","spec":"命题","source_kind":"proposition","source_label":"Proposition 1","logical_force":"sufficient","justifications":[{"force":"proof","location":"local","ref":"D1"}],"rests":[["A","用到假设"]],"src":["sections/s01.md:4-4"]},
+            {"id":"D1","facet":"推导：还款上限","title":"推导：还款不超过清算价值","line":"side","of":"P","derive":true,"from":"(5.5)","to":"$$P\\le L$$","rests":[["A","用到假设"]],"src":["sections/s01.md:3-3"]},
+            {"id":"D2","facet":"推导：融资条件","title":"推导：得到融资条件","line":"side","after":"D1","derive":true,"to":"$$y_1+fy_2>K$$","rests":[["D1","代入还款上限"]],"src":["sections/s01.md:4-4"]}
         ]
     });
     if with_design {

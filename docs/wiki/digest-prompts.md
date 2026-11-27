@@ -45,6 +45,7 @@ This block is the text that the book digest gives to its models. The 29 `dsh-*.z
 - `Supply mark` — the marks that show text the book does not give: `（补：书中略去）` on a filled-in derivation step, `（补：书中未写）` on an explanation the writer adds, `（补：书中未给）` on an example or counterexample the writer supplies (math).
 - `Derivation part` sections — `**思路**`, `**起点**`, `**步骤**`, `**结果**`, `**解读**`, in that order, with optional `说明：` lines under steps (`dsh-fill-instructions.zh.md`; zt-check R15 to R17).
 - `Setting intuition` — a setting, assumption or definition part's `**直觉**` section with the lines `- 是什么：`, `- 为什么需要：`, `- 怎样进入模型：` (`dsh-fill-instructions.zh.md` 讲清设定; `zt-digest model -Step close` checks it, 0.52.0).
+- `Level 2 formal economic model prompts` (2026-11-26, `docs/formal-models-proposal.md`) — `model-architect.md` adopts the unified Level 2 formal specification as its sole formal design (6 `claim_objects`, 15 `FormalRole`s, flat `of`/`after` Side proof branches, multi-justification `Result` fields, `<head>|a|a` `符号表与读法`, pinned `inventory.json`; mathematical units continue via `model-architect-math.md`); `dsh-brief-instructions.zh.md` adds `inventory.json` guidance for unnumbered claims, deferred appendix proofs, and external proof citations; `dsh-fill-instructions.zh.md` sets the Level 2 formal role card formats (`FM1`–`FM6`); `dsh-review-instructions.zh.md` adds the clause-review checklist (condition completeness, logical force fidelity, justification honesty).
 
 ## Architecture
 

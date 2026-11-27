@@ -13,10 +13,14 @@ for (const o of b.order) lines[o.line] = (lines[o.line] || 0) + 1
 const sh = a => (a.startsWith(head) ? 'H' + a.slice(head.length) : a)
 console.log(`members ${b.order.length} ${JSON.stringify(lines)}`)
 console.log('main line: ' + b.order.filter(o => o.line === 'main').map(o => `${sh(o.address)} ${o.facet}`).join(' | '))
-for (const k of ['closure', 'reach_in', 'forward', 'unanchored', 'beyond_level']) {
+for (const k of [
+  'closure', 'reach_in', 'forward', 'unanchored', 'beyond_level', 'import_target', 'import_cycle',
+  'formal_shape', 'setting_dependency', 'criterion_unbound', 'result_unbound', 'proof_unbound', 'experiment_unbound', 'symbol_uncovered',
+]) {
   for (const f of b[k] || []) console.log(`${k}: ${f.fix || JSON.stringify(f)}`)
 }
 const rel = {}
 for (const r of m.relations || []) rel[r.kind] = (rel[r.kind] || 0) + 1
-console.log(`relations ${JSON.stringify(rel)}; loose ${(m.loose || []).length}; self_sufficient ${b.self_sufficient}`)
-process.exit(b.self_sufficient ? 0 : 1)
+const formalOk = b.formal_structured !== false
+console.log(`relations ${JSON.stringify(rel)}; loose ${(m.loose || []).length}; self_sufficient ${b.self_sufficient}${b.formal_structured !== undefined ? `; formal_structured ${b.formal_structured}` : ''}`)
+process.exit(b.self_sufficient && formalOk ? 0 : 1)

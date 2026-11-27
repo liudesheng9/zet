@@ -3,8 +3,124 @@
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+use std::cell::RefCell;
 use std::io::Write;
 use std::path::Path;
+
+/// Default bounded byte limit per stream (`stdout` / `stderr`) captured in `zt-digest batch`.
+pub const DEFAULT_CAPTURE_CAP: usize = 2 * 1024 * 1024;
+
+/// Splits `-Name:value` or `-Name=value` at whichever delimiter (`:` or `=`) appears first,
+/// so Windows drive colons inside `-Flag=C:\path` never split at `C:`.
+pub(crate) fn split_flag_arg(arg: &str) -> Option<(&str, &str)> {
+    let idx = match (arg.find(':'), arg.find('=')) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => return None,
+    };
+    Some((&arg[..idx], &arg[idx + 1..]))
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct CapturedOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub last_json: Option<Value>,
+}
+
+struct CaptureState {
+    out: CapturedOutput,
+    cap_bytes: usize,
+}
+
+thread_local! {
+    static CAPTURE: RefCell<Option<CaptureState>> = const { RefCell::new(None) };
+}
+
+fn push_bounded(buf: &mut String, truncated: &mut bool, cap: usize, chunk: &str) {
+    if *truncated || cap == 0 {
+        if cap == 0 && !chunk.is_empty() {
+            *truncated = true;
+        }
+        return;
+    }
+    let avail = cap.saturating_sub(buf.len());
+    if chunk.len() <= avail {
+        buf.push_str(chunk);
+        return;
+    }
+    let mut end = avail;
+    while end > 0 && !chunk.is_char_boundary(end) {
+        end -= 1;
+    }
+    buf.push_str(&chunk[..end]);
+    *truncated = true;
+}
+
+/// Captures `util::print_line`, `util::print_lines`, and `util::emit_err` on the current thread
+/// until `finish()` or `Drop`, preserving the last printed JSON object/array even on truncation.
+pub struct CaptureGuard {
+    finished: bool,
+}
+
+impl CaptureGuard {
+    pub fn finish(mut self) -> CapturedOutput {
+        self.finished = true;
+        CAPTURE
+            .with(|cell| cell.borrow_mut().take())
+            .map(|state| state.out)
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for CaptureGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            CAPTURE.with(|cell| {
+                let _ = cell.borrow_mut().take();
+            });
+        }
+    }
+}
+
+pub fn begin_capture(cap_bytes: usize) -> CaptureGuard {
+    CAPTURE.with(|cell| {
+        *cell.borrow_mut() = Some(CaptureState {
+            out: CapturedOutput::default(),
+            cap_bytes,
+        });
+    });
+    CaptureGuard { finished: false }
+}
+
+/// Emits a diagnostic line to captured `stderr` when running inside `zt-digest batch`, or process `stderr`.
+pub fn emit_err(line: &str) {
+    let handled = CAPTURE.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let Some(state) = borrow.as_mut() else {
+            return false;
+        };
+        push_bounded(
+            &mut state.out.stderr,
+            &mut state.out.stderr_truncated,
+            state.cap_bytes,
+            line,
+        );
+        push_bounded(
+            &mut state.out.stderr,
+            &mut state.out.stderr_truncated,
+            state.cap_bytes,
+            "\n",
+        );
+        true
+    });
+    if !handled {
+        eprintln!("{line}");
+    }
+}
 
 /// A JSON file (a BOM is ignored).
 pub fn read_json(path: impl AsRef<Path>) -> Result<Value> {
@@ -62,6 +178,49 @@ pub fn compact(value: &Value) -> String {
 /// Prints lines in UTF-8 whatever the console code page, with the line ends
 /// PowerShell writes (CRLF on Windows).
 pub fn print_lines(lines: &[String]) -> Result<()> {
+    let captured = CAPTURE.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let Some(state) = borrow.as_mut() else {
+            return false;
+        };
+        let mut any_json = false;
+        for line in lines {
+            let trimmed = line.trim();
+            if (trimmed.starts_with('{') || trimmed.starts_with('['))
+                && let Ok(val) = serde_json::from_str::<Value>(trimmed)
+                && (val.is_object() || val.is_array())
+            {
+                state.out.last_json = Some(val);
+                any_json = true;
+            }
+            push_bounded(
+                &mut state.out.stdout,
+                &mut state.out.stdout_truncated,
+                state.cap_bytes,
+                line,
+            );
+            push_bounded(
+                &mut state.out.stdout,
+                &mut state.out.stdout_truncated,
+                state.cap_bytes,
+                "\n",
+            );
+        }
+        if !any_json && lines.len() > 1 {
+            let joined = lines.join("\n");
+            let trimmed = joined.trim();
+            if (trimmed.starts_with('{') || trimmed.starts_with('['))
+                && let Ok(val) = serde_json::from_str::<Value>(trimmed)
+                && (val.is_object() || val.is_array())
+            {
+                state.out.last_json = Some(val);
+            }
+        }
+        true
+    });
+    if captured {
+        return Ok(());
+    }
     let newline = if cfg!(windows) { "\r\n" } else { "\n" };
     let mut text = String::new();
     for line in lines {
@@ -93,21 +252,42 @@ pub const WRITE_EDIT_PATIENCE_SECONDS: u64 = 180;
 /// with `-Apply`; a compiler step writes with `-Apply` or in one of the listed write
 /// steps, and `group-finish`/`link-finish` apply their checked draft.
 pub fn writes_cards(tool: &str, argv: &[String]) -> bool {
-    let step = argv
-        .iter()
-        .position(|a| a.eq_ignore_ascii_case("-Step"))
-        .and_then(|at| argv.get(at + 1))
-        .map(|s| s.to_ascii_lowercase())
-        .unwrap_or_default();
-    let apply = argv.iter().any(|a| {
-        a.eq_ignore_ascii_case("-Apply") || a.eq_ignore_ascii_case("-Apply:$true") || a.eq_ignore_ascii_case("-Apply:true")
-    });
-    if matches!(tool, "call" | "open-call" | "organize-apply" | "figures" | "group-finish" | "link-finish" | "term-sync" | "evidence-link") {
+    let mut step = String::new();
+    let mut apply = false;
+    let mut i = 0;
+    while i < argv.len() {
+        let a = &argv[i];
+        if let Some(rest) = a.strip_prefix('-').or_else(|| None) {
+            if let Some((name, val)) = split_flag_arg(rest) {
+                if name.eq_ignore_ascii_case("Step") {
+                    step = val.to_ascii_lowercase();
+                } else if name.eq_ignore_ascii_case("Apply") {
+                    apply = !val.eq_ignore_ascii_case("false") && val != "0";
+                }
+            } else if rest.eq_ignore_ascii_case("Step") {
+                if let Some(val) = argv.get(i + 1) {
+                    step = val.to_ascii_lowercase();
+                    i += 1;
+                }
+            } else if rest.eq_ignore_ascii_case("Apply") {
+                apply = true;
+            }
+        }
+        i += 1;
+    }
+    if matches!(
+        tool.to_ascii_lowercase().as_str(),
+        "call" | "open-call" | "organize-apply" | "figures" | "group-finish" | "link-finish" | "term-sync" | "evidence-link"
+    ) {
         return true;
     }
-    if tool == "skeleton" && step == "apply" && !apply {
+    if tool.eq_ignore_ascii_case("skeleton") && step == "apply" && !apply {
         // `skeleton -Step apply` without -Apply is the read-only draft precheck.
         return false;
+    }
+    if tool.eq_ignore_ascii_case("model") && matches!(step.as_str(), "close" | "report") {
+        // `model -Step close` runs `refresh_shared()` and `-Step report` runs `complete_structures()`.
+        return true;
     }
     apply
         || matches!(
@@ -168,7 +348,7 @@ pub fn retry_changing_view<T>(
         match step() {
             Err(error) if read_only && is_changing_view(&error) => match tries.next() {
                 Some(&wait) => {
-                    eprintln!("changing view; reading again in {wait} s: {error:#}");
+                    emit_err(&format!("changing view; reading again in {wait} s: {error:#}"));
                     sleep(wait);
                 }
                 None => return Err(error),
@@ -249,10 +429,12 @@ mod tests {
         assert!(!writes_cards("skeleton", &argv(&["-Step", "apply", "-Work", "D:\\w"])));
         assert!(writes_cards("skeleton", &argv(&["-Step", "apply", "-Work", "D:\\w", "-Apply"])));
         // Every write step of the model and math compilers.
-        for step in ["apply", "explain-apply", "notation-apply", "boundary-apply", "proof-apply", "theory-apply", "resume", "split"] {
+        for step in ["apply", "explain-apply", "notation-apply", "boundary-apply", "proof-apply", "theory-apply", "resume", "split", "close", "report"] {
             assert!(writes_cards("model", &argv(&["-Step", step])), "{step}");
         }
-        for step in ["brief", "plan", "report", "explain-check", "explain-report"] {
+        assert!(writes_cards("model", &argv(&["-Step:close"])));
+        assert!(writes_cards("model", &argv(&["-Step=close"])));
+        for step in ["brief", "plan", "plan-status", "validate", "review-audit", "explain-check", "explain-report"] {
             assert!(!writes_cards("model", &argv(&["-Step", step])), "{step}");
         }
         assert_eq!(WRITE_EDIT_PATIENCE_SECONDS, 180);

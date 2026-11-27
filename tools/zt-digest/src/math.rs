@@ -973,9 +973,9 @@ impl Compiler {
             }
         };
         for f in &faults {
-            println!("{f}");
+            util::print_line(f)?;
         }
-        println!("faults: {}", faults.len());
+        util::print_line(&format!("faults: {}", faults.len()))?;
         Ok(())
     }
 
@@ -1754,9 +1754,9 @@ impl Compiler {
             }
         }
         for f in &faults {
-            println!("{f}");
+            util::print_line(f)?;
         }
-        println!("faults: {}", faults.len());
+        util::print_line(&format!("faults: {}", faults.len()))?;
         Ok(())
     }
 
@@ -2327,9 +2327,9 @@ impl Compiler {
             }
         }
         for f in &faults {
-            println!("{f}");
+            util::print_line(f)?;
         }
-        println!("faults: {}", faults.len());
+        util::print_line(&format!("faults: {}", faults.len()))?;
         Ok(())
     }
 

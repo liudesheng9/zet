@@ -48,6 +48,10 @@ impl Owned {
         }
     }
 
+    pub fn try_exited(&mut self) -> Result<bool> {
+        Ok(self.child.try_wait()?.is_some())
+    }
+
     pub fn wait(&mut self, timeout: Duration) -> Result<bool> {
         let until = Instant::now() + timeout;
         loop {

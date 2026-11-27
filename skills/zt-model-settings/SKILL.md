@@ -18,6 +18,7 @@ The structure is fixed, and the check refuses any other (`place`, `outside`, `in
 - The **setting card** is the Model Card's first Side successor, `<head>|a`. It gathers the settings of every source of the model. The chapters are its Direct successors.
 - The **notation card** (facet `符号表与读法`) is the setting card's first Side successor, `<head>|a|a`.
 - **Every setting, assumption and definition of the model is in the setting card's Side branches**, and nothing else is.
+- **Level 2 formal economic models (`docs/formal-models-proposal.md` §5, §9):** `定义`, `判据` / `均衡定义` / `解概念` (criteria / solution concepts), and parenthesized/alphanumeric assumptions (`假设 (B)`, `假设（A1）`, `假设 1′`, or unnumbered `假设：…`) also belong in `<head>|a`'s Side branches, grouped by economic block rather than role type. `<head>|a|a` (`符号表与读法`) holds the symbol table (`| 符号 | 含义 | 首次出现 |`) and `**统一用语**` (`| 术语 | 不用 |`); `zt` and `zt-check` read R6 terms exclusively from `<head>|a|a` (with 1-hop `沿用 [[…]]` support). `check-settings.mjs` accepts `判据`/`均衡定义`/`解概念`/`定义` and optional `**作用域**` sections for every Level 2 formal model.
 
 ## An empirical model: the data tree and the specification ladder
 

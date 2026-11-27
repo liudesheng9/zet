@@ -616,6 +616,10 @@ fn the_write_gate_applies_the_em_rules_to_the_parts_of_an_empirical_model() {
     assert!(written.to_string().contains("EM5"), "EM5 is a warning: {written}");
 
     // The same unlabelled design part is no fault in a formal model.
-    mcp.ok("edit_card", json!({ "at": head, "level": "formal" }));
+    mcp.ok("edit_card", json!({
+        "at": head,
+        "level": "formal",
+        "body": "**问题**\n税率高的国家收入高多少？\n\n**目标对象与标签**\n- 对象：market-equilibrium\n\n**原语与判据**\n基础设定。\n\n**主要结果**\n见侧支。\n\n**结构**\n- 数据\n\n来源：[[Hart1995]] §4.2"
+    }));
     part(&mut mcp, &data, "side", "设计", "国家之间比较。".into());
 }

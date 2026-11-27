@@ -1261,7 +1261,7 @@ fn promoting_a_concept_model_to_formal_runs_the_new_formal_checks() {
         "create_successor",
         json!({
             "at": topic, "title": "均衡模型", "type": "model", "level": "concept",
-            "body": "这一段说明背景并给出充分理由。"
+            "body": "问题：这一段说明背景并给出充分理由。\n\n**目标对象与标签**\n- 对象：market-equilibrium\n\n**原语与判据**\n基础设定。\n\n**主要结果**\n见侧支。\n\n**结构**\n- 设定"
         }),
     )["address"]
         .as_str()

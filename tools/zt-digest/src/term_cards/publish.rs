@@ -193,7 +193,7 @@ fn finish(
             util::print_line(&canon::canonical_json(&stop.detail))?;
         }
         if exit != 0 {
-            eprintln!("zt-digest term-cards: {}", stop.message);
+            crate::util::emit_err(&format!("zt-digest term-cards: {}", stop.message));
         }
     }
     Ok(exit)
@@ -237,7 +237,7 @@ fn stop_unreadable(p: &Params, compiled: &Compiled, error: anyhow::Error) -> Res
         "hint": "run -Step plan again and review the new plan revision; no Card was written",
     });
     util::print_line(&canon::canonical_json(&value))?;
-    eprintln!("zt-digest term-cards: plan_stale: {error:#}");
+    crate::util::emit_err(&format!("zt-digest term-cards: plan_stale: {error:#}"));
     Ok(STOP_EXIT)
 }
 
@@ -261,9 +261,9 @@ fn stale_stop(p: &Params, compiled: &Compiled, fresh: &Fresh) -> Result<Option<i
         "hint": "run -Step plan again and review the new plan revision; no Card was written",
     });
     util::print_line(&canon::canonical_json(&value))?;
-    eprintln!(
+    crate::util::emit_err(&format!(
         "zt-digest term-cards: plan_stale: the frozen plan no longer describes this archive; run -Step plan again"
-    );
+    ));
     Ok(Some(STOP_EXIT))
 }
 

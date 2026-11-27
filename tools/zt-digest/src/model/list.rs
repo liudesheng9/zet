@@ -114,7 +114,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 "placeholders": placeholders,
                 "issues": count(&st["issues"]),
                 "faults": count(&build["closure"]) + count(&build["forward"]) + count(&build["unanchored"]) + count(&build["beyond_level"])
-                    + count(&build["empirical_shape"]) + count(&build["estimate_unbound"]) + count(&build["spec_unbound"]) + count(&build["test_unbound"]) + count(&build["variable_uncovered"]),
+                    + count(&build["import_target"]) + count(&build["import_cycle"])
+                    + count(&build["empirical_shape"]) + count(&build["estimate_unbound"]) + count(&build["spec_unbound"]) + count(&build["test_unbound"]) + count(&build["variable_uncovered"])
+                    + count(&build["formal_shape"]) + count(&build["setting_dependency"]) + count(&build["criterion_unbound"]) + count(&build["result_unbound"]) + count(&build["proof_unbound"]) + count(&build["experiment_unbound"]) + count(&build["symbol_uncovered"]),
             }));
         }
     }

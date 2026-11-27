@@ -5392,8 +5392,8 @@
 
   /** A part's title without a leading `facet：` its author wrote for the Folgezettel map. */
   const bareTitle = (title) => (title || '').replace(/^[^：:$]{1,10}[：:]\s*/, '') || title || '(untitled)';
-  // An empirical card's strip mark (docs/mockups/empirical-board.html, option A): an estimate's
-  // value typed like a stamp, its uncertainty as the source writes it, its stars; a table's size.
+  // An empirical or formal card's strip mark (docs/mockups/empirical-board.html &
+  // docs/mockups/formal-board.html): dispatches strictly on badge.kind without fabricating verdicts.
   const empiricalBadge = (badge) => {
     if (!badge) return null;
     if (badge.kind === 'estimate') {
@@ -5405,6 +5405,27 @@
         badge.uncertainty ? h('span', { class: 'u', text: ` ${badge.uncertainty}` }) : null, badge.stars || null);
     }
     if (badge.kind === 'table') return h('span', { class: 'mbn-grid', title: 'A source table', text: `▦ ${badge.columns} 列 × ${badge.rows} 行` });
+    if (badge.kind === 'result') {
+      const parts = [badge.label, badge.scope, badge.justification].filter(Boolean);
+      if (!parts.length) return null;
+      return h('span', { class: 'mbn-stamp formal-result', title: parts.join(' · ') },
+        badge.label ? h('span', { class: 'f-label', text: badge.label }) : null,
+        badge.scope ? h('span', { class: 'u', text: ` · ${badge.scope}` }) : null,
+        badge.justification ? h('span', { class: 'u', text: ` · ${badge.justification}` }) : null);
+    }
+    if (badge.kind === 'criterion') return h('span', { class: 'mbn-grid formal-criterion', title: 'Solution criterion', text: badge.label || '判据' });
+    if (badge.kind === 'calibration') {
+      const text = badge.external ? `${badge.params} 参数 · ${badge.external} 外部估计` : `${badge.params} 参数`;
+      return h('span', { class: 'mbn-grid formal-cal', title: 'Model calibration', text });
+    }
+    if (badge.kind === 'experiment') {
+      const text = badge.case ? `数值 · ${badge.case}` : '数值实验';
+      return h('span', { class: 'mbn-grid formal-exp', title: 'Numerical experiment (not an analytic theorem)', text });
+    }
+    if (badge.kind === 'variant') {
+      const text = badge.label ? `变体 · ${badge.label}` : '变体';
+      return h('span', { class: 'mbn-grid formal-var', title: 'Model variant / regime', text });
+    }
     return null;
   };
 
@@ -5726,8 +5747,16 @@
     const here = card.address;
     const onHead = here === model.head.address;
     // The open Card's block: the one whose head is the longest prefix of its address (as on the
-    // server), else the one that lists it as a child or a proof step.
-    const holds = (b) => b.children.some((c) => c.address === here || (c.proof && c.proof.addresses.includes(here)));
+    // server), else the one that lists it as a child, proof step, or descendant (边界/例示, M3).
+    const allKidsOf = (c) => {
+      const seen = new Set();
+      const out = [];
+      for (const at of [...((c.proof && c.proof.addresses) || []), ...(c.descendants || [])]) {
+        if (!seen.has(at)) { seen.add(at); out.push(at); }
+      }
+      return out;
+    };
+    const holds = (b) => b.children.some((c) => c.address === here || allKidsOf(c).includes(here));
     const byPrefix = blocks
       .filter((b) => !PLAIN[b.kind] && (b.head === here || here.startsWith(b.head + '|')))
       .sort((a, b) => b.head.length - a.head.length)[0];
@@ -5781,7 +5810,7 @@
     if (bridgeOpen && !bridgeEdge) bridgeOpen = null;
     // The blocks that hold a hit of the last search get a mark on their tab; nothing moves.
     const found = finder.hits();
-    const holdsHit = (b) => found.size > 0 && (found.has(b.head) || b.children.some((c) => found.has(c.address) || (c.proof && c.proof.addresses.some((at) => found.has(at)))));
+    const holdsHit = (b) => found.size > 0 && (found.has(b.head) || b.children.some((c) => found.has(c.address) || allKidsOf(c).some((at) => found.has(at))));
     const isUp = (e) => e.kind === 'rests-on' && index.get(e.from_block) < index.get(e.to_block);
 
     // A block's page flags: the blocks it rests on (left) and the blocks that rest on it (right),
@@ -6017,19 +6046,29 @@
           }));
         });
       };
-      // The proof under a pulled-out result: its steps as small slips, the step being read pulled out.
+      // The proof under a pulled-out result: its proof steps plus any sibling descendants (边界/例示, M3).
       const proofOf = (c) => {
-        if (!c.proof) return null;
-        const inProof = c.proof.addresses.includes(here);
-        if (!inProof && c.address !== here) return null;
-        const n = c.proof.addresses.length;
-        return h('ol', { class: 'mbn-proof', 'aria-label': 'Proof chain' }, c.proof.addresses.map((at, i) => {
+        const proofAddrs = (c.proof && c.proof.addresses) || [];
+        const extras = (c.descendants || []).filter((at) => !proofAddrs.includes(at));
+        if (!proofAddrs.length && !extras.length) return null;
+        const inKids = proofAddrs.includes(here) || extras.includes(here);
+        if (!inKids && c.address !== here) return null;
+        const n = proofAddrs.length;
+        const items = proofAddrs.map((at, i) => {
           const part = partOf.get(at);
           return h('li', { class: 'mbn-slip' + (at === here ? ' here' : ''), style: `z-index: ${i + 1}` },
             h('button', { onclick: (event) => { event.stopPropagation(); go(at); }, title: at },
               h('span', { class: 'mbk-step', text: `${i + 1}/${n}` }),
               h('span', { class: 'mbk-step-title' }, titleNodes(part ? bareTitle(part.title) : at))));
-        }));
+        });
+        for (const at of extras) {
+          const part = partOf.get(at);
+          items.push(h('li', { class: 'mbn-slip aside' + (at === here ? ' here' : ''), style: `z-index: ${items.length + 1}` },
+            h('button', { onclick: (event) => { event.stopPropagation(); go(at); }, title: at },
+              h('span', { class: 'mbk-step', text: part && part.facet ? headLabel(part.facet).split(' · ')[0] : '附' }),
+              h('span', { class: 'mbk-step-title' }, titleNodes(part ? bareTitle(part.title) : at)))));
+        }
+        return h('ol', { class: 'mbn-proof', 'aria-label': 'Proof chain' }, items);
       };
       // A borrowed card (共用) names the model it lives in; the stamp opens that model.
       const homeOf = new Map(((model.build && model.build.order) || []).filter((e) => e.line === 'shared' && e.home).map((e) => [e.address, e.home]));
@@ -6064,9 +6103,15 @@
         if (!home || open.import) return null;
         return homeButton(home);
       };
-      // A result's chain is its proof; an estimate's cards under it are cards, not proof steps.
+      // A result's stack label reflects its declared justification kind (never overstating heuristic/numerical as 证明, M3).
       const proved = (c) => Boolean(c.facet && /^结果/.test(c.facet));
-      const stackLabel = (c) => c.proof ? `▤ ${proved(c) ? '证明' : '下面'} ${c.proof.steps} ${proved(c) ? '步' : '张'}` : null;
+      const stackLabel = (c) => {
+        if (!c.proof) return null;
+        if (!proved(c)) return `▤ 下面 ${c.proof.steps} 张`;
+        const j = (c.badge && c.badge.justification) || '';
+        const kind = j.startsWith('启发式') ? '启发式' : j.startsWith('构造') ? '构造' : j.startsWith('图示') ? '图示' : j.startsWith('数值') ? '数值' : '证明';
+        return `▤ ${kind} ${c.proof.steps} 步`;
+      };
       const badgeOf = (c) => empiricalBadge(c.badge);
       // The ladder: the baseline is the chapter card; a rung per variant, a variant of a variant on
       // its own rung under it (its chain), the column it gives at the right.
@@ -6092,7 +6137,8 @@
         return h('ul', { class: 'mbn-ladder top', 'aria-label': 'The specification ladder' }, b.children.map(nest));
       };
       const tuck = (c, i) => {
-        const pulled = c.address === here || (c.proof && c.proof.addresses.includes(here));
+        const kids = allKidsOf(c);
+        const pulled = c.address === here || kids.includes(here);
         const el = h('div', {
           class: 'mbn-tuck' + (pulled ? ' pulled' : '') + (c.address === here ? ' here' : '') + (isResult(c) ? ' result' : ' aside'),
           style: `z-index: ${i + 2}; --tilt: ${ZtLayout.tilt(c.address)}deg`,
@@ -6113,7 +6159,7 @@
             }, stackLabel(c)) : null),
           pulled ? [
             h('div', { class: 'mbk-title' }, titleNodes(bareTitle(c.title))),
-            cardFlags([c.address, ...((c.proof && c.proof.addresses) || [])]),
+            cardFlags([c.address, ...kids]),
             proofOf(c),
           ] : null);
         return el;
@@ -6310,10 +6356,12 @@
       draw(drawnFor);
     };
 
+    const tags = (model.build && model.build.family_tags) || [];
     const summary = [
       `Model · ${blocks.filter((b) => !PLAIN[b.kind]).length} blocks`,
       `${model.parts.length} parts`,
       `${edges.filter((e) => refersOn || e.kind !== 'refers').reduce((n, e) => n + e.count, 0)} Links between blocks`,
+      ...(tags.length ? [tags.join(' · ')] : []),
     ].join(' · ');
     const label = h('div', { class: 'section-label mbk-label' }, h('span', { text: summary, title: 'A line runs from a block to each block that rests on it; point at a line for its Card pairs' }), refers);
 
@@ -6386,16 +6434,26 @@
       ...(build.import_target || []).map((f) => ({ at: model.head.address, kind: 'import', text: f.fix })),
       ...(build.import_cycle || []).map((f) => ({ at: f.from, kind: 'cycle', text: f.fix })),
     ];
+    // Level 2 formal Layer 1 role/structure faults, shown separately from self-sufficiency (M3).
+    const formalRows = [
+      ...(build.formal_shape || []).map((f) => ({ at: f.address || model.head.address, kind: 'shape', text: f.fix })),
+      ...(build.setting_dependency || []).map((f) => ({ at: f.address || model.head.address, kind: 'setting', text: f.fix })),
+      ...(build.criterion_unbound || []).map((f) => ({ at: f.address || model.head.address, kind: 'criterion', text: f.fix })),
+      ...(build.result_unbound || []).map((f) => ({ at: f.address || model.head.address, kind: 'result', text: f.fix })),
+      ...(build.proof_unbound || []).map((f) => ({ at: f.address || model.head.address, kind: 'proof', text: f.fix })),
+      ...(build.experiment_unbound || []).map((f) => ({ at: f.address || model.head.address, kind: 'experiment', text: f.fix })),
+      ...(build.symbol_uncovered || []).map((f) => ({ at: f.address || model.head.address, kind: 'symbol', text: f.fix })),
+    ];
     // A Link from the Model Card that shares a part by accident: advice, not a fault.
     const stray = (build.false_share || []).map((f) => ({ at: model.head.address, kind: 'false share', text: f.fix }));
     const tolerated = (build.tolerated || []).length;
-    if (!rows.length && !stray.length) {
+    if (!rows.length && !formalRows.length && !stray.length) {
       return h('div', { class: 'mb-build ok', title: 'Every premise is a member, and every step rests on earlier steps' },
         `Self-sufficient${tolerated ? ` · ${tolerated} premise${tolerated === 1 ? '' : 's'} kept in a shared part’s home model` : ''}`);
     }
     return h('details', { class: 'mb-build' },
-      h('summary', { text: `Build · ${rows.length} fault${rows.length === 1 ? '' : 's'}${stray.length ? ` · ${stray.length} false share${stray.length === 1 ? '' : 's'}` : ''}${tolerated ? ` · ${tolerated} tolerated` : ''}` }),
-      [...rows, ...stray].map((row) => h('button', { class: 'mb-reason fault ' + row.kind, onclick: () => go(row.at), title: row.at },
+      h('summary', { text: `Build · ${rows.length} fault${rows.length === 1 ? '' : 's'}${formalRows.length ? ` · ${formalRows.length} formal` : ''}${stray.length ? ` · ${stray.length} false share${stray.length === 1 ? '' : 's'}` : ''}${tolerated ? ` · ${tolerated} tolerated` : ''}` }),
+      [...rows, ...formalRows, ...stray].map((row) => h('button', { class: 'mb-reason fault ' + row.kind, onclick: () => go(row.at), title: row.at },
         h('span', { class: 'mb-kind', text: row.kind }),
         h('span', { class: 'note' }, titleNodes(row.text)))));
   }

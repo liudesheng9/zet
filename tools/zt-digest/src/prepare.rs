@@ -719,7 +719,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     ) {
         Ok(settings) => settings,
         Err(error) => {
-            eprintln!("zt-digest prepare: {error}");
+            crate::util::emit_err(&format!("zt-digest prepare: {error}"));
             return Ok(2);
         }
     };
@@ -761,7 +761,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let judged = long_lines::judged_dir();
     let (uncovered, dismissed) = long_lines::dismiss_judged(long_lines::uncovered_pairs(&raw), &judged, &source_file_hash)?;
     if !dismissed.is_empty() {
-        eprintln!("zt-digest prepare: {} coverage flags judged original by hand ({}): lines {:?}", dismissed.len(), judged.join(format!("{source_file_hash}.json")).display(), dismissed);
+        crate::util::emit_err(&format!("zt-digest prepare: {} coverage flags judged original by hand ({}): lines {:?}", dismissed.len(), judged.join(format!("{source_file_hash}.json")).display(), dismissed));
     }
     if !uncovered.is_empty() {
         let shown: Vec<String> = uncovered.iter().take(20).map(|(line, faults)| format!("line {line} ({})", faults.join("; "))).collect();

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   The digest layers' deterministic command chains, one step per call (#175, #180). A DeepSeek drive job runs
   one step and replies with its last line, so no Claude agent relays a single command.
@@ -100,13 +100,13 @@ function Fail-Unit($Unit, [string]$Cause, [string]$Code = '') {
     if ($Code -eq 'check_failed' -or $Code -eq 'card_locked') { return 'failed' }
     return 'retry'
 }
-# The owner's typed refusal of an answer (the archive's `card_locked` JSON).
+# The owner's typed planning-stop refusal of an answer (`card_locked` or `scope_refused` JSON).
 function Lock-Refusal([string]$Text) {
     foreach ($line in "$Text".Split("`n")) {
         $t = $line.Trim()
         if (-not $t.StartsWith('{')) { continue }
         try { $v = $t | ConvertFrom-Json -Depth 16 } catch { continue }
-        if ($v.code -eq 'card_locked' -or $v.error -eq 'card_locked') { return $v }
+        if ("$($v.code)" -in @('card_locked', 'scope_refused') -or "$($v.error)" -in @('card_locked', 'scope_refused')) { return $v }
     }
     return $null
 }
@@ -175,17 +175,30 @@ function Start-Layer($Units) {
     $firstUnit = $Units[0]
     if ($Layer -eq 'digest' -or $Layer -eq 'link') {
         $startName = if ($Layer -eq 'digest') { 'group-start' } else { 'link-start' }
-        return @($Units | ForEach-Object {
-                $n = Group-Of $_.id
-                # A start that fails is tried three times (brandimarti2026reorganizing, 2026-11-10: read_view_changed while
-                # a parallel run changed the archive; the command itself says to retry the group start).
-                $s = $null
-                for ($try = 1; $try -le 3; $try++) {
-                    $s = Run @($startName, '-Out', $Out, '-Group', "$n", '-Token', "$($_.token)")
-                    if ($s.json) { break }
-                }
-                [pscustomobject]@{ unit = $_; group = $n; line = $s; jobs = (Jobs-Of $s.json); error = $(if ($s.json) { $null } else { (Tail $s.tail) }) }
-            })
+        $unitsPath = Join-Path $Work 'units.json'
+        $b = Run @($startName, '-Out', $Out, '-UnitsFile', $unitsPath)
+        if (-not $b.json -or $b.json.kind -ne ("{0}_start_batch" -f $(if ($Layer -eq 'digest') { 'group' } else { 'link' }))) {
+            return @([pscustomobject]@{ unit = $firstUnit; group = (Group-Of $firstUnit.id); line = $b; jobs = @(); error = (Tail $b.tail) })
+        }
+        $byUnit = @{}
+        if ($b.json.file -and (Test-Path -LiteralPath "$($b.json.file)")) {
+            $full = Get-Content -LiteralPath "$($b.json.file)" -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64
+            foreach ($rec in @($full.units | Where-Object { $_ -and $_.unit })) { $byUnit["$($rec.unit)"] = $rec }
+        }
+        $outList = @()
+        foreach ($r in @($b.json.results | Where-Object { $_ })) {
+            $u = @($Units | Where-Object { $_.id -eq $r.unit }) | Select-Object -First 1
+            if (-not $u) { $u = [pscustomobject]@{ id = $r.unit; token = $r.token; input_hash = "$($r.input_hash)" } }
+            $rec = $byUnit["$($r.unit)"]
+            $detail = if ($rec -and $rec.result) { $rec.result } else { $r }
+            if ($r.status -ne 'started') {
+                $errMsg = if ($r.error) { "$($r.error)" } elseif ($rec -and $rec.error) { "$($rec.error)" } else { "start status $($r.status)" }
+                $outList += [pscustomobject]@{ unit = $u; group = (Group-Of $u.id); line = [pscustomobject]@{ code = 1; json = $null; tail = $errMsg }; jobs = @(); error = (Tail $errMsg) }
+                continue
+            }
+            $outList += [pscustomobject]@{ unit = $u; group = (Group-Of $u.id); line = [pscustomobject]@{ code = 0; json = $detail; tail = '' }; jobs = (Jobs-Of $detail); error = $null }
+        }
+        return $outList
     }
     $one = switch ($Layer) {
         'events' { Run @('event', '-Step', 'plan', '-Staging', $Out) }
@@ -200,10 +213,54 @@ function Start-Layer($Units) {
     }
     [pscustomobject]@{ unit = $firstUnit; group = (Group-Of $firstUnit.id); line = $one; jobs = (Jobs-Of $one.json); error = $(if ($one.json) { $null } else { (Tail $one.tail) }) }
 }
-# The checked completion command of one held unit (the digest and link layers).
-function Finish-Unit($Unit, [string]$Draft) {
-    $finishName = if ($Layer -eq 'digest') { 'group-finish' } else { 'link-finish' }
-    Run @($finishName, '-Out', $Out, '-Group', "$(Group-Of $Unit.id)", '-Token', "$($Unit.token)", '-Draft', $Draft)
+# Check a native batch or step result for a typed planning-stop refusal (`card_locked` or `scope_refused`)
+# BEFORE any report, aggregation, continuation, or recovery. Never classifies an untyped exit 2 as a Lock.
+function Batch-LockRefusal($RunResult) {
+    if ($RunResult.json) {
+        $code = ''
+        if ("$($RunResult.json.code)" -in @('card_locked', 'scope_refused')) { $code = "$($RunResult.json.code)" }
+        elseif ("$($RunResult.json.error)" -in @('card_locked', 'scope_refused')) { $code = "$($RunResult.json.error)" }
+        if ($code) {
+            $ref = if ($RunResult.json.refusal) { $RunResult.json.refusal } else { $RunResult.json }
+            $lockedUnit = @($RunResult.json.results | Where-Object { $_ -and "$($_.code)" -in @('card_locked', 'scope_refused') }) | Select-Object -First 1
+            if (-not $lockedUnit -and $RunResult.json.explain) {
+                $lockedUnit = @($RunResult.json.explain | Where-Object { $_ -and "$($_.code)" -in @('card_locked', 'scope_refused') }) | Select-Object -First 1
+            }
+            return @{
+                code = $code
+                unit = if ($lockedUnit) { "$($lockedUnit.unit)" } else { '' }
+                message = if ($ref.message) { "$($ref.message)" } elseif ($RunResult.json.message) { "$($RunResult.json.message)" } else { $code }
+                tree = "$($ref.tree)"
+                lock_id = $ref.lock_id
+                refusal = $ref
+            }
+        }
+    }
+    $found = Lock-Refusal "$($RunResult.tail)"
+    if ($found) {
+        $code = if ("$($found.code)" -in @('card_locked', 'scope_refused')) { "$($found.code)" } else { "$($found.error)" }
+        return @{
+            code = $code
+            unit = ''
+            message = if ($found.message) { "$($found.message)" } else { $code }
+            tree = "$($found.tree)"
+            lock_id = $found.lock_id
+            refusal = $found
+        }
+    }
+    return $null
+}
+function Fail-PlanningStop([string]$StepName, $StopObj, $Detail = $null) {
+    $code = if ($StopObj.code) { "$($StopObj.code)" } else { 'card_locked' }
+    Fail $StepName "${code}: $($StopObj.message)" $Detail @{ code = $code; layer = $Layer; unit = "$($StopObj.unit)"; message = "$($StopObj.message)"; tree = "$($StopObj.tree)"; lock_id = $StopObj.lock_id }
+}
+# Read persisted `remaining` pairs from a batch detail file for budget continuation; returns $null if missing/unreadable.
+function Read-Remaining($BatchJson) {
+    if (-not $BatchJson -or -not $BatchJson.file -or -not (Test-Path -LiteralPath "$($BatchJson.file)")) { return $null }
+    try {
+        $full = Get-Content -LiteralPath "$($BatchJson.file)" -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64
+        return @($full.remaining | Where-Object { $_ -and $_.id -and $_.token })
+    } catch { return $null }
 }
 # The Link pass's own totals (#180): the run report carries the gap counts and the L1/L2 quality of the whole
 # layer, summed from the units' completions, never the per-unit rows.
@@ -246,90 +303,209 @@ $results = @()
 switch ($Step) {
     'start' {
         if ($Layer -eq 'cards') {
-            # The Cards layer's work is the checked finish alone: one command claims the ready checks and
-            # records each one's completion.
-            $argv = @('finish-batch', '-Out', $Out, '-Layer', 'cards', '-Take', "$Page", '-Owner', $Owner)
+            # The Cards layer's work is the checked finish alone: drain every ready check in bounded
+            # internal chunks, resuming any claimed `remaining` tail with `-UnitsFile` before claiming
+            # fresh work, and stopping immediately on a typed planning stop or transport/archive fault.
+            $argv = @('finish-batch', '-Out', $Out, '-Layer', 'cards', '-All', '-Owner', $Owner)
             if ($Lease -gt 0) { $argv += @('-Lease', "$Lease") }
-            # One start works the whole queue: a batch holds at most eight, so the command repeats until none is ready.
-            $all = @(); $claimed = 0
+            $all = @(); $claimed = 0; $lock = $null; $refused = $null; $fatalStop = $null
+            $remRound = 0
             while ($true) {
                 $line = Run $argv
-                if ($line.json.kind -ne 'finish_batch') { break }
-                if (-not [int]$line.json.claimed) { break }
-                $all += @($line.json.results); $claimed += [int]$line.json.claimed
-            }
-            if ($line.json.kind -ne 'finish_batch') {
-                # The line came back unreadable: the ledger decides. Finish whatever this owner still holds;
-                # the gate below says whether anything is still open.
-                $held = @(Held-Units)
-                Save 'units.json' @()
-                if ($held.Count) {
-                    $list = (@($held | ForEach-Object { "$($_.id):$($_.token)" }) -join ',')
-                    $again = Run @('finish-batch', '-Out', $Out, '-Units', $list)
-                    $againResults = @($again.json.results)
-                    $gate = Gate
-                    $fields = Results-Line $againResults
-                    Reply (@{ ok = $true; layer = 'cards'; claimed = $held.Count; units = $held.Count; jobs = 0 } + $fields + (Gate-Fields $gate)) @{ results = $againResults; gate = $gate; units = @() }
+                $lock = Batch-LockRefusal $line
+                if ($lock) {
+                    if ($line.json -and $line.json.kind -eq 'finish_batch') {
+                        $all += @($line.json.results | Where-Object { $_ -and $_.status -ne 'not_run' })
+                    }
+                    break
                 }
-                $gate = Gate
-                # A refused command fails the step: an empty success would let the stage go on with the checks undone.
-                if ($line.code -ne 0) { Fail 'cards claim' (Tail $line.tail); break }
-                Reply @{ ok = $true; layer = 'cards'; claimed = 0; units = 0; jobs = 0; results = 0; done = 0; failed = 0; partial = 0 } + (Gate-Fields $gate) @{ results = @(); gate = $gate; units = @() }
+                if (-not $line.json -or $line.json.kind -ne 'finish_batch') { $refused = $line; break }
+                $all += @($line.json.results | Where-Object { $_ -and $_.status -ne 'not_run' })
+                $claimed += [int]$line.json.claimed
+                $stop = "$($line.json.stop_reason)"
+                $notRun = [int]$line.json.not_run
+                if ($stop -eq 'transport' -or $stop -eq 'archive_identity') {
+                    $fatalStop = "${stop}: $notRun cards unit(s) not run"
+                    break
+                }
+                if ($stop -ne 'budget') {
+                    if ($notRun -gt 0) { $fatalStop = "incomplete_batch: $notRun cards unit(s) not run" }
+                    break
+                }
+                # Budget expired: first drain any exact claimed tail in `remaining` via `-UnitsFile`.
+                if ($notRun -gt 0) {
+                    $pending = Read-Remaining $line.json
+                    if ($null -eq $pending -or $pending.Count -eq 0) {
+                        $fatalStop = "budget_continuation: missing remaining detail for $notRun claimed cards unit(s)"
+                        break
+                    }
+                    while ($pending.Count) {
+                        $remRound++
+                        $remName = "cards-rem-$remRound.json"
+                        Save $remName $pending
+                        $cont = Run @('finish-batch', '-Out', $Out, '-UnitsFile', (Join-Path $Work $remName))
+                        $lock = Batch-LockRefusal $cont
+                        if ($cont.json -and $cont.json.kind -eq 'finish_batch') {
+                            $all += @($cont.json.results | Where-Object { $_ -and $_.status -ne 'not_run' })
+                        }
+                        if ($lock) { break }
+                        if (-not $cont.json -or $cont.json.kind -ne 'finish_batch') {
+                            $refused = $cont
+                            break
+                        }
+                        $cStop = "$($cont.json.stop_reason)"
+                        $cNotRun = [int]$cont.json.not_run
+                        if ($cStop -eq 'transport' -or $cStop -eq 'archive_identity') {
+                            $fatalStop = "${cStop}: $cNotRun cards unit(s) not run"
+                            break
+                        }
+                        if ($cStop -eq 'budget' -or $cNotRun -gt 0) {
+                            $nextPending = Read-Remaining $cont.json
+                            if ($null -eq $nextPending -or $nextPending.Count -eq 0) {
+                                $fatalStop = "budget_continuation: missing remaining detail for $cNotRun cards unit(s)"
+                                break
+                            }
+                            if ($nextPending.Count -ge $pending.Count) {
+                                $fatalStop = "budget_continuation: remaining set did not shrink ($($nextPending.Count) >= $($pending.Count))"
+                                break
+                            }
+                            $pending = $nextPending
+                            continue
+                        }
+                        $pending = @()
+                    }
+                    if ($lock -or $refused -or $fatalStop) { break }
+                    continue
+                }
+                # Budget expired with zero claimed in this chunk: do not infinite-loop.
+                if ([int]$line.json.claimed -eq 0) {
+                    $fatalStop = 'budget: admission budget expired before claiming ready cards units'
+                    break
+                }
             }
             Save 'units.json' @()
             $gate = Gate
+            if ($lock) {
+                Fail-PlanningStop 'finish' $lock @{ results = $all; gate = $gate; refusal = $lock.refusal }
+                break
+            }
+            if ($fatalStop) {
+                Fail 'finish' $fatalStop @{ results = $all; gate = $gate }
+                break
+            }
+            if ($refused) {
+                # The line came back unreadable: the ledger decides. Finish whatever this owner still holds;
+                # a non-zero refusal without held units fails the step.
+                $held = @(Held-Units)
+                if ($held.Count) {
+                    Save 'units-recover.json' $held
+                    $again = Run @('finish-batch', '-Out', $Out, '-UnitsFile', (Join-Path $Work 'units-recover.json'))
+                    $againLock = Batch-LockRefusal $again
+                    $gate = Gate
+                    if ($againLock) {
+                        Fail-PlanningStop 'finish' $againLock @{ results = @($again.json.results); gate = $gate; refusal = $againLock.refusal }
+                        break
+                    }
+                    if (-not $again.json -or $again.json.kind -ne 'finish_batch') { Fail 'finish' (Tail $again.tail) @{ gate = $gate }; break }
+                    if ([int]$again.json.not_run -gt 0 -or "$($again.json.stop_reason)" -in @('transport', 'archive_identity', 'budget')) {
+                        Fail 'finish' "$($again.json.stop_reason): $([int]$again.json.not_run) recovered cards unit(s) not run" @{ results = @($again.json.results); gate = $gate }
+                        break
+                    }
+                    $againResults = @($again.json.results)
+                    $fields = Results-Line $againResults
+                    Reply (@{ ok = $true; layer = 'cards'; claimed = $held.Count; units = $held.Count; jobs = 0 } + $fields + (Gate-Fields $gate)) @{ results = $againResults; gate = $gate; units = @() }
+                    break
+                }
+                if ($refused.code -ne 0) { Fail 'cards claim' (Tail $refused.tail); break }
+                Reply (@{ ok = $true; layer = 'cards'; claimed = 0; units = 0; jobs = 0; results = 0; done = 0; failed = 0; partial = 0 } + (Gate-Fields $gate)) @{ results = @(); gate = $gate; units = @() }
+                break
+            }
             $fields = Results-Line $all
             Reply (@{ ok = $true; layer = 'cards'; claimed = $claimed; units = $claimed; jobs = 0 } + $fields + (Gate-Fields $gate)) @{ results = $all; gate = $gate; units = @() }
         }
-        # A start begins the layer, so a claim still held belongs to a stopped run: release it (morony2005iraq, 2026-11-06:
-        # 118 Link units stayed claimed, the start got none, answered ok, and the stage went on with no Link written).
-        $stuck = @(@((Run @('ledger', 'status', '-Out', $Out, '-Layer', $Layer)).json.units) | Where-Object { $_ -and $_.state -eq 'claimed' })
+        # A start begins the layer, so any claim still held belongs to a stopped run: release every
+        # claimed unit of this layer in one command, carrying only the first pass's exact (id, token)
+        # pairs through quiet-window retries so later passes never touch newly acquired claims.
+        $wait = if ($env:ZT_RELEASE_WAIT_SECONDS) { [int]$env:ZT_RELEASE_WAIT_SECONDS } else { 125 }
         $refusal = $null
-        foreach ($u in $stuck) {
-            $released = Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $u.id, '-Release')
-            # A claim refused only for recent activity was taken by this layer's own failed try a moment ago
-            # (brandimarti2026reorganizing, 2026-11-10): wait out the ledger's quiet window and release it. Its writer
-            # may still be working and record more activity (thompson1914calculus, 2026-11-21: one wait left digest
-            # g023/g024 claimed and every book publication blocked), so wait again, up to five windows.
-            $wait = if ($env:ZT_RELEASE_WAIT_SECONDS) { [int]$env:ZT_RELEASE_WAIT_SECONDS } else { 125 }
-            for ($w = 1; $w -le 5 -and $released.code -ne 0 -and "$($released.tail)" -match 'claim_recent'; $w++) {
-                Start-Sleep -Seconds $wait
-                $released = Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $u.id, '-Release')
+        $retryTargets = $null
+        for ($w = 0; $w -le 5; $w++) {
+            if ($null -eq $retryTargets) {
+                $rel = Run @('ledger', 'reclaim', '-Out', $Out, '-Layer', $Layer, '-All', '-Release')
+            } else {
+                Save 'release-retry.json' $retryTargets
+                $rel = Run @('ledger', 'reclaim', '-Out', $Out, '-UnitsFile', (Join-Path $Work 'release-retry.json'), '-Release')
             }
-            if ($released.code -ne 0) { $refusal = "$($u.id): $(Tail $released.tail)"; break }
+            if ($rel.code -ne 0 -or -not $rel.json) {
+                if ("$($rel.tail)" -match 'claim_recent' -and $w -lt 5) {
+                    Start-Sleep -Seconds $wait
+                    continue
+                }
+                $refusal = Tail $rel.tail
+                break
+            }
+            $blocked = @($rel.json.blocked | Where-Object { $_ })
+            $skipped = @($rel.json.skipped | Where-Object { $_ })
+            $recent = @($skipped | Where-Object { $_.reason -eq 'claim_recent' })
+            $otherSkipped = @($skipped | Where-Object { $_.reason -ne 'claim_recent' })
+            if ($blocked.Count) {
+                $refusal = "$($blocked[0].unit): $($blocked[0].reason)"
+                break
+            }
+            if ($otherSkipped.Count) {
+                # When retrying an explicit fenced set, `claim_active` means the claim moved on / was settled.
+                $realOther = if ($null -ne $retryTargets) { @($otherSkipped | Where-Object { $_.reason -ne 'claim_active' }) } else { $otherSkipped }
+                if ($realOther.Count) {
+                    $refusal = "$($realOther[0].unit): $($realOther[0].reason)"
+                    break
+                }
+            }
+            if (-not $recent.Count) { break }
+            if ($w -eq 5) {
+                $refusal = "$($recent[0].unit): claim_recent"
+                break
+            }
+            # Freeze the exact (id, token) pairs from the first pass for quiet-window retries.
+            if ($null -eq $retryTargets) {
+                $withTokens = @($recent | Where-Object { $_.unit -and $_.token } | ForEach-Object { @{ id = "$($_.unit)"; token = [int64]$_.token } })
+                if ($withTokens.Count -eq $recent.Count) {
+                    $retryTargets = $withTokens
+                } else {
+                    $ids = (@($recent | ForEach-Object { "$($_.unit)" }) -join ',')
+                    $st = @(Unit-States $ids)
+                    $retryTargets = @($st | Where-Object { $_.state -eq 'claimed' -and $_.id -and $_.token } | ForEach-Object { @{ id = "$($_.id)"; token = [int64]$_.token } })
+                    if (-not $retryTargets.Count) { break }
+                }
+            }
+            Start-Sleep -Seconds $wait
         }
         if ($refusal) { Fail 'release' $refusal; break }
-        $claimArgs = @('ledger', 'next', '-Out', $Out, '-Layer', $Layer, '-Take', "$Page", '-Brief', '-Owner', $Owner)
+        $claimArgs = @('ledger', 'next', '-Out', $Out, '-Layer', $Layer, '-All', '-Brief', '-Owner', $Owner)
         if ($Lease -gt 0) { $claimArgs += @('-Lease', "$Lease") }
-        # A claim that fails is tried three times before the layer hears of it (a refused claim while parallel
-        # stages change the archive is transient).
+        # A claim that fails is tried up to three times; after any ambiguous/failed call, reconcile
+        # this owner's held claims immediately before retrying so a committed-then-lost reply is
+        # never masked by a subsequent empty claim.
         $claim = $null
-        for ($try = 1; $try -le 3; $try++) {
-            $claim = Run $claimArgs
-            if ($claim.json -or $claim.code -eq 0) { break }
-        }
         $units = @()
         $readable = $false
-        if ($claim.json -and $claim.json.units -is [array]) {
-            $units = @($claim.json.units | Where-Object { $_ -and $_.id })
-            $readable = $true
+        for ($try = 1; $try -le 3; $try++) {
+            $claim = Run $claimArgs
+            if ($claim.json -and $claim.json.units -is [array]) {
+                $units = @($claim.json.units | Where-Object { $_ -and $_.id })
+                $readable = $true
+                break
+            }
+            $held = @(Held-Units)
+            if ($held.Count) {
+                $units = $held
+                $readable = $true
+                break
+            }
+            if ($claim.code -eq 0) { break }
         }
         if (-not $readable) {
-            # A claim line the tool cut is never an empty claim: the units this owner still holds come from
-            # the ledger itself.
             $units = @(Held-Units)
             if (-not $units.Count -and -not $claim.json) { Fail 'claim' (Tail $claim.tail); break }
-        }
-        # The one structure (scheiner2022baghdad, 2026-11-04, the owner's design): one start claims every ready unit, page by
-        # page, the managers run one queue, and one finish applies the layer, as the Term cards do.
-        if ($units.Count) {
-            $pageArgs = @('ledger', 'next', '-Out', $Out, '-Layer', $Layer, '-Take', "$Page", '-Brief', '-Owner', $Owner)
-            if ($Lease -gt 0) { $pageArgs += @('-Lease', "$Lease") }
-            while ($true) {
-                $page = @((Run $pageArgs).json.units | Where-Object { $_ -and $_.id })
-                if (-not $page.Count) { break }
-                $units += $page
-            }
         }
         Save 'units.json' $units
         if (-not $units.Count) {
@@ -338,6 +514,14 @@ switch ($Step) {
         }
 
         $begun = @(Start-Layer $units)
+        foreach ($b in $begun) {
+            $stLock = Batch-LockRefusal $b.line
+            if ($stLock) {
+                $gate = Gate
+                Fail-PlanningStop "$Layer start" $stLock @{ units = $units; gate = $gate; refusal = $stLock.refusal }
+                break
+            }
+        }
         $bad = @($begun | Where-Object { $_.error })
         if ($bad.Count) { Fail "$Layer start" (Tail $bad[0].error) @{ units = $units }; break }
         $starts = @()
@@ -379,6 +563,8 @@ switch ($Step) {
             # or unbound explorer answer stops the stage; the finish step then faults the unit.
             $u = $units[0]
             $r = Run @('terms', '-Step', 'merge', '-Staging', $Out, '-Token', "$($u.token)")
+            $rLock = Batch-LockRefusal $r
+            if ($rLock) { Fail-PlanningStop 'terms merge' $rLock @{ units = $units; refusal = $rLock.refusal }; break }
             if (-not $r.json) { Fail 'terms merge' (Tail $r.tail) @{ units = $units }; break }
             $jobs = @()
             foreach ($j in @(Jobs-Of $r.json)) {
@@ -396,6 +582,8 @@ switch ($Step) {
         }
         $argv = @('model', '-Step', 'explain-apply', '-Work', (Join-Path $Out 'explain'), '-Staging', $Out) + (Limits-Args)
         $r = Run $argv
+        $rLock = Batch-LockRefusal $r
+        if ($rLock) { Fail-PlanningStop 'explain-apply' $rLock @{ units = $units; refusal = $rLock.refusal }; break }
         if (-not $r.json) { Fail 'explain-apply' (Tail $r.tail) @{ units = $units }; break }
         $firstUnit = $units[0]
         $jobs = @()
@@ -406,7 +594,7 @@ switch ($Step) {
         }
         Save 'apply-jobs.json' $jobs
         $gate = Gate
-        Reply (@{ ok = $true; layer = $Layer; jobs = @($jobs).Count; applied = [int]$r.json.applied; refused = @($r.json.refused).Count; blocked = @($r.json.blocked).Count; file = (Join-Path $Work 'apply-jobs.json') } + (Gate-Fields $gate)) @{ jobs = $jobs; gate = $gate; apply = $r.json }
+        Reply (@{ ok = $true; layer = $Layer; jobs = @($jobs).Count; applied = [int]$r.json.applied; refused = (Count-Of $r.json.refused); blocked = (Count-Of $r.json.blocked); file = (Join-Path $Work 'apply-jobs.json') } + (Gate-Fields $gate)) @{ jobs = $jobs; gate = $gate; apply = $r.json }
     }
     'finish' {
         $units = @(Load 'units.json')
@@ -417,80 +605,111 @@ switch ($Step) {
 
         if ($Layer -eq 'digest' -or $Layer -eq 'link') {
             $starts = @(Load 'start.json')
-            $done = @(); $failed = @(); $lock = $null
-            foreach ($u in $units) {
-                $s = @($starts | Where-Object { $_.unit -eq $u.id }) | Select-Object -First 1
-                $draft = if ($s) { "$($s.draft)" } else { '' }
-                $f = Finish-Unit $u $draft
-                if (-not $f.json) {
-                    # A cut completion line asks the ledger before any fault: a unit it holds done is done.
-                    $said = @(Unit-States $u.id) | Select-Object -First 1
-                    if ($said -and ($said.state -eq 'done' -or $said.state -eq 'noop')) {
-                        $results += @{ unit = $u.id; token = $u.token; group = (Group-Of $u.id); status = 'done'; from = 'ledger'; jobs = $(if ($s) { [int]$s.expected_jobs } else { 0 }) }
-                        $done += $u.id
-                        continue
+            $finishCmd = if ($Layer -eq 'digest') { 'group-finish' } else { 'link-finish' }
+            $expectedKind = if ($Layer -eq 'digest') { 'digest_finish_batch' } else { 'link_finish_batch' }
+            $pending = @($units)
+            $lock = $null
+            $fatalStop = $null
+            $round = 0
+            while ($pending.Count) {
+                $round++
+                $uFile = if ($round -eq 1) { Join-Path $Work 'units.json' } else { $n = "units-rem-$round.json"; Save $n $pending; Join-Path $Work $n }
+                $b = Run @($finishCmd, '-Out', $Out, '-UnitsFile', $uFile)
+                $lock = Batch-LockRefusal $b
+                if ($b.json -and $b.json.kind -eq $expectedKind) {
+                    foreach ($r in @($b.json.results | Where-Object { $_ -and $_.status -ne 'not_run' })) {
+                        $s = @($starts | Where-Object { $_.unit -eq $r.unit }) | Select-Object -First 1
+                        $entry = @{ unit = "$($r.unit)"; token = $r.token; group = (Group-Of "$($r.unit)"); status = "$($r.status)"; jobs = $(if ($s) { [int]$s.expected_jobs } else { 0 }) }
+                        foreach ($k in @('disposition', 'owned', 'recovered', 'counts', 'quality', 'changed', 'code', 'cause', 'from')) {
+                            if ($null -ne $r.$k) { $entry[$k] = $r.$k }
+                        }
+                        $results += $entry
                     }
-                    $cause = "missing_result: the completion line was not readable: $(Tail $f.tail)"
-                    $status = Fail-Unit $u $cause
-                    $results += @{ unit = $u.id; token = $u.token; group = (Group-Of $u.id); status = $status; cause = (Tail $cause) }
-                    $failed += $u.id
-                    continue
                 }
-                if (Finished $f.json) {
-                    $entry = @{ unit = $u.id; token = $u.token; group = (Group-Of $u.id); status = $(if ($f.json.status -eq 'partial') { 'partial' } else { 'done' }); jobs = $(if ($s) { [int]$s.expected_jobs } else { 0 }) }
-                    if ($f.json.disposition) { $entry['disposition'] = "$($f.json.disposition)" }
-                    if ($null -ne $f.json.owned) { $entry['owned'] = @($f.json.owned).Count }
-                    if ($f.json.recovered -or ($s -and $s.recovered)) { $entry['recovered'] = $true }
-                    if ($Layer -eq 'link') {
-                        $entry['counts'] = $f.json.counts
-                        $entry['quality'] = $f.json.quality
-                        $entry['changed'] = @($f.json.changed)
+                if ($lock) { break }
+                if (-not $b.json -or $b.json.kind -ne $expectedKind) {
+                    # An unreadable batch line asks the ledger before any fault.
+                    $states = @(Unit-States ((@($pending | ForEach-Object { $_.id })) -join ','))
+                    foreach ($u in $pending) {
+                        $s = @($starts | Where-Object { $_.unit -eq $u.id }) | Select-Object -First 1
+                        $said = @($states | Where-Object { $_.id -eq $u.id }) | Select-Object -First 1
+                        if ($said -and ($said.state -eq 'done' -or $said.state -eq 'noop')) {
+                            $results += @{ unit = $u.id; token = $u.token; group = (Group-Of $u.id); status = 'done'; from = 'ledger'; jobs = $(if ($s) { [int]$s.expected_jobs } else { 0 }) }
+                            continue
+                        }
+                        $cause = "missing_result: the completion line was not readable: $(Tail $b.tail)"
+                        $status = Fail-Unit $u $cause
+                        $results += @{ unit = $u.id; token = $u.token; group = (Group-Of $u.id); status = $status; cause = (Tail $cause) }
                     }
-                    $results += $entry
-                    $done += $u.id
-                    continue
-                }
-                $said = Lock-Refusal ("$(if ($f.json) { $f.json | ConvertTo-Json -Depth 16 -Compress })`n$($f.tail)")
-                if ($said) {
-                    $null = Fail-Unit $u "$($said.message) $($said | ConvertTo-Json -Compress)" 'card_locked'
-                    $results += @{ unit = $u.id; token = $u.token; group = (Group-Of $u.id); status = 'failed'; code = 'card_locked'; cause = (Tail "$($said.message)") }
-                    $failed += $u.id
-                    $lock = @{ unit = $u.id; message = "$($said.message)"; refusal = $said }
                     break
                 }
-                $cause = if ($f.json -and $f.json.fault) { "$($f.json.fault)" } elseif ($f.json -and $f.json.error) { "$($f.json.error)" } else { Tail $f.tail }
-                $status = Fail-Unit $u $cause
-                $results += @{ unit = $u.id; token = $u.token; group = (Group-Of $u.id); status = $status; cause = (Tail $cause) }
-                $failed += $u.id
+                $stop = "$($b.json.stop_reason)"
+                $notRun = [int]$b.json.not_run
+                if ($stop -eq 'transport' -or $stop -eq 'archive_identity') {
+                    $fatalStop = "${stop}: $notRun $Layer unit(s) not run"
+                    break
+                }
+                if ($stop -eq 'budget' -or $notRun -gt 0) {
+                    $nextPending = Read-Remaining $b.json
+                    if ($null -eq $nextPending -or $nextPending.Count -eq 0) {
+                        $fatalStop = "budget_continuation: missing remaining detail for $notRun $Layer unit(s)"
+                        break
+                    }
+                    if ($nextPending.Count -ge $pending.Count) {
+                        $fatalStop = "budget_continuation: remaining set did not shrink ($($nextPending.Count) >= $($pending.Count))"
+                        break
+                    }
+                    $pending = $nextPending
+                    continue
+                }
+                break
             }
             $gate = Gate
             if ($lock) {
-                Fail 'finish' "card_locked: $($lock.message)" @{ results = $results; gate = $gate; refusal = $lock.refusal } @{ code = 'card_locked'; layer = $Layer; unit = $lock.unit; message = "$($lock.message)"; tree = "$($lock.refusal.tree)"; lock_id = $lock.refusal.lock_id }
+                Fail-PlanningStop 'finish' $lock @{ results = $results; gate = $gate; refusal = $lock.refusal }
+                break
+            }
+            if ($fatalStop) {
+                Fail 'finish' $fatalStop @{ results = $results; gate = $gate }
+                break
             }
             $linkLine = if ($Layer -eq 'link') { Link-Line $results } else { @{} }
             Reply (@{ ok = $true; layer = $Layer } + (Results-Line $results) + $linkLine + (Gate-Fields $gate)) @{ results = $results; gate = $gate; mid = @() }
         }
 
-        # The layers whose completions finish-batch runs: apply and report first, then every held unit's
+        # The layers whose completions finish-batch runs: apply and report first (stopping immediately
+        # on any typed Lock/scope refusal BEFORE report or finish-batch), then every held unit's
         # checked completion in one command.
         $mid = @()
         switch ($Layer) {
             'events' {
                 $a = Run @('event', '-Step', 'apply', '-Staging', $Out, '-Apply')
-                $mid += @{ step = 'apply'; ok = [bool]$a.json; applied = [int]$a.json.applied_jobs; created = [int]$a.json.created; merged = [int]$a.json.merged; linked = [int]$a.json.linked; refused = @($a.json.refused).Count; pending = [int]$a.json.pending_jobs; error = $(if ($a.json) { $null } else { Tail $a.tail }) }
+                $aLock = Batch-LockRefusal $a
+                if ($aLock) {
+                    $gate = Gate
+                    Fail-PlanningStop 'apply' $aLock @{ mid = $mid; gate = $gate; refusal = $aLock.refusal }
+                    break
+                }
+                $mid += @{ step = 'apply'; ok = [bool]$a.json; applied = [int]$a.json.applied_jobs; created = [int]$a.json.created; merged = [int]$a.json.merged; linked = [int]$a.json.linked; refused = (Count-Of $a.json.refused); pending = [int]$a.json.pending_jobs; error = $(if ($a.json) { $null } else { Tail $a.tail }) }
                 $r = Run @('event', '-Step', 'report', '-Staging', $Out)
                 $mid += @{ step = 'report'; ok = [bool]$r.json; jobs = [int]$r.json.jobs; created = [int]$r.json.created; merged = [int]$r.json.merged; linked = [int]$r.json.linked; refused = [int]$r.json.refused }
             }
             'findings' {
                 $a = Run @('finding', '-Step', 'apply', '-Staging', $Out, '-Apply')
-                $mid += @{ step = 'apply'; ok = [bool]$a.json; applied = [int]$a.json.applied_jobs; created = [int]$a.json.created; linked = [int]$a.json.linked; refused = @($a.json.refused).Count; pending = [int]$a.json.pending_jobs; error = $(if ($a.json) { $null } else { Tail $a.tail }) }
+                $aLock = Batch-LockRefusal $a
+                if ($aLock) {
+                    $gate = Gate
+                    Fail-PlanningStop 'apply' $aLock @{ mid = $mid; gate = $gate; refusal = $aLock.refusal }
+                    break
+                }
+                $mid += @{ step = 'apply'; ok = [bool]$a.json; applied = [int]$a.json.applied_jobs; created = [int]$a.json.created; linked = [int]$a.json.linked; refused = (Count-Of $a.json.refused); pending = [int]$a.json.pending_jobs; error = $(if ($a.json) { $null } else { Tail $a.tail }) }
                 $r = Run @('finding', '-Step', 'report', '-Staging', $Out)
                 $mid += @{ step = 'report'; ok = [bool]$r.json; jobs = [int]$r.json.jobs; created = [int]$r.json.created; linked = [int]$r.json.linked; refused = [int]$r.json.refused }
             }
             'explain' {
                 $argv = @('model', '-Step', 'explain-report', '-Work', (Join-Path $Out 'explain'), '-Staging', $Out) + (Limits-Args)
                 $r = Run $argv
-                $mid += @{ step = 'report'; ok = [bool]$r.json; models = @($r.json.models).Count }
+                $mid += @{ step = 'report'; ok = [bool]$r.json; models = (Count-Of $r.json.models) }
             }
         }
         # The layer's own apply/report counts, flat (#180): the module logs them, never a nested mid line. A zero
@@ -511,7 +730,12 @@ switch ($Step) {
         if ($Layer -eq 'terms') {
             $u = $units[0]
             $a = Run @('terms', '-Step', 'apply', '-Staging', $Out, '-Token', "$($u.token)", '-Apply')
+            $aLock = Batch-LockRefusal $a
             $gate = Gate
+            if ($aLock) {
+                Fail-PlanningStop 'apply' $aLock @{ mid = $mid; gate = $gate; refusal = $aLock.refusal }
+                break
+            }
             if ($a.json -and ($a.json.ok -eq $true -or $a.json.state -eq 'done')) {
                 $results += @{ unit = $u.id; status = 'done'; terms = [int]$a.json.terms; card = "$($a.json.card)" }
             } else {
@@ -521,16 +745,61 @@ switch ($Step) {
             }
             Reply (@{ ok = $true; layer = 'terms' } + (Results-Line $results) + @{ terms = [int]$a.json.terms; with_avoid = [int]$a.json.with_avoid; card = "$($a.json.card)" } + (Gate-Fields $gate)) @{ results = $results; mid = $mid; report = $a.json; gate = $gate }
         }
-        # finish-batch takes at most 8 units; one start claims the whole queue (module 9), so the held units
-        # finish in batches of 8 and their lines are read as one (autor2004will: 20 Event units refused at once).
-        $all = @(); $tails = @(); $readable = $true
-        for ($i = 0; $i -lt $units.Count; $i += 8) {
-            $share = @($units[$i..([Math]::Min($i + 7, $units.Count - 1))])
-            $list = (@($share | ForEach-Object { "$($_.id):$($_.token)" }) -join ',')
-            $one = Run @('finish-batch', '-Out', $Out, '-Units', $list)
+        # finish-batch takes the whole layer's held units in one process (-UnitsFile); check typed
+        # planning-stop refusal BEFORE any aggregation, continuation or recovery.
+        $pending = @($units)
+        $all = @(); $tails = @(); $readable = $true; $lockRefusal = $null; $fatalStop = $null; $round = 0
+        while ($pending.Count) {
+            $round++
+            $uFile = if ($round -eq 1) { Join-Path $Work 'units.json' } else { $n = "units-rem-$round.json"; Save $n $pending; Join-Path $Work $n }
+            $one = Run @('finish-batch', '-Out', $Out, '-UnitsFile', $uFile)
             $tails += $one.tail
-            if (-not $one.json -or $one.json.kind -ne 'finish_batch') { $readable = $false; continue }
-            $all += @($one.json.results)
+            $lockRefusal = Batch-LockRefusal $one
+            if ($one.json -and $one.json.kind -eq 'finish_batch') {
+                $all += @($one.json.results | Where-Object { $_ -and $_.status -ne 'not_run' })
+            }
+            if ($lockRefusal) { break }
+            if (-not $one.json -or $one.json.kind -ne 'finish_batch') { $readable = $false; break }
+            $stop = "$($one.json.stop_reason)"
+            $notRun = [int]$one.json.not_run
+            if ($stop -eq 'transport' -or $stop -eq 'archive_identity') {
+                $fatalStop = "${stop}: $notRun $Layer unit(s) not run"
+                break
+            }
+            if ($stop -eq 'budget' -or $notRun -gt 0) {
+                $nextPending = Read-Remaining $one.json
+                if ($null -eq $nextPending -or $nextPending.Count -eq 0) {
+                    $fatalStop = "budget_continuation: missing remaining detail for $notRun $Layer unit(s)"
+                    break
+                }
+                if ($nextPending.Count -ge $pending.Count) {
+                    $fatalStop = "budget_continuation: remaining set did not shrink ($($nextPending.Count) >= $($pending.Count))"
+                    break
+                }
+                $pending = $nextPending
+                continue
+            }
+            break
+        }
+        if ($lockRefusal) {
+            foreach ($r in $all) {
+                $entry = @{ unit = "$($r.unit)"; token = $r.token; status = "$($r.status)" }
+                foreach ($k in @('disposition', 'code', 'cause', 'from')) { if ($r.$k) { $entry[$k] = "$($r.$k)" } }
+                $results += $entry
+            }
+            $gate = Gate
+            Fail-PlanningStop 'finish' $lockRefusal @{ results = $results; mid = $mid; gate = $gate; refusal = $lockRefusal.refusal }
+            break
+        }
+        if ($fatalStop) {
+            foreach ($r in $all) {
+                $entry = @{ unit = "$($r.unit)"; token = $r.token; status = "$($r.status)" }
+                foreach ($k in @('disposition', 'code', 'cause', 'from')) { if ($r.$k) { $entry[$k] = "$($r.$k)" } }
+                $results += $entry
+            }
+            $gate = Gate
+            Fail 'finish' $fatalStop @{ results = $results; mid = $mid; gate = $gate } $midLine
+            break
         }
         $batch = @{ tail = ($tails -join "`n"); json = $(if ($readable) { [pscustomobject]@{ kind = 'finish_batch'; results = $all } } else { $null }) }
         if (-not $batch.json -or $batch.json.kind -ne 'finish_batch') {
@@ -556,11 +825,7 @@ switch ($Step) {
             foreach ($k in @('disposition', 'code', 'cause', 'from')) { if ($r.$k) { $entry[$k] = "$($r.$k)" } }
             $results += $entry
         }
-        $lockRefusal = Lock-Refusal ($batch.json | ConvertTo-Json -Depth 16 -Compress)
         $gate = Gate
-        if ($lockRefusal) {
-            Fail 'finish' "card_locked: $($lockRefusal.message)" @{ results = $results; mid = $mid; gate = $gate; refusal = $lockRefusal } @{ code = 'card_locked'; layer = $Layer; message = "$($lockRefusal.message)"; tree = "$($lockRefusal.tree)"; lock_id = $lockRefusal.lock_id }
-        }
         Reply (@{ ok = $true; layer = $Layer } + (Results-Line $results) + $midLine + (Gate-Fields $gate)) @{ results = $results; mid = $mid; gate = $gate }
     }
 }

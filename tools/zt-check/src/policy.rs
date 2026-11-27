@@ -13,7 +13,7 @@ use std::sync::LazyLock;
 /// The rules self-check.ps1 reports by default: every hard rule but R6. The Term rules are
 /// reported where they apply, which is only on a Term Card (S09, #152).
 pub const DEFAULT_RULES: &str =
-    "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,R20,R21,R22,I1,I2,I3,I4,I7,L1,L2,E1,E2,F1,F2,F3,EM1,EM2,EM3,EM4,EM5,T1,T2,T3,T4,T5,T6,T7,T9,T10";
+    "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,R20,R21,R22,I1,I2,I3,I4,I7,L1,L2,E1,E2,F1,F2,F3,EM1,EM2,EM3,EM4,EM5,FM1,FM2,FM3,FM4,FM5,FM6,T1,T2,T3,T4,T5,T6,T7,T9,T10";
 
 /// The advisory rules of the current default policy: every line they raise is
 /// advice. I7 is not here: it has one advisory subcase (`own_source_unknown`)
@@ -250,6 +250,14 @@ static CATALOG: &[RuleSpec] = &[
     spec("EM3", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
     spec("EM4", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
     spec("EM5", Setting::Advise, Setting::Advise, Scope::Local, RuleState::Configurable),
+    // The formal-model rules (docs/formal-models-proposal.md §5.5): every Level 2 formal model
+    // (excluding mathematical units carrying `form`); advice on human edits, blocking on agent builds.
+    spec("FM1", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("FM2", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("FM3", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("FM4", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("FM5", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("FM6", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
     spec("L1", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
     spec("L2", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
     spec("L3", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Configurable),
@@ -795,6 +803,10 @@ pub struct Applicability {
     /// The Card is a Literature note (issue #184): several rules take their Literature-note row,
     /// so the same text means another thing in a book and in a Topic tree.
     literature: bool,
+    /// Whether the Card (or its owning Model Card) is a mathematical unit carrying `form`.
+    math_form: bool,
+    /// Whether a Model Card owns parts (distinguishing unbuilt Digest-stage heads from built heads).
+    has_parts: bool,
 }
 
 impl Applicability {
@@ -816,6 +828,8 @@ impl Applicability {
             term_type: ps_eq(&text(prop(entry, "type")), "term"),
             term_role: ps_string(prop(entry, "term_role")).to_lowercase(),
             literature: crate::core::is_literature_note(entry),
+            math_form: !text(prop(entry, "form")).is_empty(),
+            has_parts: prop(entry, "has_parts").and_then(Value::as_bool).unwrap_or(false),
         }
     }
 
@@ -840,6 +854,15 @@ impl Applicability {
             "R13" => format!("part:{}:{}", self.part, self.level),
             "R14" | "R15" | "R16" | "R17" => {
                 format!("derivation:{}:{}", self.derivation, self.level)
+            }
+            "FM1" => {
+                format!(
+                    "formal:{}:{}:{}:{}",
+                    self.level, self.part, self.math_form, self.has_parts
+                )
+            }
+            "FM2" | "FM3" | "FM4" | "FM5" | "FM6" => {
+                format!("formal:{}:{}:{}", self.level, self.part, self.math_form)
             }
             // The Idea rules apply to an Idea or an anchor.
             "I1" => format!(
@@ -966,7 +989,7 @@ fn identity(diagnostic: &Diagnostic) -> (String, String, String, String) {
 }
 
 // self-check.ps1.
-pattern!(FAULT_LINE, r"^\S+ ([RIELFT]\d+) ");
+pattern!(FAULT_LINE, r"^\S+ ((?:EM|FM|[RIELFTC])\d+) ");
 
 pattern!(LIST_SPLIT, r"[,\s]+");
 

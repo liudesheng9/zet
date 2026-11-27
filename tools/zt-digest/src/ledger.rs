@@ -1,5 +1,6 @@
 //! One prepared book's work and evidence. No Card prose or second write authority.
 mod adopt;
+pub(crate) mod batch;
 mod cleanup_run;
 mod watch;
 pub(crate) mod finish_batch;
@@ -1843,7 +1844,7 @@ fn citedcards_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Resul
     let inputs = unit_inputs(p, unit)?;
     let kind = field(&inputs, "kind")?.to_string();
     let _guard = unit_guard(p, unit)?;
-    let (_claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (_claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     if done {
         return Ok(json!({"schema_version":1,"unit":unit,"state":"done","reused":true}));
     }
@@ -1905,7 +1906,7 @@ fn cited_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<Val
         bail!("the Cited unit `{unit}` carries no Cited list input");
     }
     let _guard = unit_guard(p, unit)?;
-    let (_claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (_claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     if done {
         return Ok(json!({"schema_version":1,"unit":unit,"state":"done","reused":true}));
     }
@@ -2214,7 +2215,7 @@ fn termcards_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result
         bail!("the Term-card unit `{unit}` is bound to another plan revision");
     }
     let _guard = unit_guard(p, unit)?;
-    let (_claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (_claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     if done {
         return Ok(json!({"schema_version":1,"unit":unit,"state":"done","reused":true}));
     }
@@ -2441,7 +2442,7 @@ fn termlink_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<
         bail!("the Term-link unit carries no frozen pass input");
     }
     let _guard = unit_guard(p, unit)?;
-    let (_claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (_claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     if done {
         return Ok(json!({"schema_version":1,"unit":unit,"state":"done","reused":true}));
     }
@@ -2691,7 +2692,7 @@ fn prepared_manifest(p: &Prepared) -> Result<Value> {
 /// missing or changed section is a fault, never an empty index.
 fn math_index_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<Value> {
     let _guard = unit_guard(p, unit)?;
-    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     let manifest = prepared_manifest(p)?;
     let expected = p.out.join("math").join("index.json");
     let path = std::fs::canonicalize(path).context("math index evidence does not exist")?;
@@ -2765,7 +2766,7 @@ fn math_index_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Resul
 /// its math supplement, with this run's own paths filled in (R238).
 fn math_docs_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<Value> {
     let _guard = unit_guard(p, unit)?;
-    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     let manifest = prepared_manifest(p)?;
     let expected = p.out.join("math").join("docs.json");
     let path = std::fs::canonicalize(path).context("math docs evidence does not exist")?;
@@ -2839,7 +2840,7 @@ fn math_docs_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result
 /// statement stays open and this layer never reports it built (R238).
 fn math_skeleton_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Path) -> Result<Value> {
     let _guard = unit_guard(p, unit)?;
-    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     let manifest = prepared_manifest(p)?;
     let relayed = p.out.join("math").join("units.json");
     let path = std::fs::canonicalize(path).context("math skeleton evidence does not exist")?;
@@ -3004,7 +3005,7 @@ fn math_skeleton_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path:
 /// it from here (R238).
 fn notation_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Path) -> Result<Value> {
     let _guard = unit_guard(p, unit)?;
-    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     let expected = p.out.join("math").join("notation").join("applied.json");
     let path = std::fs::canonicalize(path).context("notation evidence does not exist")?;
     if path != std::fs::canonicalize(&expected)? {
@@ -3104,7 +3105,7 @@ fn boundary_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Pat
     let plan = registered["plan"].clone();
     let at = field(&plan, "unit")?.to_string();
     let _guard = unit_guard(p, unit)?;
-    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     let expected = p.out.join("math").join("boundary").join("settled.json");
     let path = std::fs::canonicalize(path).context("boundary settle evidence does not exist")?;
     if path != std::fs::canonicalize(&expected)? {
@@ -3338,7 +3339,7 @@ fn proof_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Path) 
     let plan = registered["plan"].clone();
     let at = field(&plan, "unit")?.to_string();
     let _guard = unit_guard(p, unit)?;
-    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     let expected = p.out.join("math").join("proof").join("applied.json");
     let path = std::fs::canonicalize(path).context("proof apply evidence does not exist")?;
     if path != std::fs::canonicalize(&expected)? {
@@ -3493,7 +3494,7 @@ fn proof_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Path) 
 /// retained one, so a stale or hand-written report cannot complete the layer (R241).
 fn math_check_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Path) -> Result<Value> {
     let _guard = unit_guard(p, unit)?;
-    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     let expected = p.out.join("math-audit.json");
     let path = std::fs::canonicalize(path).context("math check evidence does not exist")?;
     if path != std::fs::canonicalize(&expected)? {
@@ -3560,7 +3561,7 @@ fn note_disposition(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, path: &Pa
         bail!("`{unit}` is not a note suggestion unit");
     }
     let _guard = unit_guard(p, unit)?;
-    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     let registered = unit_inputs(p, unit)?;
     let expected = p.out.join(format!("note-{id}.json"));
     if std::fs::canonicalize(path).context("note disposition evidence does not exist")?
@@ -4746,7 +4747,7 @@ pub fn book_cards_finish_cli(argv: &[String]) -> Result<i32> {
     let (out, work, token, declared, check_only) = match parsed {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("zt-digest book-cards-finish: {error}");
+            crate::util::emit_err(&format!("zt-digest book-cards-finish: {error}"));
             return Ok(2);
         }
     };
@@ -4899,7 +4900,7 @@ fn links_of(section: &str) -> Vec<String> {
 pub(crate) fn publication_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, path: &Path) -> Result<Value> {
     let (layer, key, revision) = publication_unit(unit)?;
     let _guard = unit_guard(p, unit)?;
-    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     let expected = p.out.join(format!("publication-{layer}-{key}-{revision}.json"));
     if std::fs::canonicalize(path).context("publication evidence does not exist")?
         != std::fs::canonicalize(&expected)?
@@ -6699,10 +6700,67 @@ fn heartbeat_interval() -> Duration {
     Duration::from_millis(ms)
 }
 
-/// Names the processes whose heartbeat already renews one claim, so repeated
-/// `finish_claim` calls in the same command start exactly one renewing thread.
-static HEARTBEATS: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<String>>> =
-    std::sync::OnceLock::new();
+struct HeartbeatControl {
+    stop: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    refs: usize,
+}
+
+/// Scoped RAII handle for an active unit heartbeat. Dropping the last guard for `(out, unit, token)`
+/// signals the worker immediately via Condvar, joins the thread, and removes the registry entry so
+/// batch operations never accumulate detached threads or keep failed/abandoned claims recent.
+struct HeartbeatGuard {
+    key: Option<String>,
+}
+
+impl HeartbeatGuard {
+    fn empty() -> Self {
+        Self { key: None }
+    }
+}
+
+impl Drop for HeartbeatGuard {
+    fn drop(&mut self) {
+        let Some(key) = self.key.take() else {
+            return;
+        };
+        let to_stop = {
+            let Some(registry) = HEARTBEATS.get() else {
+                return;
+            };
+            let Ok(mut map) = registry.lock() else {
+                return;
+            };
+            let remove = match map.get_mut(&key) {
+                Some(entry) => {
+                    entry.refs = entry.refs.saturating_sub(1);
+                    entry.refs == 0
+                }
+                None => false,
+            };
+            if remove {
+                map.remove(&key)
+            } else {
+                None
+            }
+        };
+        if let Some(mut control) = to_stop {
+            let (lock, cvar) = &*control.stop;
+            if let Ok(mut stopped) = lock.lock() {
+                *stopped = true;
+                cvar.notify_all();
+            }
+            if let Some(handle) = control.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+}
+
+/// Active unit heartbeats keyed by `(out, unit, token)`, reference-counted by `HeartbeatGuard`.
+static HEARTBEATS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, HeartbeatControl>>,
+> = std::sync::OnceLock::new();
 
 /// A registered external run that is not terminal still owns the work that produced it,
 /// so neither a replacement attempt nor a completion may treat the unit as settled (R184).
@@ -6780,22 +6838,32 @@ fn heartbeat_renew(
 }
 
 /// A long command renews itself from a small internal heartbeat while it does bounded
-/// work (R178). A lost claim ends the thread; a transient ledger fault waits for the next
-/// beat. The process holds the thread for its whole life, so no command has to stop it.
-fn start_heartbeat(p: &Prepared, unit: &str, token: i64) {
+/// work (R178). The returned `HeartbeatGuard` stops and joins the worker on drop (removing its
+/// registry entry) so batch commands never leak threads or keep finished/failed claims recent.
+fn start_heartbeat(p: &Prepared, unit: &str, token: i64) -> HeartbeatGuard {
     let key = format!("{}|{unit}|{token}", p.out.display());
-    let registry = HEARTBEATS.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeSet::new()));
-    if let Ok(mut keys) = registry.lock()
-        && !keys.insert(key)
-    {
-        return;
+    let registry = HEARTBEATS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let Ok(mut map) = registry.lock() else {
+        return HeartbeatGuard::empty();
+    };
+    if let Some(existing) = map.get_mut(&key) {
+        existing.refs += 1;
+        return HeartbeatGuard { key: Some(key) };
     }
+    let stop = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let stop_thread = std::sync::Arc::clone(&stop);
     let out = p.out.clone();
     let unit = unit.to_string();
     let interval = heartbeat_interval();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let mut seq = 0u64;
         loop {
+            {
+                let (lock, _) = &*stop_thread;
+                if lock.lock().map(|g| *g).unwrap_or(true) {
+                    return;
+                }
+            }
             seq += 1;
             if let Err(error) = heartbeat_renew(&out, &unit, token, seq, interval) {
                 let text = error.to_string();
@@ -6803,9 +6871,30 @@ fn start_heartbeat(p: &Prepared, unit: &str, token: i64) {
                     return;
                 }
             }
-            std::thread::sleep(interval);
+            let (lock, cvar) = &*stop_thread;
+            let Ok(guard) = lock.lock() else {
+                return;
+            };
+            if *guard {
+                return;
+            }
+            let Ok((guard, _)) = cvar.wait_timeout(guard, interval) else {
+                return;
+            };
+            if *guard {
+                return;
+            }
         }
     });
+    map.insert(
+        key.clone(),
+        HeartbeatControl {
+            stop,
+            handle: Some(handle),
+            refs: 1,
+        },
+    );
+    HeartbeatGuard { key: Some(key) }
 }
 
 fn event(
@@ -7075,10 +7164,33 @@ fn reconcile(tx: &Transaction, now: i64) -> Result<()> {
 /// settles, or the deadline passes. Timekeeping lives here, never in a workflow
 /// module. The wait never spends an attempt and never changes a unit state except
 /// by the ordinary bounded claim.
+pub(crate) fn verify_live_archive_identity(p: &Prepared, zt: &mut Zt) -> Result<()> {
+    let view = zt.archive_view()?;
+    if view["archive_identity"] != p.contract["archive_identity"] {
+        bail!("archive_identity_mismatch: live archive identity differs from prepared contract");
+    }
+    Ok(())
+}
+
 pub(crate) fn next(p: &Prepared, layer: &str, take: i64, owner: &str, wait: i64, lease: i64) -> Result<Value> {
+    next_filtered(p, layer, Some(take), owner, wait, lease, None, None, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn next_filtered(
+    p: &Prepared,
+    layer: &str,
+    take: Option<i64>,
+    owner: &str,
+    wait: i64,
+    lease: i64,
+    prefix: Option<&str>,
+    ids: Option<&BTreeSet<String>>,
+    exclude: Option<&BTreeSet<String>>,
+) -> Result<Value> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait.max(0) as u64);
     loop {
-        let claimed = next_once(p, layer, take, owner, lease)?;
+        let claimed = next_once(p, layer, take, owner, lease, prefix, ids, exclude)?;
         let empty = claimed["units"].as_array().is_none_or(|units| units.is_empty());
         if !empty || wait <= 0 || std::time::Instant::now() >= deadline {
             return Ok(claimed);
@@ -7110,32 +7222,81 @@ fn held_lease(tx: &Transaction, unit: &str) -> Result<i64> {
     Ok(start_lease(now_seconds(), lease_seconds(), current))
 }
 
-/// One bounded claim of `take` ready units.
-///
-/// `lease` is the claim's own requested lifetime in seconds: the workflow passes the frozen
-/// `dshRunCap` of the prepared run, because a claim whose holder starts a provider run must stay
-/// current for at least that run's whole cap. A claim therefore never expires under a healthy job
-/// (#92); the base lease and its heartbeat remain the floor and the ordinary renewal (#R178).
-fn next_once(p: &Prepared, layer: &str, take: i64, owner: &str, lease: i64) -> Result<Value> {
+/// One bounded or full-layer claim of ready units, optionally restricted to a literal `id` prefix,
+/// an exact set of unit IDs, or an exclusion set inside the `BEGIN IMMEDIATE` transaction (never
+/// claiming excluded units such as `book@N` or incrementing their attempts). Selects lightweight
+/// metadata first and loads `inputs_json` only for the selected rows.
+#[allow(clippy::too_many_arguments)]
+fn next_once(
+    p: &Prepared,
+    layer: &str,
+    take: Option<i64>,
+    owner: &str,
+    lease: i64,
+    prefix: Option<&str>,
+    ids: Option<&BTreeSet<String>>,
+    exclude: Option<&BTreeSet<String>>,
+) -> Result<Value> {
     let mut conn = writer(p)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
     let now = now_seconds();
     reconcile(&tx, now)?;
-    let mut statement=tx.prepare("SELECT id,input_hash,inputs_json,claim_token FROM units WHERE layer=?1 AND state='ready' ORDER BY logical_key,revision,id LIMIT ?2")?;
-    let rows = statement
-        .query_map(params![layer, take], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, i64>(3)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(statement);
-    let mut claimed = Vec::new();
-    for (id, input_hash, inputs, old_token) in rows {
+    let limit = take.map(|n| n.max(0) as usize);
+    let mut selected: Vec<(String, String, i64)> = Vec::new();
+    if prefix.is_none() && ids.is_none() && exclude.is_none() {
+        if let Some(lim) = limit {
+            let mut statement = tx.prepare(
+                "SELECT id,input_hash,claim_token FROM units WHERE layer=?1 AND state='ready' ORDER BY logical_key,revision,id LIMIT ?2",
+            )?;
+            selected = statement
+                .query_map(params![layer, lim as i64], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+        } else {
+            let mut statement = tx.prepare(
+                "SELECT id,input_hash,claim_token FROM units WHERE layer=?1 AND state='ready' ORDER BY logical_key,revision,id",
+            )?;
+            selected = statement
+                .query_map(params![layer], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+        }
+    } else {
+        let mut statement = tx.prepare(
+            "SELECT id,input_hash,claim_token FROM units WHERE layer=?1 AND state='ready' ORDER BY logical_key,revision,id",
+        )?;
+        let iter = statement.query_map(params![layer], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+        })?;
+        for item in iter {
+            let (id, input_hash, old_token) = item?;
+            if let Some(pref) = prefix
+                && !id.starts_with(pref)
+            {
+                continue;
+            }
+            if let Some(wanted) = ids
+                && !wanted.contains(&id)
+            {
+                continue;
+            }
+            if let Some(skip) = exclude
+                && skip.contains(&id)
+            {
+                continue;
+            }
+            selected.push((id, input_hash, old_token));
+            if limit.is_some_and(|lim| selected.len() >= lim) {
+                break;
+            }
+        }
+    }
+    let mut claimed = Vec::with_capacity(selected.len());
+    for (id, input_hash, old_token) in selected {
+        let inputs: String = tx.query_row("SELECT inputs_json FROM units WHERE id=?1", [&id], |r| r.get(0))?;
         let token = old_token.checked_add(1).context("claim token exhausted")?;
         let lease_until = now + claim_lease(lease_seconds(), lease);
         tx.execute("UPDATE units SET state='claimed',owner=?2,claim_token=?3,lease_until=?4,retry_after=NULL,attempts=attempts+1 WHERE id=?1",params![id,owner,token,lease_until])?;
@@ -7428,15 +7589,31 @@ fn reopen_units(tx: &Transaction, units: &[String], reason: &str, now: i64, rech
     Ok(out)
 }
 
+#[allow(dead_code)]
 fn reclaim(p: &Prepared, only: Option<&str>, take: i64, release: bool) -> Result<Value> {
+    reclaim_filtered(p, only, None, Some(take), release, None, None, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reclaim_filtered(
+    p: &Prepared,
+    only: Option<&str>,
+    layer: Option<&str>,
+    take: Option<i64>,
+    release: bool,
+    token_fence: Option<i64>,
+    fenced_units: Option<&[(String, i64)]>,
+    owner_fence: Option<&str>,
+) -> Result<Value> {
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let tx = conn.unchecked_transaction()?;
     verify_binding(&tx, p)?;
     let run = meta(&tx, "run_id")?;
     let now = now_seconds();
-    let mut candidates = Vec::new();
-    match only {
-        Some(unit) => {
+    let mut candidates: Vec<(String, i64, Option<String>)> = Vec::new();
+    let mut skipped = Vec::new();
+    if let Some(fenced) = fenced_units {
+        for (unit, expected_token) in fenced {
             let row: Option<(String, i64, Option<i64>, Option<String>)> = tx
                 .query_row(
                     "SELECT state,claim_token,lease_until,owner FROM units WHERE id=?1",
@@ -7444,33 +7621,84 @@ fn reclaim(p: &Prepared, only: Option<&str>, take: i64, release: bool) -> Result
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()?;
-            let (state, token, lease, owner) =
-                row.with_context(|| format!("unknown unit {unit}"))?;
-            if state != "claimed" {
-                bail!("claim_active: {unit} is {state}, not claimed");
+            let Some((state, token, lease, owner)) = row else {
+                skipped.push(json!({"unit": unit, "reason": "unknown_unit"}));
+                continue;
+            };
+            if state != "claimed" || token != *expected_token {
+                skipped.push(json!({"unit": unit, "reason": "claim_active", "state": state, "token": token}));
+                continue;
             }
             if lease.unwrap_or(0) > now && !release {
-                bail!(
-                    "claim_active: {unit} still holds a live lease until {}",
-                    lease.unwrap_or_default()
-                );
+                skipped.push(json!({"unit": unit, "reason": "claim_active", "lease_until": lease}));
+                continue;
             }
-            candidates.push((unit.to_string(), token, owner));
+            candidates.push((unit.clone(), token, owner));
         }
-        None => {
-            // With -Release every claim is a candidate; the quiet check below decides each one.
-            let mut statement = tx.prepare(
-                "SELECT id,claim_token,owner FROM units WHERE state='claimed' AND (?3 OR coalesce(lease_until,0)<=?1) ORDER BY id LIMIT ?2",
-            )?;
-            let rows = statement.query_map(params![now, take, release], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                ))
-            })?;
-            for row in rows {
-                candidates.push(row?);
+    } else {
+        match only {
+            Some(unit) => {
+                let row: Option<(String, i64, Option<i64>, Option<String>)> = tx
+                    .query_row(
+                        "SELECT state,claim_token,lease_until,owner FROM units WHERE id=?1",
+                        [unit],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    )
+                    .optional()?;
+                let (state, token, lease, owner) =
+                    row.with_context(|| format!("unknown unit {unit}"))?;
+                if state != "claimed" {
+                    bail!("claim_active: {unit} is {state}, not claimed");
+                }
+                if let Some(expected) = token_fence
+                    && token != expected
+                {
+                    bail!("claim_active: {unit} holds token {token}, not {expected}");
+                }
+                if lease.unwrap_or(0) > now && !release {
+                    bail!(
+                        "claim_active: {unit} still holds a live lease until {}",
+                        lease.unwrap_or_default()
+                    );
+                }
+                candidates.push((unit.to_string(), token, owner));
+            }
+            None => {
+                // With -Release every claim is a candidate; the quiet check below decides each one.
+                let mut rows_out: Vec<(String, i64, Option<String>)> = match layer {
+                    Some(l) => {
+                        let mut statement = tx.prepare(
+                            "SELECT id,claim_token,owner FROM units WHERE state='claimed' AND layer=?1 AND (?3 OR coalesce(lease_until,0)<=?2) ORDER BY id",
+                        )?;
+                        statement
+                            .query_map(params![l, now, release], |r| {
+                                Ok((
+                                    r.get::<_, String>(0)?,
+                                    r.get::<_, i64>(1)?,
+                                    r.get::<_, Option<String>>(2)?,
+                                ))
+                            })?
+                            .collect::<rusqlite::Result<Vec<_>>>()?
+                    }
+                    None => {
+                        let mut statement = tx.prepare(
+                            "SELECT id,claim_token,owner FROM units WHERE state='claimed' AND (?2 OR coalesce(lease_until,0)<=?1) ORDER BY id",
+                        )?;
+                        statement
+                            .query_map(params![now, release], |r| {
+                                Ok((
+                                    r.get::<_, String>(0)?,
+                                    r.get::<_, i64>(1)?,
+                                    r.get::<_, Option<String>>(2)?,
+                                ))
+                            })?
+                            .collect::<rusqlite::Result<Vec<_>>>()?
+                    }
+                };
+                if let Some(limit) = take {
+                    rows_out.truncate(limit.max(0) as usize);
+                }
+                candidates.extend(rows_out);
             }
         }
     }
@@ -7478,7 +7706,6 @@ fn reclaim(p: &Prepared, only: Option<&str>, take: i64, release: bool) -> Result
     drop(conn);
     let mut reclaimed = Vec::new();
     let mut blocked = Vec::new();
-    let mut skipped = Vec::new();
     for (unit, token, owner) in candidates {
         let guard = match unit_guard(p, &unit) {
             Ok(guard) => guard,
@@ -7486,33 +7713,62 @@ fn reclaim(p: &Prepared, only: Option<&str>, take: i64, release: bool) -> Result
                 if only.is_some() {
                     return Err(error);
                 }
-                skipped.push(json!({"unit":unit,"reason":"lock_busy","cause":error.to_string()}));
+                skipped.push(json!({"unit":unit,"token":token,"reason":"lock_busy","cause":error.to_string()}));
                 continue;
             }
         };
         let mut conn = writer(p)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_binding(&tx, p)?;
-        let row: Option<(String, i64, Option<i64>, String)> = tx
+        let row: Option<(String, i64, Option<i64>, String, Option<String>)> = tx
             .query_row(
-                "SELECT state,claim_token,lease_until,progress_json FROM units WHERE id=?1",
+                "SELECT state,claim_token,lease_until,progress_json,owner FROM units WHERE id=?1",
                 [&unit],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?;
-        let (state, current, lease, progress) =
+        let (state, current, lease, progress, current_owner) =
             row.with_context(|| format!("unknown unit {unit}"))?;
-        let live = lease.unwrap_or(0) > now;
+        let now_guard = now_seconds();
+        let live = lease.unwrap_or(0) > now_guard;
         if state != "claimed" || current != token || (live && !release) {
             if only.is_some() {
                 bail!("claim_active: {unit} changed while its guard was acquired; no claim was reclaimed");
             }
-            skipped.push(json!({"unit":unit,"reason":"claim_active"}));
+            skipped.push(json!({"unit":unit,"token":current,"reason":"claim_active"}));
             tx.rollback()?;
             drop(guard);
             continue;
         }
-        if live && !quiet_claim(last_activity_ms(&tx, &unit, current)?, now * 1000, release_quiet_seconds()) {
+        if let Some(expected_owner) = owner_fence
+            && current_owner.as_deref() != Some(expected_owner)
+        {
+            if only.is_some() {
+                bail!(
+                    "owner_mismatch: {unit} is owned by `{}`, not `{expected_owner}`; no claim was reclaimed",
+                    current_owner.as_deref().unwrap_or("")
+                );
+            }
+            skipped.push(json!({
+                "unit": unit,
+                "token": current,
+                "owner": current_owner,
+                "reason": "owner_mismatch"
+            }));
+            tx.rollback()?;
+            drop(guard);
+            continue;
+        }
+        // An explicit owner-and-token-fenced surrender under `unit_guard` lets a caller voluntarily
+        // release its own recent claim (e.g. Term `-Retry`), while still enforcing `jobs_running`.
+        let voluntary_surrender = release
+            && (fenced_units.is_some() || token_fence == Some(current))
+            && owner_fence.is_some()
+            && owner_fence == current_owner.as_deref();
+        if live
+            && !voluntary_surrender
+            && !quiet_claim(last_activity_ms(&tx, &unit, current)?, now_guard * 1000, release_quiet_seconds())
+        {
             // A holder that is still working records activity: leave its claim alone.
             if only.is_some() {
                 bail!(
@@ -7520,7 +7776,7 @@ fn reclaim(p: &Prepared, only: Option<&str>, take: i64, release: bool) -> Result
                     release_quiet_seconds()
                 );
             }
-            skipped.push(json!({"unit":unit,"reason":"claim_recent"}));
+            skipped.push(json!({"unit":unit,"token":current,"reason":"claim_recent"}));
             tx.rollback()?;
             drop(guard);
             continue;
@@ -7836,21 +8092,22 @@ fn claim(tx: &Transaction, unit: &str, token: i64) -> Result<Claim> {
     tx.query_row("SELECT owner,input_hash,attempts FROM units WHERE id=?1 AND state='claimed' AND claim_token=?2 AND lease_until>?3",params![unit,token,now_seconds()],|r|Ok(Claim{owner:r.get(0)?,input_hash:r.get(1)?,attempts:r.get(2)?})).optional()?.with_context(||format!("stale_claim: {unit} has no current unexpired claim for token {token}"))
 }
 
-fn check_claim(p: &Prepared, unit: &str, token: i64) -> Result<()> {
+fn check_claim_only(p: &Prepared, unit: &str, token: i64) -> Result<()> {
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let tx = conn.unchecked_transaction()?;
     verify_binding(&tx, p)?;
     claim(&tx, unit, token)?;
     tx.commit()?;
-    start_heartbeat(p, unit, token);
     Ok(())
 }
 
-fn renew(p: &Prepared, unit: &str, token: i64) -> Result<Value> {
-    let mut conn = writer(p)?;
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    verify_binding(&tx, p)?;
-    let claim = claim(&tx, unit, token)?;
+fn check_claim(p: &Prepared, unit: &str, token: i64) -> Result<HeartbeatGuard> {
+    check_claim_only(p, unit, token)?;
+    Ok(start_heartbeat(p, unit, token))
+}
+
+fn renew_in_tx(tx: &rusqlite::Transaction<'_>, unit: &str, token: i64) -> Result<Value> {
+    let claim = claim(tx, unit, token)?;
     let current: Option<i64> = tx.query_row(
         "SELECT lease_until FROM units WHERE id=?1",
         [unit],
@@ -7862,15 +8119,54 @@ fn renew(p: &Prepared, unit: &str, token: i64) -> Result<Value> {
         params![unit, until],
     )?;
     event(
-        &tx,
+        tx,
         unit,
         Some(&claim.owner),
         Some(token),
         "renewed",
         &json!({"lease_until":until,"manager":{"pid":std::process::id()}}),
     )?;
-    tx.commit()?;
     Ok(json!({"unit":unit,"token":token,"lease_until":until}))
+}
+
+fn renew(p: &Prepared, unit: &str, token: i64) -> Result<Value> {
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let out = renew_in_tx(&tx, unit, token)?;
+    tx.commit()?;
+    Ok(out)
+}
+
+/// Zero-sleep batch renewal in ONE SQLite transaction (`ledger renew -Units|-UnitsFile`, and
+/// in-process pre-step renewal for multi-batch `zt-digest model`).
+pub(crate) fn renew_batch(p: &Prepared, targets: &[(String, i64)]) -> Result<Value> {
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let mut renewed = Vec::new();
+    let mut released = Vec::new();
+    for (unit, token) in targets {
+        match renew_in_tx(&tx, unit, *token) {
+            Ok(v) => renewed.push(v),
+            Err(error) => {
+                let text = error.to_string();
+                if text.contains("stale_claim") || text.contains("unknown unit") {
+                    released.push(json!({"unit": unit, "token": token}));
+                } else {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "renewed": renewed,
+        "released": released,
+        "renewals": renewed.len(),
+    }))
 }
 
 /// The claims a `ledger hold` keeps current: `id:token` pairs, comma separated.
@@ -8004,7 +8300,7 @@ pub(crate) fn fault_class(code: &str) -> Result<&'static str> {
 }
 
 fn fail(p: &Prepared, unit: &str, token: i64, class: &str, fault: &Value) -> Result<Value> {
-    check_claim(p, unit, token)?;
+    check_claim_only(p, unit, token)?;
     let _guard = unit_guard(p, unit)?;
     let mut conn = writer(p)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -8059,7 +8355,7 @@ fn fail(p: &Prepared, unit: &str, token: i64, class: &str, fault: &Value) -> Res
 /// those facts, so a retry in the same call proves nothing, and a spent budget would fail it for good
 /// (autor2004will, 2026-11-09: three refusals in 30 s failed `cleanup/book@1` and it never came back).
 fn wait_for_provider(p: &Prepared, unit: &str, token: i64, cause: &str) -> Result<Value> {
-    check_claim(p, unit, token)?;
+    check_claim_only(p, unit, token)?;
     let _guard = unit_guard(p, unit)?;
     let mut conn = writer(p)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -8191,7 +8487,19 @@ fn terms_for_source(table: &str, source: &str) -> String {
     out
 }
 
+#[allow(dead_code)]
 fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Value> {
+    let mut cache = None;
+    group_start_with_cache(p, zt, number, token, &mut cache)
+}
+
+fn group_start_with_cache(
+    p: &Prepared,
+    zt: &mut Zt,
+    number: u64,
+    token: i64,
+    cache: &mut Option<batch::TreeCache>,
+) -> Result<Value> {
     let group = p.contract["groups"]
         .as_array()
         .unwrap()
@@ -8199,7 +8507,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         .find(|g| g["n"].as_u64() == Some(number))
         .context("prepared group does not exist")?;
     let unit = format!("digest/g{number:03}@1");
-    check_claim(p, &unit, token)?;
+    let _hb = check_claim(p, &unit, token)?;
     let _guard = unit_guard(p, &unit)?;
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let tx = conn.unchecked_transaction()?;
@@ -8239,23 +8547,44 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
     }
     renew(p, &unit, token)?;
     let anchor = zt.cards(&[field(group, "anchor")?.to_string()], "text")?;
-    let trees = crate::snapshot::read_literature_trees(zt)?;
-    let revision = trees
-        .first()
-        .and_then(|t| t["archive_revision"].as_u64())
-        .context("group snapshot has no prepared archive view")?;
+    let (trees, revision, snapshot) = match cache.as_ref() {
+        Some(cached) if cached.revision == anchor.archive_revision => (
+            cached.trees.clone(),
+            cached.revision,
+            cached.own_snapshot.clone(),
+        ),
+        _ => {
+            let trees = crate::snapshot::read_literature_trees(zt)?;
+            let revision = trees
+                .first()
+                .and_then(|t| t["archive_revision"].as_u64())
+                .context("group snapshot has no prepared archive view")?;
+            // docs/literature-only-digest-design.md: the group reads and links Literature trees only.
+            // scheiner2022baghdad (2026-11-04): a 1.34 MB list of every Card of the box went to each writer. The frozen
+            // record keeps this book only, and no job carries it: the earlier-context pack names the related Cards.
+            let own: Vec<Value> = trees
+                .iter()
+                .filter(|t| t["tree"] == p.contract["citation_key"])
+                .cloned()
+                .collect();
+            let (snapshot, _) = crate::snapshot::render(&own, 40);
+            *cache = Some(batch::TreeCache {
+                revision,
+                trees: trees.clone(),
+                own_snapshot: snapshot.clone(),
+            });
+            (trees, revision, snapshot)
+        }
+    };
     let after = zt.archive_view()?;
-    if after["archive_identity"] != p.contract["archive_identity"]
-        || after["archive_revision"].as_u64() != Some(revision)
-        || anchor.archive_revision != revision
-    {
+    if after["archive_identity"] != p.contract["archive_identity"] {
+        *cache = None;
+        bail!("archive_identity_changed: group-start archive identity changed");
+    }
+    if after["archive_revision"].as_u64() != Some(revision) || anchor.archive_revision != revision {
+        *cache = None;
         bail!("read_view_changed: group-start archive view changed; retry");
     }
-    // docs/literature-only-digest-design.md: the group reads and links Literature trees only.
-    // scheiner2022baghdad (2026-11-04): a 1.34 MB list of every Card of the box went to each writer. The frozen
-    // record keeps this book only, and no job carries it: the earlier-context pack names the related Cards.
-    let own: Vec<Value> = trees.iter().filter(|t| t["tree"] == p.contract["citation_key"]).cloned().collect();
-    let (snapshot, _) = crate::snapshot::render(&own, 40);
     let directory = p
         .out
         .join("group-jobs")
@@ -8616,14 +8945,34 @@ fn recover_group(
 }
 
 pub fn group_start_cli(argv: &[String]) -> Result<i32> {
-    let parsed = (|| -> Result<(String, u64, i64)> {
-        let a = Args::parse(argv, &["Out", "Group", "Token"], &[])?;
+    enum Selector {
+        Single(u64, i64),
+        Batch(Vec<(String, u64, i64)>),
+    }
+    let parsed = (|| -> Result<(String, Selector)> {
+        let a = Args::parse(argv, &["Out", "Group", "Token", "Units", "UnitsFile"], &[])?;
         let out = a.required("Out")?;
         if out.trim().is_empty() {
             bail!("-Out is required");
         }
         if !a.positional.is_empty() {
             bail!("unexpected group-start positional arguments");
+        }
+        let batch_sel = a.has("Units") || a.has("UnitsFile");
+        if batch_sel {
+            if a.has("Units") && a.has("UnitsFile") {
+                bail!("-Units and -UnitsFile are mutually exclusive");
+            }
+            if a.has("Group") || a.has("Token") {
+                bail!("-Units/-UnitsFile cannot be combined with -Group or -Token");
+            }
+            let raw = if a.has("Units") {
+                hold_targets(&a.str("Units"))?
+            } else {
+                batch::parse_units_file(&a.required("UnitsFile")?)?
+            };
+            let targets = batch::parse_layer_group_targets("digest", raw)?;
+            return Ok((out, Selector::Batch(targets)));
         }
         let group = a
             .required("Group")?
@@ -8637,23 +8986,32 @@ pub fn group_start_cli(argv: &[String]) -> Result<i32> {
             .ok()
             .filter(|n| *n > 0)
             .context("-Token must be a positive integer")?;
-        Ok((out, group, token))
+        Ok((out, Selector::Single(group, token)))
     })();
-    let (out, group, token) = match parsed {
+    let (out, selector) = match parsed {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("zt-digest group-start: {e}");
+            crate::util::emit_err(&format!("zt-digest group-start: {e}"));
             return Ok(2);
         }
     };
     let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
-    let result = group_start(&p, &mut zt, group, token)?;
-    util::print_line(&serde_json::to_string(&result)?)?;
-    Ok(0)
+    match selector {
+        Selector::Single(group, token) => {
+            let result = group_start(&p, &mut zt, group, token)?;
+            util::print_line(&serde_json::to_string(&result)?)?;
+            Ok(0)
+        }
+        Selector::Batch(targets) => {
+            let (result, exit) = batch::group_start_batch(&p, &mut zt, &targets)?;
+            util::print_line(&serde_json::to_string(&result)?)?;
+            Ok(exit)
+        }
+    }
 }
 
-fn finish_claim(p: &Prepared, unit: &str, token: i64) -> Result<(Claim, Value, Value, bool)> {
+fn finish_claim_checked(p: &Prepared, unit: &str, token: i64) -> Result<(Claim, Value, Value, bool)> {
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let tx = conn.unchecked_transaction()?;
     verify_binding(&tx, p)?;
@@ -8670,9 +9028,6 @@ fn finish_claim(p: &Prepared, unit: &str, token: i64) -> Result<(Claim, Value, V
     }
     let run = meta(&tx, "run_id")?;
     tx.commit()?;
-    if state == "claimed" {
-        start_heartbeat(p, unit, token);
-    }
     Ok((
         Claim {
             owner,
@@ -8683,6 +9038,16 @@ fn finish_claim(p: &Prepared, unit: &str, token: i64) -> Result<(Claim, Value, V
         run,
         state == "done",
     ))
+}
+
+fn finish_claim(p: &Prepared, unit: &str, token: i64) -> Result<(Claim, Value, Value, bool, HeartbeatGuard)> {
+    let (claimed, progress, run, done) = finish_claim_checked(p, unit, token)?;
+    let guard = if !done {
+        start_heartbeat(p, unit, token)
+    } else {
+        HeartbeatGuard::empty()
+    };
+    Ok((claimed, progress, run, done, guard))
 }
 
 /// The moves `ledger relocate` recorded, old address → new address.
@@ -9771,7 +10136,7 @@ fn setup_readback(
 fn prepare_finish(p: &Prepared, zt: &mut Zt, token: i64, path: &Path) -> Result<Value> {
     let unit = "prepare/book@1";
     let _guard = unit_guard(p, unit)?;
-    let (claimed, progress, run, done) = finish_claim(p, unit, token)?;
+    let (claimed, progress, run, done, _hb) = finish_claim(p, unit, token)?;
     preparation_registration(
         &connect(&p.out.join("ledger.sqlite3"), false)?,
         &p.contract,
@@ -10158,14 +10523,14 @@ fn group_finish(
     zt: &mut Zt,
     number: u64,
     token: i64,
-    draft_path: &str,
+    draft_path: Option<&str>,
     check_only: bool,
 ) -> Result<Option<Value>> {
     use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
     let unit = format!("digest/g{number:03}@1");
-    finish_claim(p, &unit, token)?;
+    finish_claim_checked(p, &unit, token)?;
     let _guard = unit_guard(p, &unit)?;
-    let (claimed, progress, run, done) = finish_claim(p, &unit, token)?;
+    let (claimed, progress, run, done, _hb) = finish_claim(p, &unit, token)?;
     let group = p.contract["groups"]
         .as_array()
         .unwrap()
@@ -10176,8 +10541,10 @@ fn group_finish(
     if claimed.input_hash != canon::hash_value(group) {
         bail!("group input hash mismatch");
     }
-    let path = std::fs::canonicalize(draft_path).context("missing group draft JSON")?;
-    if path != std::fs::canonicalize(field(&job, "draft")?)? || !path.starts_with(&p.out) {
+    let expected_draft = field(&job, "draft")?;
+    let chosen_draft = draft_path.unwrap_or(expected_draft);
+    let path = std::fs::canonicalize(chosen_draft).context("missing group draft JSON")?;
+    if path != std::fs::canonicalize(expected_draft)? || !path.starts_with(&p.out) {
         bail!("group draft binding path mismatch");
     }
     if std::fs::metadata(&path)?.len() > 16 * 1024 * 1024 {
@@ -10457,6 +10824,7 @@ fn group_finish(
     let receipts = if calls.is_empty() {
         Vec::new()
     } else {
+        verify_live_archive_identity(p, zt)?;
         crate::calls::invoke_identified(zt, &calls, &prefix)?
     };
     // Allocation can change between the rolled-back preview and the commit.
@@ -10746,10 +11114,39 @@ fn group_finish(
 }
 
 pub fn group_finish_cli(argv: &[String]) -> Result<i32> {
-    let parsed = (|| -> Result<(String, u64, i64, String, bool)> {
-        let a = Args::parse(argv, &["Out", "Group", "Token", "Draft"], &["CheckOnly"])?;
+    let started = std::time::Instant::now();
+    enum Selector {
+        Single {
+            group: u64,
+            token: i64,
+            draft: String,
+            check_only: bool,
+        },
+        Batch(Vec<(String, u64, i64)>),
+    }
+    let parsed = (|| -> Result<(String, Selector)> {
+        let a = Args::parse(
+            argv,
+            &["Out", "Group", "Token", "Draft", "Units", "UnitsFile"],
+            &["CheckOnly"],
+        )?;
         if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
             bail!("explicit -Out is required");
+        }
+        if a.has("Units") || a.has("UnitsFile") {
+            if a.has("Units") && a.has("UnitsFile") {
+                bail!("-Units and -UnitsFile are mutually exclusive");
+            }
+            if a.has("Group") || a.has("Token") || a.has("Draft") || a.flag("CheckOnly") {
+                bail!("-Units/-UnitsFile cannot be combined with -Group, -Token, -Draft or -CheckOnly");
+            }
+            let raw = if a.has("Units") {
+                hold_targets(&a.str("Units"))?
+            } else {
+                batch::parse_units_file(&a.required("UnitsFile")?)?
+            };
+            let targets = batch::parse_layer_group_targets("digest", raw)?;
+            return Ok((a.str("Out"), Selector::Batch(targets)));
         }
         let group = a
             .required("Group")?
@@ -10765,26 +11162,43 @@ pub fn group_finish_cli(argv: &[String]) -> Result<i32> {
             .context("-Token must be positive")?;
         Ok((
             a.str("Out"),
-            group,
-            token,
-            a.required("Draft")?,
-            a.flag("CheckOnly"),
+            Selector::Single {
+                group,
+                token,
+                draft: a.required("Draft")?,
+                check_only: a.flag("CheckOnly"),
+            },
         ))
     })();
-    let (out, group, token, draft, check_only) = match parsed {
+    let (out, selector) = match parsed {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("zt-digest group-finish: {e}");
+            crate::util::emit_err(&format!("zt-digest group-finish: {e}"));
             return Ok(2);
         }
     };
     let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
-    // `-CheckOnly` prints the checker's own answer (`faults: N` last) and returns no JSON line.
-    if let Some(result) = group_finish(&p, &mut zt, group, token, &draft, check_only)? {
-        util::print_line(&serde_json::to_string(&result)?)?;
+    match selector {
+        Selector::Single {
+            group,
+            token,
+            draft,
+            check_only,
+        } => {
+            // `-CheckOnly` prints the checker's own answer (`faults: N` last) and returns no JSON line.
+            if let Some(result) = group_finish(&p, &mut zt, group, token, Some(&draft), check_only)? {
+                util::print_line(&serde_json::to_string(&result)?)?;
+            }
+            Ok(0)
+        }
+        Selector::Batch(targets) => {
+            let (line, exit) =
+                batch::group_or_link_finish_batch(&p, &mut zt, &targets, false, started)?;
+            util::print_line(&serde_json::to_string(&line)?)?;
+            Ok(exit)
+        }
     }
-    Ok(0)
 }
 
 /// R222: a Link unit is complete only when every owned in-scope Card carries the
@@ -11596,14 +12010,14 @@ fn link_finish(
     zt: &mut Zt,
     number: u64,
     token: i64,
-    draft_path: &str,
+    draft_path: Option<&str>,
     check_only: bool,
 ) -> Result<Value> {
     use std::collections::BTreeMap;
     let unit = link_unit(number);
-    finish_claim(p, &unit, token)?;
+    finish_claim_checked(p, &unit, token)?;
     let _guard = unit_guard(p, &unit)?;
-    let (claimed, progress, run, done) = finish_claim(p, &unit, token)?;
+    let (claimed, progress, run, done, _hb) = finish_claim(p, &unit, token)?;
     let inputs = frozen_inputs(p, &unit)?;
     if canon::hash_value(&inputs) != claimed.input_hash {
         bail!("Link unit input hash mismatch");
@@ -11620,7 +12034,22 @@ fn link_finish(
     // The frozen gap scope: only these Cards may receive a Link. It is read from the start's
     // retained evidence when one published it, else classified from the same archive read.
     let scope = link_scope(p, zt, number, &owned, &progress)?;
-    let path = std::fs::canonicalize(draft_path).context("missing Link draft JSON")?;
+    let resolved_draft: String = match draft_path {
+        Some(given) => given.to_string(),
+        None => {
+            if progress["link_start"]["token"].as_i64() != Some(token) {
+                bail!("missing token-bound link_start record for {unit} token {token}");
+            }
+            let job_path = field(&progress["link_start"]["job"], "path")?;
+            let job_sha = field(&progress["link_start"]["job"], "sha256")?;
+            let (start_job, rec) = json_artifact(Path::new(job_path))?;
+            if rec["sha256"] != json!(job_sha) || start_job["token"] != json!(token) || start_job["unit"] != json!(unit) {
+                bail!("link_start artifact binding mismatch for {unit}");
+            }
+            field(&start_job, "draft")?.to_string()
+        }
+    };
+    let path = std::fs::canonicalize(&resolved_draft).context("missing Link draft JSON")?;
     if !path.starts_with(&p.out) {
         bail!("Link draft binding path mismatch");
     }
@@ -11725,6 +12154,7 @@ fn link_finish(
     let receipts = if calls.is_empty() {
         Vec::new()
     } else {
+        verify_live_archive_identity(p, zt)?;
         crate::calls::invoke_identified(zt, &calls, &prefix)?
     };
     let read = zt.cards(&owned, "text")?;
@@ -11856,7 +12286,9 @@ fn link_finish(
 /// checked `link-finish`, and the stage records the group as skipped (AC07).
 fn link_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Value> {
     let unit = link_unit(number);
-    let (claimed, mut progress, run, done) = finish_claim(p, &unit, token)?;
+    finish_claim_checked(p, &unit, token)?;
+    let _guard = unit_guard(p, &unit)?;
+    let (claimed, mut progress, run, done, _hb) = finish_claim(p, &unit, token)?;
     let inputs = frozen_inputs(p, &unit)?;
     if canon::hash_value(&inputs) != claimed.input_hash {
         bail!("Link unit input hash mismatch");
@@ -11917,7 +12349,11 @@ fn link_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Valu
             crate::calls::authored_fingerprint(card),
         );
     }
-    if zt.cards(&[], "text")?.archive_revision != cards.archive_revision {
+    let view = zt.archive_view()?;
+    if view["archive_identity"] != p.contract["archive_identity"] {
+        bail!("archive_identity_mismatch: Link start archive identity changed");
+    }
+    if view["archive_revision"].as_u64() != Some(cards.archive_revision) {
         bail!("read_view_changed: Link start facts");
     }
     let self_check = format!(
@@ -12028,10 +12464,29 @@ fn link_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Valu
 }
 
 pub fn link_start_cli(argv: &[String]) -> Result<i32> {
-    let parsed = (|| -> Result<(String, u64, i64)> {
-        let a = Args::parse(argv, &["Out", "Group", "Token"], &[])?;
+    enum Selector {
+        Single(u64, i64),
+        Batch(Vec<(String, u64, i64)>),
+    }
+    let parsed = (|| -> Result<(String, Selector)> {
+        let a = Args::parse(argv, &["Out", "Group", "Token", "Units", "UnitsFile"], &[])?;
         if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
             bail!("explicit -Out is required");
+        }
+        if a.has("Units") || a.has("UnitsFile") {
+            if a.has("Units") && a.has("UnitsFile") {
+                bail!("-Units and -UnitsFile are mutually exclusive");
+            }
+            if a.has("Group") || a.has("Token") {
+                bail!("-Units/-UnitsFile cannot be combined with -Group or -Token");
+            }
+            let raw = if a.has("Units") {
+                hold_targets(&a.str("Units"))?
+            } else {
+                batch::parse_units_file(&a.required("UnitsFile")?)?
+            };
+            let targets = batch::parse_layer_group_targets("link", raw)?;
+            return Ok((a.str("Out"), Selector::Batch(targets)));
         }
         let group = a
             .required("Group")?
@@ -12045,26 +12500,64 @@ pub fn link_start_cli(argv: &[String]) -> Result<i32> {
             .ok()
             .filter(|n| *n > 0)
             .context("-Token must be positive")?;
-        Ok((a.str("Out"), group, token))
+        Ok((a.str("Out"), Selector::Single(group, token)))
     })();
-    let (out, group, token) = match parsed {
+    let (out, selector) = match parsed {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("zt-digest link-start: {error}");
+            crate::util::emit_err(&format!("zt-digest link-start: {error}"));
             return Ok(2);
         }
     };
     let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
-    let result = link_start(&p, &mut zt, group, token)?;
-    util::print_line(&serde_json::to_string(&result)?)?;
-    Ok(0)
+    match selector {
+        Selector::Single(group, token) => {
+            let result = link_start(&p, &mut zt, group, token)?;
+            util::print_line(&serde_json::to_string(&result)?)?;
+            Ok(0)
+        }
+        Selector::Batch(targets) => {
+            let (result, exit) = batch::link_start_batch(&p, &mut zt, &targets)?;
+            util::print_line(&serde_json::to_string(&result)?)?;
+            Ok(exit)
+        }
+    }
 }
 pub fn link_finish_cli(argv: &[String]) -> Result<i32> {
-    let parsed = (|| -> Result<(String, u64, i64, String, bool)> {
-        let a = Args::parse(argv, &["Out", "Group", "Token", "Draft"], &["CheckOnly"])?;
+    let started = std::time::Instant::now();
+    enum Selector {
+        Single {
+            group: u64,
+            token: i64,
+            draft: String,
+            check_only: bool,
+        },
+        Batch(Vec<(String, u64, i64)>),
+    }
+    let parsed = (|| -> Result<(String, Selector)> {
+        let a = Args::parse(
+            argv,
+            &["Out", "Group", "Token", "Draft", "Units", "UnitsFile"],
+            &["CheckOnly"],
+        )?;
         if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
             bail!("explicit -Out is required");
+        }
+        if a.has("Units") || a.has("UnitsFile") {
+            if a.has("Units") && a.has("UnitsFile") {
+                bail!("-Units and -UnitsFile are mutually exclusive");
+            }
+            if a.has("Group") || a.has("Token") || a.has("Draft") || a.flag("CheckOnly") {
+                bail!("-Units/-UnitsFile cannot be combined with -Group, -Token, -Draft or -CheckOnly");
+            }
+            let raw = if a.has("Units") {
+                hold_targets(&a.str("Units"))?
+            } else {
+                batch::parse_units_file(&a.required("UnitsFile")?)?
+            };
+            let targets = batch::parse_layer_group_targets("link", raw)?;
+            return Ok((a.str("Out"), Selector::Batch(targets)));
         }
         let group = a
             .required("Group")?
@@ -12080,24 +12573,41 @@ pub fn link_finish_cli(argv: &[String]) -> Result<i32> {
             .context("-Token must be positive")?;
         Ok((
             a.str("Out"),
-            group,
-            token,
-            a.required("Draft")?,
-            a.flag("CheckOnly"),
+            Selector::Single {
+                group,
+                token,
+                draft: a.required("Draft")?,
+                check_only: a.flag("CheckOnly"),
+            },
         ))
     })();
-    let (out, group, token, draft, check_only) = match parsed {
+    let (out, selector) = match parsed {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("zt-digest link-finish: {e}");
+            crate::util::emit_err(&format!("zt-digest link-finish: {e}"));
             return Ok(2);
         }
     };
     let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
-    let result = link_finish(&p, &mut zt, group, token, &draft, check_only)?;
-    util::print_line(&serde_json::to_string(&result)?)?;
-    Ok(0)
+    match selector {
+        Selector::Single {
+            group,
+            token,
+            draft,
+            check_only,
+        } => {
+            let result = link_finish(&p, &mut zt, group, token, Some(&draft), check_only)?;
+            util::print_line(&serde_json::to_string(&result)?)?;
+            Ok(0)
+        }
+        Selector::Batch(targets) => {
+            let (line, exit) =
+                batch::group_or_link_finish_batch(&p, &mut zt, &targets, true, started)?;
+            util::print_line(&serde_json::to_string(&line)?)?;
+            Ok(exit)
+        }
+    }
 }
 
 /// R216: the Cards/group unit is complete only when the offline zt-check has run
@@ -12457,9 +12967,9 @@ fn cards_done(p: &Prepared, zt: &mut Zt, number: u64, unit: &str, token: i64) ->
 
 fn cards_finish(p: &Prepared, zt: &mut Zt, number: u64, token: i64, check_only: bool) -> Result<Value> {
     let unit = cards_unit(number);
-    finish_claim(p, &unit, token)?;
+    finish_claim_checked(p, &unit, token)?;
     let _guard = unit_guard(p, &unit)?;
-    let (claimed, _progress, _run, done) = finish_claim(p, &unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, &unit, token)?;
     let inputs = frozen_inputs(p, &unit)?;
     if canon::hash_value(&inputs) != claimed.input_hash {
         bail!("Cards unit input hash mismatch");
@@ -12575,7 +13085,7 @@ pub fn cards_finish_cli(argv: &[String]) -> Result<i32> {
     let (out, group, token, check_only) = match parsed {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("zt-digest cards-finish: {error}");
+            crate::util::emit_err(&format!("zt-digest cards-finish: {error}"));
             return Ok(2);
         }
     };
@@ -13462,9 +13972,9 @@ fn empirical_finish(
     check_only: bool,
 ) -> Result<Value> {
     let unit = empirical_unit(layer, number);
-    finish_claim(p, &unit, token)?;
+    finish_claim_checked(p, &unit, token)?;
     let _guard = unit_guard(p, &unit)?;
-    let (claimed, _progress, _run, done) = finish_claim(p, &unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, &unit, token)?;
     let inputs = frozen_inputs(p, &unit)?;
     if canon::hash_value(&inputs) != claimed.input_hash {
         bail!("{unit} input hash mismatch");
@@ -13609,7 +14119,7 @@ fn empirical_finish_cli(argv: &[String], layer: &Empirical, name: &str) -> Resul
     let (out, group, token, check_only) = match parsed {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("zt-digest {name}: {error}");
+            crate::util::emit_err(&format!("zt-digest {name}: {error}"));
             return Ok(2);
         }
     };
@@ -13683,10 +14193,9 @@ fn model_plan_state(p: &Prepared, header: &str) -> Result<(PathBuf, String, Valu
     let dir = model_plan_dir(p, header)?;
     let bytes = std::fs::read(dir.join("plan.json"))?;
     let plan_hash = canon::sha256_hex(&bytes);
-    let plan: Value = serde_json::from_str(
-        std::str::from_utf8(&bytes).context("plan.json must be strict UTF-8")?,
-    )
-    .context("invalid plan.json")?;
+    let raw = std::str::from_utf8(&bytes).context("plan.json must be strict UTF-8")?;
+    let plan: Value = serde_json::from_str(raw.strip_prefix('\u{FEFF}').unwrap_or(raw))
+        .context("invalid plan.json")?;
     let batch = dir.parent().context("plan folder outside a model batch")?;
     let state_path = batch.join("state.json");
     if !state_path.is_file() {
@@ -13758,9 +14267,66 @@ fn structure_lines(body: &str) -> Vec<String> {
     out
 }
 
+/// Validates any unconsumed formal review artifact recorded in `compiler["pending_reviews"]`
+/// for `header`: missing/malformed files, omitted/unexpected addresses, or non-`ok` verdicts refuse
+/// (`require_files: false` skips absent files for backward compatibility with test fixtures, while
+/// always validating any review artifact that exists on disk).
+fn validate_pending_reviews(compiler: &Value, header: &str, require_files: bool) -> Result<()> {
+    for pending in list(&compiler["pending_reviews"]) {
+        if !ps::eq(&s(&pending["model"]), header) {
+            continue;
+        }
+        let output = s(&pending["output"]);
+        let expected: Vec<String> = list(&pending["addresses"])
+            .into_iter()
+            .map(s)
+            .filter(|a| !a.is_empty())
+            .collect();
+        let path = Path::new(&output);
+        if !path.is_file() {
+            if require_files {
+                bail!("pending formal review file is missing for `{header}`: {output}");
+            }
+            continue;
+        }
+        let parsed = util::read_json(&output)
+            .with_context(|| format!("pending formal review JSON is invalid for `{header}`: {output}"))?;
+        let items = parsed
+            .as_array()
+            .with_context(|| format!("pending formal review JSON must be an array for `{header}`: {output}"))?;
+        let mut seen: Vec<String> = Vec::new();
+        for (idx, item) in items.iter().enumerate() {
+            let obj = item
+                .as_object()
+                .with_context(|| format!("pending formal review entry {idx} is not an object in {output}"))?;
+            let addr = obj.get("address").and_then(Value::as_str).map(str::trim).unwrap_or("");
+            let verdict = obj.get("verdict").and_then(Value::as_str).unwrap_or("");
+            if addr.is_empty() || !matches!(verdict, "ok" | "fix" | "split") {
+                bail!("pending formal review entry {idx} is malformed in {output}");
+            }
+            if seen.iter().any(|x| ps::eq(x, addr)) {
+                bail!("pending formal review duplicates address `{addr}` in {output}");
+            }
+            seen.push(addr.to_string());
+            if !expected.is_empty() && !expected.iter().any(|e| ps::eq(e, addr)) {
+                bail!("pending formal review names unexpected address `{addr}` in {output}");
+            }
+            if verdict != "ok" {
+                bail!("pending formal review for `{header}` has unapplied `{verdict}` verdict on `{addr}`; run split");
+            }
+        }
+        for exp in &expected {
+            if !seen.iter().any(|x| ps::eq(x, exp)) {
+                bail!("pending formal review omitted assigned address `{exp}` in {output}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// R218: the complete checked outcome of one Model unit, from its own compiler's step
 /// state and the authored Cards. It writes nothing; the caller publishes and commits.
-fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Value) -> Result<Value> {
+fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Value, strict_review: bool) -> Result<Value> {
     use std::collections::{BTreeMap, BTreeSet};
     let header = model_header(inputs)?;
     let base = &inputs["producer"];
@@ -13842,15 +14408,17 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
     if report["todo"] != json!(0) {
         bail!("the last report names unwritten parts; report again after the fill");
     }
+    let formal_model_from_state = crate::model::formal::is_formal_model(&plan, truthy(&entry["math_unit"]));
     let derived = plan_parts.iter().any(|part| truthy(&part["derive"]));
     let derive_evidence = entry["steps"]["derive"].is_object()
         || (entry["steps"]["resume"]["round"] == json!("derive"));
     if derived && !derive_evidence {
         bail!("missing derive evidence: the plan has Derivation parts but no derive job was commanded");
     }
-    if derived && !entry["steps"]["review"].is_object() {
-        bail!("missing review evidence: the plan has Derivation parts but review was not commanded");
+    if (derived || formal_model_from_state) && !entry["steps"]["review"].is_object() {
+        bail!("missing review evidence: the plan has Derivation parts or is a Level 2 formal model, but review was not commanded");
     }
+    validate_pending_reviews(&compiler, header, strict_review)?;
     if ps::int(&entry["split"]).unwrap_or(0) > 0 && !entry["steps"]["split"].is_object() {
         bail!("missing split evidence: the model was split but no split command is recorded");
     }
@@ -13882,6 +14450,14 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         .with_context(|| format!("the Model Card `{header}` does not exist"))?;
     if head_card["workspace"] != "agent" {
         bail!("the Model Card `{header}` is not in the agent Workspace");
+    }
+    let formal_model = crate::model::formal::is_formal_model(&plan, !head_card["form"].is_null());
+    if formal_model && !entry["steps"]["review"].is_object() {
+        bail!("missing review evidence: a Level 2 formal model requires formal/clause review evidence");
+    }
+    if formal_model {
+        // Level 2 formal models always require pending review artifacts to exist on disk (Astra H7).
+        validate_pending_reviews(&compiler, header, true)?;
     }
     // The frozen fingerprint is the group's starting point: the model compiler is meant to
     // rewrite the Model Card, so completion records the current text without pretending the
@@ -13969,7 +14545,27 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         bail!("the model's level is `{level}`, the accepted plan says `{}`", s(&plan["level"]));
     }
     let build = &model["build"];
-    for name in ["closure", "forward", "unanchored", "beyond_level", "reach_in", "empirical_shape", "estimate_unbound", "spec_unbound", "test_unbound", "variable_uncovered"] {
+    for name in [
+        "closure",
+        "forward",
+        "unanchored",
+        "beyond_level",
+        "reach_in",
+        "import_target",
+        "import_cycle",
+        "empirical_shape",
+        "estimate_unbound",
+        "spec_unbound",
+        "test_unbound",
+        "variable_uncovered",
+        "formal_shape",
+        "setting_dependency",
+        "criterion_unbound",
+        "result_unbound",
+        "proof_unbound",
+        "experiment_unbound",
+        "symbol_uncovered",
+    ] {
         if build[name].as_array().is_some_and(|faults| !faults.is_empty()) {
             bail!("the model has build faults ({name}); repair the model before completing it");
         }
@@ -14023,19 +14619,15 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
             continue;
         }
         let mut wanted = Vec::new();
-        for rest in list(&part["rests"]) {
-            let reference = s(&ps::at(&pipe(rest), 0));
-            if reference.is_empty() {
-                continue;
-            }
+        for (reference, why) in crate::model::formal::planned_relations(part, formal_model) {
             if let Some(target) = resolve(&reference) {
-                wanted.push(json!({"ref":reference,"to":target,"why":ps::at(&pipe(rest), 1)}));
+                let why_val = if why.is_empty() && ps::eq(&reference, &s(&part["of"])) {
+                    json!("of")
+                } else {
+                    json!(why)
+                };
+                wanted.push(json!({"ref":reference,"to":target,"why":why_val}));
             }
-        }
-        if truthy(&part["of"])
-            && let Some(target) = resolve(&s(&part["of"]))
-        {
-            wanted.push(json!({"ref":s(&part["of"]),"to":target,"why":"of"}));
         }
         for want in &wanted {
             let target = field(want, "to")?;
@@ -14111,6 +14703,69 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         .filter(|line| !line.starts_with("faults: "))
         .cloned()
         .collect();
+    // Level 2 formal models: FM1-FM6 card-format rules and pinned inventory.json fidelity are
+    // blocking completion gates, never advisory style warnings (Astra C2).
+    let mut inventory_sha256: Option<String> = None;
+    let mut source_verified = false;
+    if formal_model {
+        let fm_blockers: Vec<&str> = style
+            .iter()
+            .filter(|line| line.contains(" FM"))
+            .map(String::as_str)
+            .collect();
+        if !fm_blockers.is_empty() {
+            bail!(
+                "the formal model `{header}` has blocking FM1-FM6 card-format faults: {}",
+                fm_blockers.iter().take(5).copied().collect::<Vec<_>>().join("; ")
+            );
+        }
+        let inv_path = _dir.join("inventory.json");
+        let staging_str = p.out.to_string_lossy().to_string();
+        if inv_path.is_file() {
+            let inv_bytes = std::fs::read(&inv_path)
+                .with_context(|| format!("failed to read inventory.json for `{header}`"))?;
+            let inv_sha = canon::sha256_hex(&inv_bytes);
+            let mut inv: Value = serde_json::from_slice(&inv_bytes)
+                .with_context(|| format!("invalid inventory.json for `{header}`"))?;
+            let ob_path = _dir.join("obligations.json");
+            if let Err(msg) = crate::model::inventory::merge_obligations_file(&mut inv, ob_path.to_string_lossy().as_ref()) {
+                bail!("inventory verification failed for `{header}`: {msg}");
+            }
+            let mut inv_faults = crate::model::inventory::validate_plan(&plan, &inv, Some(&staging_str));
+            let src_by_id: BTreeMap<String, Vec<String>> = plan_parts
+                .iter()
+                .map(|part| {
+                    let spans: Vec<String> = pipe(&part["src"]).into_iter().map(s).filter(|x| !x.is_empty()).collect();
+                    (s(&part["id"]), crate::model::inventory::src_files_of_spans(&spans))
+                })
+                .collect();
+            for (address, id) in &part_ids {
+                if let Some(card) = cards.get(address)
+                    && order.get(address).is_some_and(|o| o["line"] != json!("shared"))
+                {
+                    let base_id = id.split_once('~').map(|(b, _)| b).unwrap_or(id);
+                    let files = src_by_id
+                        .get(id)
+                        .or_else(|| src_by_id.get(base_id))
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    for mm in crate::model::inventory::card_printed_mismatches_scoped(&s(&card["body"]), &inv, files) {
+                        inv_faults.push(format!("{address}: {mm}"));
+                    }
+                }
+            }
+            if !inv_faults.is_empty() {
+                bail!(
+                    "inventory verification failed for `{header}`: {}",
+                    inv_faults.iter().take(5).cloned().collect::<Vec<_>>().join("; ")
+                );
+            }
+            inventory_sha256 = Some(inv_sha);
+            source_verified = true;
+        } else if _dir.join("brief.md").is_file() || p.out.join("sections").is_dir() {
+            bail!("missing pinned inventory.json for formal model `{header}`; extract inventory.json before completing it");
+        }
+    }
     let split = ps::int(&entry["split"]).unwrap_or(0);
     let steps: serde_json::Map<String, Value> = ["brief", "plan", "apply", "derive", "review", "split", "report", "resume"]
         .iter()
@@ -14148,6 +14803,8 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         "model": header,
         "level": level,
         "plan_hash": plan_hash,
+        "inventory_sha256": inventory_sha256,
+        "source_verified": source_verified,
         "source_review": {"path": review_path.to_string_lossy(), "complete": true, "parts": review["parts"].as_array().map(Vec::len).unwrap_or(0), "outcomes": review["outcomes"], "supplied": supplied},
         "producer": producer,
         "producer_input_hash": field(base, "producer_input_hash")?,
@@ -14231,7 +14888,7 @@ fn model_done(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value
     if canon::hash_value(&inputs) != field(&result, "unit_input_hash").unwrap_or("") {
         bail!("Model unit input hash mismatch");
     }
-    let current = model_evidence(p, zt, unit, token, &inputs)?;
+    let current = model_evidence(p, zt, unit, token, &inputs, false)?;
     for key in ["parts", "card_fingerprints", "plan_hash", "steps", "explanation", "structure", "source_review"] {
         if current[key] != result[key] {
             bail!("completed Model unit changed ({key}); keep the checked result and re-run from a new claim");
@@ -14254,8 +14911,12 @@ fn model_done(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value
 }
 
 fn model_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, check_only: bool) -> Result<Value> {
+    model_finish_with_mode(p, zt, unit, token, check_only, false)
+}
+
+fn model_finish_with_mode(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, check_only: bool, strict_review: bool) -> Result<Value> {
     let _guard = unit_guard(p, unit)?;
-    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     let inputs = frozen_inputs(p, unit)?;
     if canon::hash_value(&inputs) != claimed.input_hash {
         bail!("Model unit input hash mismatch");
@@ -14268,7 +14929,7 @@ fn model_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, check_only: b
         }
         return Ok(result);
     }
-    let mut result = model_evidence(p, zt, unit, token, &inputs)?;
+    let mut result = model_evidence(p, zt, unit, token, &inputs, strict_review)?;
     result["input_hash"] = json!(claimed.input_hash);
     result["unit_input_hash"] = json!(claimed.input_hash);
     if check_only {
@@ -14374,8 +15035,8 @@ fn model_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, check_only: b
 }
 
 pub fn model_finish_cli(argv: &[String]) -> Result<i32> {
-    let parsed = (|| -> Result<(String, String, i64, bool)> {
-        let a = Args::parse(argv, &["Out", "Model", "Token"], &["CheckOnly"])?;
+    let parsed = (|| -> Result<(String, String, i64, bool, bool)> {
+        let a = Args::parse(argv, &["Out", "Model", "Token"], &["CheckOnly", "StrictReview"])?;
         if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
             bail!("explicit -Out is required");
         }
@@ -14385,12 +15046,12 @@ pub fn model_finish_cli(argv: &[String]) -> Result<i32> {
             .ok()
             .filter(|number| *number > 0)
             .context("-Token must be positive")?;
-        Ok((a.str("Out"), a.required("Model")?, token, a.flag("CheckOnly")))
+        Ok((a.str("Out"), a.required("Model")?, token, a.flag("CheckOnly"), a.flag("StrictReview")))
     })();
-    let (out, model, token, check_only) = match parsed {
+    let (out, model, token, check_only, strict_review) = match parsed {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("zt-digest model-finish: {error}");
+            crate::util::emit_err(&format!("zt-digest model-finish: {error}"));
             return Ok(2);
         }
     };
@@ -14400,7 +15061,7 @@ pub fn model_finish_cli(argv: &[String]) -> Result<i32> {
     let unit = model_unit_for_header(&conn, &model)?.map(|(unit, _)| unit);
     drop(conn);
     let unit = unit.with_context(|| format!("no registered Model unit names `{model}`"))?;
-    let result = model_finish(&p, &mut zt, &unit, token, check_only)?;
+    let result = model_finish_with_mode(&p, &mut zt, &unit, token, check_only, strict_review)?;
     util::print_line(&serde_json::to_string(&result)?)?;
     Ok(0)
 }
@@ -14450,7 +15111,7 @@ fn planned_in_batch(compiler: &Value, batch: &Path, other: &str, header: &str) -
 /// any dependent fill/apply. A producer that is not done makes the dependent wait without
 /// spending an attempt; a completed producer without the named part is a content fault.
 fn model_deps(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value> {
-    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     if done {
         bail!("Model unit {unit} is already complete; its dependencies need no registration");
     }
@@ -14648,29 +15309,36 @@ fn model_deps(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value
 
 pub fn model_deps_cli(argv: &[String]) -> Result<i32> {
     // The batch form: every planned model of a batch in one process (finish_batch::model_deps_batch).
-    if argv.iter().any(|x| x.eq_ignore_ascii_case("-Units")) {
+    if argv.iter().any(|x| x.eq_ignore_ascii_case("-Units") || x.eq_ignore_ascii_case("-UnitsFile")) {
         let parsed = (|| -> Result<(String, Vec<(String, i64)>)> {
-            let a = Args::parse(argv, &["Out", "Units"], &[])?;
+            let a = Args::parse(argv, &["Out", "Units", "UnitsFile"], &[])?;
             if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
                 bail!("explicit -Out is required");
             }
-            let targets = hold_targets(&a.required("Units")?)?;
-            if targets.iter().any(|(unit, _)| !unit.starts_with("models/")) || targets.len() > 8 {
-                bail!("-Units names at most eight Model units (models/...)");
+            if a.has("Units") && a.has("UnitsFile") {
+                bail!("-Units and -UnitsFile are mutually exclusive");
+            }
+            let raw = if a.has("Units") {
+                hold_targets(&a.required("Units")?)?
+            } else {
+                batch::parse_units_file(&a.required("UnitsFile")?)?
+            };
+            let targets = batch::validate_unique_targets(raw)?;
+            if targets.iter().any(|(unit, _)| !unit.starts_with("models/")) {
+                bail!("-Units/-UnitsFile names Model units (models/...) only");
             }
             Ok((a.str("Out"), targets))
         })();
         let (out, targets) = match parsed {
             Ok(value) => value,
             Err(error) => {
-                eprintln!("zt-digest model-deps: {error}");
+                crate::util::emit_err(&format!("zt-digest model-deps: {error}"));
                 return Ok(2);
             }
         };
         let mut zt = crate::zt::start()?;
         let p = Prepared::read(&out, &mut zt)?;
-        drop(zt);
-        let result = finish_batch::model_deps_batch(&p, &targets)?;
+        let result = finish_batch::model_deps_batch(&p, &mut zt, &targets)?;
         util::print_line(&serde_json::to_string(&result)?)?;
         return Ok(0);
     }
@@ -14690,7 +15358,7 @@ pub fn model_deps_cli(argv: &[String]) -> Result<i32> {
     let (out, model, token) = match parsed {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("zt-digest model-deps: {error}");
+            crate::util::emit_err(&format!("zt-digest model-deps: {error}"));
             return Ok(2);
         }
     };
@@ -15016,7 +15684,7 @@ fn explain_done(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Val
 
 fn explain_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, check_only: bool) -> Result<Value> {
     let _guard = unit_guard(p, unit)?;
-    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let (claimed, _progress, _run, done, _hb) = finish_claim(p, unit, token)?;
     let inputs = frozen_inputs(p, unit)?;
     if canon::hash_value(&inputs) != claimed.input_hash {
         bail!("Explain unit input hash mismatch");
@@ -15118,7 +15786,7 @@ pub fn explain_finish_cli(argv: &[String]) -> Result<i32> {
     let (out, model, token, check_only) = match parsed {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("zt-digest explain-finish: {error}");
+            crate::util::emit_err(&format!("zt-digest explain-finish: {error}"));
             return Ok(2);
         }
     };
@@ -15235,9 +15903,9 @@ fn terms_plan(
     zt: &mut Zt,
 ) -> Result<Value> {
     let unit = "terms/book@1";
-    finish_claim(p, unit, token)?;
+    finish_claim_checked(p, unit, token)?;
     let _guard = unit_guard(p, unit)?;
-    let (claimed, mut progress, run, done) = finish_claim(p, unit, token)?;
+    let (claimed, mut progress, run, done, _hb) = finish_claim(p, unit, token)?;
     if !progress.is_object() {
         bail!("invalid Terms progress object");
     }
@@ -15353,9 +16021,9 @@ fn terms_merge(
     explore_chars: i64,
 ) -> Result<Value> {
     let unit = "terms/book@1";
-    finish_claim(p, unit, token)?;
+    finish_claim_checked(p, unit, token)?;
     let _guard = unit_guard(p, unit)?;
-    let (claimed, mut progress, run, done) = finish_claim(p, unit, token)?;
+    let (claimed, mut progress, run, done, _hb) = finish_claim(p, unit, token)?;
     if claimed.input_hash != canon::hash_value(&json!({"preparation_hash":p.hash})) {
         bail!("Terms unit input hash mismatch");
     }
@@ -15578,9 +16246,9 @@ fn terms_apply(
     explore_chars: i64,
 ) -> Result<Value> {
     let unit = "terms/book@1";
-    finish_claim(p, unit, token)?;
+    finish_claim_checked(p, unit, token)?;
     let _guard = unit_guard(p, unit)?;
-    let (claimed, progress, run, done) = finish_claim(p, unit, token)?;
+    let (claimed, progress, run, done, _hb) = finish_claim(p, unit, token)?;
     if claimed.input_hash != canon::hash_value(&json!({"preparation_hash":p.hash})) {
         bail!("Terms unit input hash mismatch");
     }
@@ -15895,7 +16563,7 @@ pub(crate) fn terms_cli(a: &Args) -> Result<i32> {
     let (out, step, token) = match parsed {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("zt-digest terms: {e}");
+            crate::util::emit_err(&format!("zt-digest terms: {e}"));
             return Ok(2);
         }
     };
@@ -15907,7 +16575,7 @@ pub(crate) fn terms_cli(a: &Args) -> Result<i32> {
     if let Some(refusal) = crate::lockcheck::preflight(&mut zt, "terms", &step, &field(&p.contract, "citation_key")?)? {
         return crate::lockcheck::stop("terms", &refusal);
     }
-    let (_, progress, _, _) = finish_claim(&p, "terms/book@1", token)?;
+    let (_, progress, _, _) = finish_claim_checked(&p, "terms/book@1", token)?;
     let config = &progress["terms_config"];
     // No upper bound by default (0): a book's table holds as many terms as its length needs.
     let max_terms = if a.has("MaxTerms") {
@@ -18068,7 +18736,7 @@ fn cleanup_assessment(p: &Prepared, unit: &str, remove: bool) -> Result<Value> {
 /// because no retry can remove a conversation this run does not own (R327, R330).
 fn cleanup_finish(p: &Prepared, unit: &str, token: i64, check_only: bool) -> Result<Value> {
     let _guard = unit_guard(p, unit)?;
-    let (claimed, _progress, run, done) = finish_claim(p, unit, token)?;
+    let (claimed, _progress, run, done, _hb) = finish_claim(p, unit, token)?;
     if done {
         let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
         let raw: String = conn.query_row(
@@ -18333,30 +19001,70 @@ fn cleanup_ready(p: &Prepared, owner: &str) -> Result<Value> {
     }))
 }
 
-/// `cleanup-run -Out <out> -Step plan|apply [-Owner <label>]`: the run's DeepSeek cleanup from ledger facts,
-/// around one bridge call (`deepseek_settle`); see `ledger/cleanup_run.rs`.
+/// Verifies current placeholders through the prepared run's client, publishes `run-report.json`
+/// and `run-report.md`, and returns the compact `report_line`.
+pub(crate) fn publish_run_report(p: &Prepared, zt: &mut Zt) -> Result<Value> {
+    let verified = report::placeholders(zt, field(&p.contract, "citation_key")?);
+    let mut facts = run_report(p, verified)?;
+    facts["report"] = report::publish(&p.out, &facts)?;
+    Ok(report_line(&facts))
+}
+
+/// `cleanup-run -Out <out> -Step plan|apply|settle-empty [-Owner <label>] [-Report]`:
+/// the run's DeepSeek cleanup from ledger facts, around one bridge call (`deepseek_settle`); see `ledger/cleanup_run.rs`.
 pub fn cleanup_run_cli(argv: &[String]) -> Result<i32> {
-    let parsed = (|| -> Result<(String, String, String)> {
-        let a = Args::parse(argv, &["Out", "Step", "Owner"], &[])?;
+    let parsed = (|| -> Result<(String, String, String, bool)> {
+        let a = Args::parse(argv, &["Out", "Step", "Owner"], &["Report"])?;
         if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
             bail!("explicit -Out is required");
         }
-        let step = a.choice("Step", &["plan", "apply"])?;
+        let step = a.choice("Step", &["plan", "apply", "settle-empty"])?;
+        let report = a.flag("Report");
+        if report && step != "settle-empty" {
+            bail!("-Report is valid only with -Step settle-empty");
+        }
         let owner = if a.has("Owner") { a.str("Owner") } else { "cleanup-run".to_string() };
         if owner.trim().is_empty() {
             bail!("-Owner must not be empty");
         }
-        Ok((a.str("Out"), step, owner))
+        Ok((a.str("Out"), step, owner, report))
     })();
-    let (out, step, owner) = match parsed {
+    let (out, step, owner, report) = match parsed {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("zt-digest cleanup-run: {error}");
+            crate::util::emit_err(&format!("zt-digest cleanup-run: {error}"));
             return Ok(2);
         }
     };
     let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
+    if step == "settle-empty" {
+        let (ok, mut body) = cleanup_run::settle_empty(&p, &owner)?;
+        if !ok {
+            util::print_line(&serde_json::to_string(&body)?)?;
+            return Ok(1);
+        }
+        if report {
+            match publish_run_report(&p, &mut zt) {
+                Ok(rep) => {
+                    body["report"] = rep;
+                }
+                Err(err) => {
+                    let fail = json!({
+                        "schema_version": 1,
+                        "ok": false,
+                        "applied": true,
+                        "cleanup": body["cleanup"],
+                        "error": format!("{err:#}"),
+                    });
+                    util::print_line(&serde_json::to_string(&fail)?)?;
+                    return Ok(1);
+                }
+            }
+        }
+        util::print_line(&serde_json::to_string(&body)?)?;
+        return Ok(0);
+    }
     let result = if step == "plan" { cleanup_run::plan(&p)? } else { cleanup_run::apply(&p, &owner)? };
     util::print_line(&serde_json::to_string(&result)?)?;
     Ok(0)
@@ -18392,7 +19100,7 @@ pub fn cleanup_finish_cli(argv: &[String]) -> Result<i32> {
     let (out, unit, token, check_only, ready) = match parsed {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("zt-digest cleanup-finish: {error}");
+            crate::util::emit_err(&format!("zt-digest cleanup-finish: {error}"));
             return Ok(2);
         }
     };
@@ -18423,7 +19131,14 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     if command == "checkpoint" {
         return watch::checkpoint_cli(argv);
     }
-    let parsed = (|| -> Result<Args> {
+    type ParsedCli = (
+        Args,
+        Option<BTreeSet<String>>,
+        Option<Vec<(String, i64)>>,
+        Option<Vec<(String, i64)>>,
+        Option<(batch::DoneBatchFamily, Vec<(String, i64)>)>,
+    );
+    let parsed = (|| -> Result<ParsedCli> {
         if !matches!(
             command.as_str(),
             "init"
@@ -18453,15 +19168,15 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         }        let params = if command == "report" || command == "resume" {
             vec!["Out"]
         } else if command == "next" {
-            vec!["Out", "Layer", "Take", "Owner", "Wait", "Lease"]
+            vec!["Out", "Layer", "Take", "Owner", "Wait", "Lease", "Prefix", "IdsFile"]
         } else if command == "renew" {
-            vec!["Out", "Unit", "Token"]
+            vec!["Out", "Unit", "Token", "Units", "UnitsFile"]
         } else if command == "hold" {
             vec!["Out", "Units", "Seconds", "Every"]
         } else if command == "fail" {
             vec!["Out", "Unit", "Token", "Class", "Fault"]
         } else if command == "done" {
-            vec!["Out", "Unit", "Token", "Outputs"]
+            vec!["Out", "Unit", "Token", "Outputs", "Units", "UnitsFile"]
         } else if command == "publish" {
             vec!["Out", "Layer", "Key", "Scope"]
         } else if command == "notes" {
@@ -18471,7 +19186,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         } else if command == "math" {
             vec!["Out", "Layer"]
         } else if command == "reclaim" {
-            vec!["Out", "Unit", "Take"]
+            vec!["Out", "Unit", "Take", "Layer", "Token", "UnitsFile", "Owner"]
         } else if command == "reopen" {
             vec!["Out", "Units", "Reason"]
         } else if command == "resume-grant" {
@@ -18495,10 +19210,12 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             } else if command == "status" {
                 &["Verify", "Summary"]
             } else if command == "reclaim" {
-                &["Release"]
+                &["Release", "All"]
             } else if command == "reopen" {
                 &["Recheck"]
-            } else if command == "next" || command == "gate" {
+            } else if command == "next" {
+                &["Brief", "All"]
+            } else if command == "gate" {
                 &["Brief"]
             } else {
                 &[]
@@ -18525,12 +19242,30 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 bail!("-Key must be a readable logical key of at most 200 bytes");
             }
         }
+        let mut parsed_ids: Option<BTreeSet<String>> = None;
+        let mut parsed_reclaim_units: Option<Vec<(String, i64)>> = None;
+        let mut parsed_renew_batch: Option<Vec<(String, i64)>> = None;
+        let mut parsed_done_batch: Option<(batch::DoneBatchFamily, Vec<(String, i64)>)> = None;
         if command == "next" {
-            a.required("Take")?
-                .parse::<i64>()
-                .ok()
-                .filter(|n| (1..=64).contains(n))
-                .context("-Take must be a positive integer from 1 through 64")?;
+            if a.flag("All") && a.has("Take") {
+                bail!("-All and -Take are mutually exclusive");
+            }
+            if !a.flag("All") {
+                a.required("Take")?
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|n| (1..=64).contains(n))
+                    .context("-Take must be a positive integer from 1 through 64")?;
+            }
+            if a.has("Prefix") && a.has("IdsFile") {
+                bail!("-Prefix and -IdsFile are mutually exclusive");
+            }
+            if a.has("Prefix") && a.str("Prefix").trim().is_empty() {
+                bail!("-Prefix must not be empty");
+            }
+            if a.has("IdsFile") {
+                parsed_ids = Some(batch::parse_ids_file(&a.required("IdsFile")?)?);
+            }
             if a.required("Owner")?.trim().is_empty() || a.str("Owner").len() > 256 {
                 bail!("-Owner must be nonempty and at most 256 bytes");
             }
@@ -18549,7 +19284,22 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     .with_context(|| format!("-Lease must be a whole number of seconds from 1 through {LEASE_MAX}"))?;
             }
         }
-        if matches!(command.as_str(), "renew" | "fail" | "done") {
+        if command == "renew" && (a.has("Units") || a.has("UnitsFile")) {
+            if a.has("Units") && a.has("UnitsFile") {
+                bail!("-Units and -UnitsFile are mutually exclusive");
+            }
+            if a.has("Unit") || a.has("Token") {
+                bail!("-Units/-UnitsFile cannot be combined with -Unit or -Token");
+            }
+            let raw = if a.has("Units") {
+                hold_targets(&a.str("Units"))?
+            } else {
+                batch::parse_units_file(&a.required("UnitsFile")?)?
+            };
+            parsed_renew_batch = Some(batch::validate_unique_targets(raw)?);
+        } else if matches!(command.as_str(), "renew" | "fail")
+            || (command == "done" && !a.has("Units") && !a.has("UnitsFile"))
+        {
             if a.required("Unit")?.trim().is_empty() {
                 bail!("-Unit is required");
             }
@@ -18559,9 +19309,55 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 .filter(|n| *n > 0)
                 .context("-Token must be a positive integer")?;
         }
+        if command == "done" && (a.has("Units") || a.has("UnitsFile")) {
+            if a.has("Units") && a.has("UnitsFile") {
+                bail!("-Units and -UnitsFile are mutually exclusive");
+            }
+            if a.has("Unit") || a.has("Token") {
+                bail!("-Units/-UnitsFile cannot be combined with -Unit or -Token");
+            }
+            let raw = if a.has("Units") {
+                hold_targets(&a.str("Units"))?
+            } else {
+                batch::parse_units_file(&a.required("UnitsFile")?)?
+            };
+            parsed_done_batch = Some(batch::validate_done_batch_targets(raw)?);
+            a.required("Outputs")?;
+        }
         if command == "reclaim" {
             if a.has("Unit") && a.str("Unit").trim().is_empty() {
                 bail!("-Unit must not be empty");
+            }
+            if a.has("UnitsFile") && (a.has("Unit") || a.has("Layer") || a.has("Take") || a.flag("All") || a.has("Token")) {
+                bail!("-UnitsFile cannot be combined with -Unit, -Layer, -Take, -All or -Token");
+            }
+            if a.has("UnitsFile") {
+                let raw = batch::parse_units_file(&a.required("UnitsFile")?)?;
+                parsed_reclaim_units = Some(batch::validate_unique_targets(raw)?);
+            }
+            if a.has("Unit") && (a.has("Layer") || a.flag("All")) {
+                bail!("-Unit cannot be combined with -Layer or -All");
+            }
+            if a.has("Token") && !a.has("Unit") {
+                bail!("-Token requires -Unit");
+            }
+            if a.has("Token") {
+                a.required("Token")?
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .context("-Token must be a positive integer")?;
+            }
+            if a.has("Owner") {
+                if a.str("Owner").trim().is_empty() || a.str("Owner").len() > 256 {
+                    bail!("-Owner must be nonempty and at most 256 bytes");
+                }
+                if !a.flag("Release") || (!a.has("UnitsFile") && !(a.has("Unit") && a.has("Token"))) {
+                    bail!("-Owner requires -Release with -UnitsFile or -Unit and -Token");
+                }
+            }
+            if a.flag("All") && a.has("Take") {
+                bail!("-All and -Take are mutually exclusive");
             }
             if a.has("Take") {
                 a.required("Take")?
@@ -18692,12 +19488,12 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         if matches!(command.as_str(), "init" | "rerun-list" | "report" | "resume") && a.has("Layer") {
             bail!("{command} does not accept -Layer");
         }
-        Ok(a)
+        Ok((a, parsed_ids, parsed_reclaim_units, parsed_renew_batch, parsed_done_batch))
     })();
-    let a = match parsed {
-        Ok(a) => a,
+    let (a, parsed_ids, parsed_reclaim_units, parsed_renew_batch, parsed_done_batch) = match parsed {
+        Ok(v) => v,
         Err(e) => {
-            eprintln!("zt-digest ledger: {e}");
+            crate::util::emit_err(&format!("zt-digest ledger: {e}"));
             return Ok(2);
         }
     };
@@ -18718,7 +19514,24 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         let mut zt = crate::zt::start()?;
         let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
         let only = a.has("Unit").then(|| a.str("Unit"));
-        reclaim(&p, only.as_deref(), a.int_or("Take", 64)?, a.flag("Release"))?
+        let layer = a.has("Layer").then(|| a.str("Layer"));
+        let take = if a.flag("All") {
+            None
+        } else {
+            Some(a.int_or("Take", 64)?)
+        };
+        let token_fence = a.has("Token").then(|| a.str("Token").parse::<i64>()).transpose()?;
+        let owner_fence = a.has("Owner").then(|| a.str("Owner"));
+        reclaim_filtered(
+            &p,
+            only.as_deref(),
+            layer.as_deref(),
+            take,
+            a.flag("Release"),
+            token_fence,
+            parsed_reclaim_units.as_deref(),
+            owner_fence.as_deref(),
+        )?
     } else if command == "job" {
         let mut zt = crate::zt::start()?;
         let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
@@ -18827,7 +19640,11 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         if command == "init" {
             init(&p)?
         } else if command == "renew" {
-            renew(&p, &a.str("Unit"), a.str("Token").parse()?)?
+            if let Some(targets) = parsed_renew_batch {
+                renew_batch(&p, &targets)?
+            } else {
+                renew(&p, &a.str("Unit"), a.str("Token").parse()?)?
+            }
         } else if command == "hold" {
             let bounded = |name: &str, default: u64, max: u64| -> Result<u64> {
                 if !a.has(name) {
@@ -18838,12 +19655,14 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             hold(&p, &hold_targets(&a.str("Units"))?, bounded("Seconds", 540, 580)?, bounded("Every", 60, 120)?)?
         } else if command == "done" {
             let path = a.str("Outputs");
-            if preparing {
+            if let Some((family, targets)) = parsed_done_batch {
+                batch::done_batch(&p, family, &targets, Path::new(&path))?
+            } else if preparing {
                 let result =
                     prepare_finish(&p, &mut zt, a.str("Token").parse()?, Path::new(&path))?;
                 util::print_line(&serde_json::to_string(&result)?)?;
                 return Ok(0);
-            }
+            } else {
             let unit = a.str("Unit");
             let token = a.str("Token").parse::<i64>()?;
             if unit.starts_with("cleanup/") {
@@ -18865,7 +19684,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     bail!("invalid Terms completion evidence");
                 }
                 // The library verifier performs the same claim/job/output checks; no address shortcut.
-                let (_, progress, _, _) = finish_claim(&p, "terms/book@1", token)?;
+                let (_, progress, _, _) = finish_claim_checked(&p, "terms/book@1", token)?;
                 let terms = progress["terms_config"]["max_terms"]
                     .as_i64()
                     .context("missing Terms planning options")?;
@@ -19014,10 +19833,11 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     &mut zt,
                     number.unwrap(),
                     token,
-                    field(&evidence["draft"], "path")?,
+                    Some(field(&evidence["draft"], "path")?),
                     false,
                 )?
                 .context("group completion returned no result")?
+            }
             }
         } else if command == "fail" {
             let given = a.str("Fault");
@@ -19040,7 +19860,23 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             fail(&p, &a.str("Unit"), a.str("Token").parse()?, &class, &fault)?
         } else {
             {
-                let mut claimed = next(&p, &a.str("Layer"), a.str("Take").parse()?, &a.str("Owner"), a.int_or("Wait", 0)?, a.int_or("Lease", 0)?)?;
+                let take = if a.flag("All") {
+                    None
+                } else {
+                    Some(a.str("Take").parse::<i64>()?)
+                };
+                let prefix = a.has("Prefix").then(|| a.str("Prefix"));
+                let mut claimed = next_filtered(
+                    &p,
+                    &a.str("Layer"),
+                    take,
+                    &a.str("Owner"),
+                    a.int_or("Wait", 0)?,
+                    a.int_or("Lease", 0)?,
+                    prefix.as_deref(),
+                    parsed_ids.as_ref(),
+                    None,
+                )?;
                 if a.flag("Brief") {
                     let units = brief_units(claimed["units"].as_array().map(Vec::as_slice).unwrap_or(&[]));
                     claimed["units"] = json!(units);
@@ -19081,10 +19917,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         // through the prepared run's own client, writes its two files and prints the facts.
         let mut zt = crate::zt::start()?;
         let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
-        let verified = report::placeholders(&mut zt, field(&p.contract, "citation_key")?);
-        let mut facts = run_report(&p, verified)?;
-        facts["report"] = report::publish(&p.out, &facts)?;
-        util::print_line(&serde_json::to_string(&report_line(&facts))?)?;
+        let line = publish_run_report(&p, &mut zt)?;
+        util::print_line(&serde_json::to_string(&line)?)?;
         return Ok(0);
     } else {
         let verified = if command == "status" && a.flag("Verify") {
@@ -21771,5 +22605,108 @@ mod extension_setup_tests {
         let (_dir, p) = prepared(&calls, None);
         assert_eq!(setup_addresses(&p.contract)[0], json!("K"));
         assert_eq!(first_group(&p.contract), 1);
+    }
+}
+
+#[cfg(test)]
+mod p1_p2_acceleration_tests {
+    use super::*;
+
+    fn test_prepared() -> (tempfile::TempDir, Prepared) {
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::fs::canonicalize(dir.path()).unwrap();
+        let contract = json!({
+            "variant": "econ",
+            "citation_key": "K",
+            "archive_identity": {"id": "0123456789abcdef0123456789abcdef", "path": "D:\\box"},
+            "source": {"kind": "md", "path": "src.md", "sha256": "abc"},
+            "group_manifest_hash": "def",
+            "options": {"no_figures": false},
+            "contracts": {},
+            "groups": [{"n": 1, "anchor": "K/1"}],
+        });
+        let hash = canon::hash_value(&contract);
+        let p = Prepared { out, contract, hash };
+        initialize(&p, true).unwrap();
+        (dir, p)
+    }
+
+    #[test]
+    fn model_plan_state_hashes_raw_bom_bytes_and_parses_plan() {
+        let (_dir, p) = test_prepared();
+        let batch = p.out.join("models").join("b1");
+        let slug_dir = batch.join("K_1_a");
+        std::fs::create_dir_all(&slug_dir).unwrap();
+        std::fs::write(batch.join("state.json"), r#"{"order":["K/1|a"]}"#).unwrap();
+
+        let mut bom_plan = vec![0xEF, 0xBB, 0xBF];
+        bom_plan.extend_from_slice(br#"{"model":"K/1|a","parts":[]}"#);
+        std::fs::write(slug_dir.join("plan.json"), &bom_plan).unwrap();
+
+        let (_dir_got, hash, plan, _state) = model_plan_state(&p, "K/1|a").unwrap();
+        assert_eq!(hash, canon::sha256_hex(&bom_plan), "hash must be over raw plan.json bytes including BOM");
+        assert_eq!(plan["model"], json!("K/1|a"));
+    }
+
+    #[test]
+    fn renew_batch_renews_active_claims_and_reports_stale_releases() {
+        let (_dir, p) = test_prepared();
+        let db = p.out.join("ledger.sqlite3");
+        let conn = connect(&db, true).unwrap();
+        let now = now_seconds();
+        conn.execute(
+            "INSERT INTO units(id,layer,logical_key,revision,state,inputs_json,input_hash,owner,claim_token,attempts,lease_until,created_at) VALUES('models/m1@1','models','m1',1,'claimed','{}','h1','w1',7,1,?1,'2026-01-01T00:00:00Z')",
+            [now + 60],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO units(id,layer,logical_key,revision,state,inputs_json,input_hash,owner,claim_token,attempts,lease_until,created_at) VALUES('models/m2@1','models','m2',1,'ready','{}','h2',NULL,8,1,NULL,'2026-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        drop(conn);
+
+        let res = renew_batch(&p, &[("models/m1@1".into(), 7), ("models/m2@1".into(), 8)]).unwrap();
+        assert_eq!(res["ok"], json!(true));
+        assert_eq!(res["renewals"], json!(1));
+        assert_eq!(res["renewed"].as_array().unwrap().len(), 1);
+        assert_eq!(res["renewed"][0]["unit"], json!("models/m1@1"));
+        assert_eq!(res["released"].as_array().unwrap().len(), 1);
+        assert_eq!(res["released"][0]["unit"], json!("models/m2@1"));
+    }
+
+    #[test]
+    fn validate_pending_reviews_enforces_existence_coverage_and_all_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let rev = dir.path().join("review-1.json");
+        let rev_str = rev.to_string_lossy().to_string();
+        let compiler = json!({
+            "pending_reviews": [{
+                "output": rev_str,
+                "model": "K/1|a",
+                "addresses": ["K/1|a|a|1", "K/1|a|a|2"]
+            }]
+        });
+
+        // Missing file fails under require_files=true, skips cleanly under require_files=false
+        assert!(validate_pending_reviews(&compiler, "K/1|a", true).is_err());
+        assert!(validate_pending_reviews(&compiler, "K/1|a", false).is_ok());
+
+        // Malformed / non-array JSON fails regardless of require_files
+        std::fs::write(&rev, "{}").unwrap();
+        assert!(validate_pending_reviews(&compiler, "K/1|a", false).is_err());
+        assert!(validate_pending_reviews(&compiler, "K/1|a", true).is_err());
+
+        // Omitted address fails
+        std::fs::write(&rev, r#"[{"address":"K/1|a|a|1","verdict":"ok"}]"#).unwrap();
+        assert!(validate_pending_reviews(&compiler, "K/1|a", true).unwrap_err().to_string().contains("omitted"));
+
+        // Non-ok verdict fails
+        std::fs::write(&rev, r#"[{"address":"K/1|a|a|1","verdict":"ok"},{"address":"K/1|a|a|2","verdict":"fix"}]"#).unwrap();
+        assert!(validate_pending_reviews(&compiler, "K/1|a", false).unwrap_err().to_string().contains("unapplied"));
+
+        // Full all-ok passes (even BOM-prefixed)
+        let mut ok_bytes = vec![0xEF, 0xBB, 0xBF];
+        ok_bytes.extend_from_slice(br#"[{"address":"K/1|a|a|1","verdict":"ok"},{"address":"K/1|a|a|2","verdict":"ok"}]"#);
+        std::fs::write(&rev, ok_bytes).unwrap();
+        assert!(validate_pending_reviews(&compiler, "K/1|a", true).is_ok());
     }
 }

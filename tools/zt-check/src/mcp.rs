@@ -57,6 +57,8 @@ pub struct Zt {
     initialization: Value,
     /// The Write scope declarations this connection started with (`--scope`, `--allow`, `--beneath`).
     declared: Vec<String>,
+    /// Set on any transport/timeout/framing failure in `exchange`; never set on application refusals (`isError: true`).
+    poisoned: bool,
 }
 
 fn limits() -> (Duration, Duration) {
@@ -97,6 +99,10 @@ static CHILD_EDIT_PATIENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 
 pub fn child_edit_patience(seconds: u64) {
     CHILD_EDIT_PATIENCE.store(seconds, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn current_child_edit_patience() -> u64 {
+    CHILD_EDIT_PATIENCE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The read limit a program client asks its own `zt mcp` for (`ZT_READ_LIMIT_BYTES`, zt 0.53.1).
@@ -141,12 +147,21 @@ pub fn observed_service() -> Option<ServiceFacts> {
     SERVICE.lock().ok().and_then(|facts| facts.clone())
 }
 
+/// Clears any cached service observation so the next start re-observes `zt status`.
+pub fn invalidate_observed_service() {
+    if let Ok(mut guard) = SERVICE.lock() {
+        *guard = None;
+    }
+}
+
 /// One observation of the service, from the same program this client starts. `None` when the
 /// program did not answer like `zt status` at all (an isolated seam standing in for the MCP
 /// server, for example, or one that does not answer within the observation bound), so a
 /// stand-in never turns into a false service state.
 pub fn observe_service(program: &str) -> Result<Option<ServiceFacts>> {
-    let Some(output) = run_bounded(program, "status", SERVICE_OBSERVATION)? else {
+    let Some(output) = run_bounded(program, "status", SERVICE_OBSERVATION)
+        .inspect_err(|_| invalidate_observed_service())? else {
+        invalidate_observed_service();
         return Ok(None);
     };
     let text = String::from_utf8_lossy(&output.stdout);
@@ -157,6 +172,7 @@ pub fn observe_service(program: &str) -> Result<Option<ServiceFacts>> {
             .filter(|value| !value.is_empty() && value != "<unset>")
     };
     let Some(state) = field("state: ") else {
+        invalidate_observed_service();
         return Ok(None);
     };
     let facts = ServiceFacts {
@@ -179,6 +195,8 @@ pub fn observe_service(program: &str) -> Result<Option<ServiceFacts>> {
         if let Ok(mut current) = SERVICE.lock() {
             *current = Some(facts.clone());
         }
+    } else {
+        invalidate_observed_service();
     }
     Ok(Some(facts))
 }
@@ -339,6 +357,7 @@ impl Zt {
             server_info: Value::Null,
             initialization: Value::Null,
             declared: declared.clone(),
+            poisoned: false,
         };
         let hello = zt.exchange(json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": "2025-06-18" } }),Some(json!(0)),"initialize").with_context(|| format!("`{program} mcp {}` did not answer initialize (a zt before 0.50.0 has no Write scope)", declared.join(" ")))?;
         zt.server_info = hello["result"]["serverInfo"].clone();
@@ -369,12 +388,45 @@ impl Zt {
         &self.initialization
     }
 
+    /// Whether this MCP connection has not suffered a transport failure and its worker + child process are live.
+    pub fn is_alive(&mut self) -> bool {
+        !self.poisoned
+            && self.commands.is_some()
+            && self.worker.as_ref().is_some_and(|w| !w.is_finished())
+            && self.process.try_exited().map(|exited| !exited).unwrap_or(false)
+    }
+
     fn exchange(&mut self, message: Value, id: Option<Value>, operation: &str) -> Result<Value> {
-        self.commands
-            .as_ref()
-            .context("zt mcp is closed")?
-            .send(Exchange { message, id })
-            .context("zt mcp I/O worker closed")?;
+        let res = self.exchange_inner(message, id, operation);
+        if res.is_err() {
+            self.poisoned = true;
+        }
+        res
+    }
+
+    fn exchange_inner(&mut self, message: Value, id: Option<Value>, operation: &str) -> Result<Value> {
+        let send_err = match self.commands.as_ref() {
+            None => Some("zt mcp is closed".to_string()),
+            Some(ch) => ch
+                .send(Exchange { message, id })
+                .err()
+                .map(|_| "zt mcp I/O worker closed".to_string()),
+        };
+        if let Some(cause) = send_err {
+            self.commands.take();
+            let cleanup = self.process.terminate(self.shutdown).and_then(|_| self.join_worker());
+            return Err(TransportFault {
+                code: "transport_closed",
+                operation: operation.to_string(),
+                child_pid: self.process.child.id(),
+                cleanup_confirmed: cleanup.is_ok(),
+                cause: match cleanup {
+                    Ok(()) => cause,
+                    Err(e) => format!("{cause}; {e:#}"),
+                },
+            }
+            .into());
+        }
         let (code, cause) = match self.replies.recv_timeout(self.deadline) {
             Ok(Ok(reply)) => return Ok(reply),
             Ok(Err(cause)) => ("transport_closed", cause),
@@ -593,5 +645,56 @@ mod reply_line_tests {
     fn the_reply_line_cap_stays_above_the_read_limit_the_client_asks_for() {
         assert!(super::MAX_REPLY_LINE > super::READ_LIMIT);
         assert!(super::MAX_REPLY_LINE >= 64 * 1024 * 1024 * 2, "room for a whole-archive Link list");
+    }
+
+    #[test]
+    fn exchange_poisons_client_only_on_transport_errors() {
+        use super::*;
+        let mut cmd = if cfg!(windows) {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "ping", "-n", "10", "127.0.0.1"]);
+            c
+        } else {
+            let mut c = Command::new("sleep");
+            c.arg("10");
+            c
+        };
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        let owned = owned::Owned::spawn(&mut cmd).unwrap();
+        let (cmd_tx, cmd_rx) = mpsc::channel::<Exchange>();
+        let (rep_tx, rep_rx) = mpsc::channel::<std::result::Result<Value, String>>();
+        let worker = std::thread::spawn(move || {
+            let _ = cmd_rx.recv();
+            let _ = rep_tx.send(Ok(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"isError": true, "content": [{"type": "text", "text": r#"{"error":"locked"}"#}]}
+            })));
+            let _ = cmd_rx.recv();
+            let _ = rep_tx.send(Err("zt mcp closed".to_string()));
+        });
+        let mut zt = Zt {
+            process: owned,
+            commands: Some(cmd_tx),
+            replies: rep_rx,
+            worker: Some(worker),
+            deadline: Duration::from_secs(5),
+            shutdown: Duration::from_secs(2),
+            next: 1,
+            server_info: Value::Null,
+            initialization: Value::Null,
+            declared: Vec::new(),
+            poisoned: false,
+        };
+        assert!(zt.is_alive());
+        let app_err_reply = zt.request("edit_card", json!({})).unwrap();
+        assert_eq!(reply_error(&app_err_reply).as_deref(), Some("locked"));
+        assert!(!zt.poisoned, "application refusals must not poison Zt");
+        assert!(zt.is_alive());
+
+        let transport_err = zt.request("edit_card", json!({})).unwrap_err();
+        assert!(transport_err.is::<TransportFault>());
+        assert!(zt.poisoned, "transport failures must poison Zt");
+        assert!(!zt.is_alive());
     }
 }

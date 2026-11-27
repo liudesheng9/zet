@@ -26,10 +26,8 @@ use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]]+)\]\]").unwrap());
 static SEMICOLON: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[；;]").unwrap());
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
-static BAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)does not exist|semicolon").unwrap());
 static STRUCTURE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^本卡是《.*》的结构卡").unwrap());
 static TERM_TABLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^术语表").unwrap());
 static DOCUMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*原书文档").unwrap());
@@ -88,8 +86,15 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     std::fs::create_dir_all(&out)?;
 
     // --- what the book holds ---
-    if p.audit.is_empty() {
-        p.audit = ps::join(&p.work, "audit\\audit.json");
+    let work_audit = ps::join(&p.work, "audit\\audit.json");
+    let candidate = if p.audit.is_empty() { work_audit.clone() } else { p.audit.clone() };
+    if usable_audit(&mut zt, &key, &candidate)? {
+        p.audit = candidate;
+    } else {
+        if !p.audit.is_empty() {
+            crate::util::emit_err(&format!("zt-digest skeleton: -Audit {} is stale or mismatched; rerunning audit", p.audit));
+        }
+        p.audit = work_audit;
         common::run_audit(zt.get()?, &key, &ps::parent(&p.audit))?;
     }
     let audit_dir = ps::parent(&p.audit);
@@ -108,6 +113,58 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let events: Vec<Value> = cards.iter().filter(|c| eq(&field(c, "category"), "event") && eq(&field(c, "book"), &key)).cloned().collect();
     let b = Book { key, title, groups, anchors, known, models, events };
     if p.step == "plan" { plan(&p, &b, &out, &mut zt) } else { apply(&mut p, &b, &out, &mut zt) }
+}
+
+fn usable_audit(zt: &mut Lazy, key: &str, audit_path: &str) -> Result<bool> {
+    if !ps::exists(audit_path) {
+        return Ok(false);
+    }
+    let dir = ps::parent(audit_path);
+    let cards_path = ps::join(&dir, "audit-cards.json");
+    let addr_path = ps::join(&dir, "audit-addresses.txt");
+    if !ps::exists(&cards_path) || !ps::exists(&addr_path) {
+        return Ok(false);
+    }
+    let Ok(audit) = common::read_json(audit_path) else {
+        return Ok(false);
+    };
+    if audit["complete"] != json!(true) || audit["skip_models"] != json!(false) {
+        return Ok(false);
+    }
+    let Some(exp_cards_sha) = audit["sidecars"]["cards_sha256"].as_str().filter(|s| !s.is_empty()) else {
+        return Ok(false);
+    };
+    let Some(exp_addr_sha) = audit["sidecars"]["addresses_sha256"].as_str().filter(|s| !s.is_empty()) else {
+        return Ok(false);
+    };
+    let Ok(cards_bytes) = std::fs::read(&cards_path) else {
+        return Ok(false);
+    };
+    let Ok(addr_bytes) = std::fs::read(&addr_path) else {
+        return Ok(false);
+    };
+    if crate::canon::sha256_hex(&cards_bytes) != exp_cards_sha || crate::canon::sha256_hex(&addr_bytes) != exp_addr_sha {
+        return Ok(false);
+    }
+    let books = ps::pipe(&audit["books"]);
+    if books.len() != 1 || !eq(&field(books[0], "key"), key) {
+        return Ok(false);
+    }
+    let Some(audit_rev) = audit["archive_revision"].as_u64() else {
+        return Ok(false);
+    };
+    let Some(audit_id) = audit["baseline"]["evidence"]["archive"]["id"].as_str().filter(|s| !s.is_empty()) else {
+        return Ok(false);
+    };
+    let client = zt.get()?;
+    let contract_view = client.call("get_cards", json!({ "addresses": [], "view": "text" }))?;
+    let Some(live_rev) = contract_view["archive_revision"].as_u64() else {
+        return Ok(false);
+    };
+    let identity_view = client.archive_view()?;
+    let id_rev = identity_view["archive_revision"].as_u64();
+    let live_id = identity_view["archive_identity"]["id"].as_str();
+    Ok(live_rev == audit_rev && id_rev == Some(audit_rev) && live_id == Some(audit_id))
 }
 
 fn level_name(level: &Value, other: &str) -> String {
@@ -191,9 +248,14 @@ fn plan(p: &Params, b: &Book, out: &str, zt: &mut Lazy) -> Result<i32> {
     Ok(0)
 }
 
-/// `Get-Links`: the Link targets of a text, trimmed.
-fn links(text: &str) -> Vec<String> {
-    LINK.captures_iter(text).map(|c| c[1].trim().to_string()).collect()
+/// `Get-Links`: resolves every `[[addr]]` or Term-link `[[label@addr]]` target address.
+fn links(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for occ in zt_check::text::link_occurrences(text) {
+        let raw = text.get(occ.macro_range).unwrap_or_default().to_string();
+        out.push((raw, occ.target.to_string()));
+    }
+    out
 }
 
 /// An argument line of the structure Card.
@@ -215,9 +277,12 @@ struct Checked {
 fn check(sk: &Value, b: &Book) -> Checked {
     let mut problems: Vec<String> = Vec::new();
     let test_text = |problems: &mut Vec<String>, at: &str, text: &str| {
-        for l in links(text) {
-            if !b.known.contains(&l) {
-                problems.push(format!("{at}: [[{l}]] does not exist"));
+        if let Err(fault) = zt_check::text::parse_links(text) {
+            problems.push(format!("{at}: invalid link syntax ({fault:?})"));
+        }
+        for (raw, target) in links(text) {
+            if !b.known.contains(&target) {
+                problems.push(format!("{at}: {raw} does not exist"));
             }
         }
         if SEMICOLON.is_match(text) {
@@ -227,74 +292,200 @@ fn check(sk: &Value, b: &Book) -> Checked {
     let strings = |v: &Value| -> Vec<String> { ps::pipe(v).into_iter().map(ps::s).collect() };
 
     let mut says: CiMap<String> = CiMap::new();
+    let mut seen_chapters: HashSet<String> = HashSet::new();
     for c in ps::pipe(&sk["chapters"]) {
         let anchor = field(c, "anchor");
+        if !is_in(&anchor, &b.anchors) {
+            problems.push(format!("chapters: `{anchor}` is no anchor"));
+            continue;
+        }
+        if !seen_chapters.insert(ps::key(&anchor)) {
+            problems.push(format!("chapters: duplicate anchor `{anchor}`"));
+            continue;
+        }
         let text = field(c, "says");
-        if is_in(&anchor, &b.anchors) && !text.trim().is_empty() {
-            says.insert(&anchor, text.trim().to_string());
-            test_text(&mut problems, &anchor, &text);
-            // The index line puts the group label before the text (`- 第 N 组（chapter）：…`), so its first sentence
-            // is measured with the label: on grossman2002integration trial 11 one line came to 41 characters, an R2 fault
-            // in the Literature Card that the bounded correction may not reopen.
-            if let Some(g) = b.groups.iter().find(|g| ps::eq(&format!("{}/{}", b.key, pstr(g, "n")), &anchor)) {
-                let first = text.trim().split('。').next().unwrap_or_default();
-                let line = format!("第 {} 组（{}）：{first}。", pstr(g, "n"), pstr(g, "chapter"));
-                if !zt_check::check::sentence_fits(&line) {
-                    problems.push(format!("{anchor}: the index line's first sentence is longer than 40 characters with its group label (`{line}`); shorten says"));
-                }
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            problems.push(format!("{anchor}: says is empty"));
+            continue;
+        }
+        says.insert(&anchor, trimmed.to_string());
+        test_text(&mut problems, &anchor, &text);
+        if let Some(g) = b.groups.iter().find(|g| ps::eq(&format!("{}/{}", b.key, pstr(g, "n")), &anchor)) {
+            let line = format!("- 第 {} 组（{}）：{trimmed} → [[{anchor}]]", pstr(g, "n"), pstr(g, "chapter"));
+            for fault in zt_check::check::line_r2_faults(&line) {
+                problems.push(format!("{anchor}: R2 on index line {fault}"));
             }
         }
     }
+    for anchor in &b.anchors {
+        if !seen_chapters.contains(&ps::key(anchor)) {
+            problems.push(format!("chapters: missing anchor `{anchor}`"));
+        }
+    }
+
     let mut argument = Vec::new();
+    let mut seen_args: HashSet<String> = HashSet::new();
     for a in ps::pipe(&sk["argument"]) {
         let anchor = field(a, "anchor");
         if !is_in(&anchor, &b.anchors) {
             problems.push(format!("argument: `{anchor}` is no anchor"));
             continue;
         }
-        let key: Vec<String> = strings(a.get("key_cards").unwrap_or(&Value::Null)).into_iter().filter(|k| b.known.contains(k) && !zt_check::mcp::scope::is_topic_address(k)).take(3).collect();
-        test_text(&mut problems, &anchor, &field(a, "adds"));
-        argument.push(Argument { anchor, adds: field(a, "adds").trim().to_string(), key });
+        if !seen_args.insert(ps::key(&anchor)) {
+            problems.push(format!("argument: duplicate anchor `{anchor}`"));
+            continue;
+        }
+        let adds = field(a, "adds").trim().to_string();
+        if adds.is_empty() {
+            problems.push(format!("{anchor}: argument adds is empty"));
+        }
+        let raw_keys: Vec<String> = if a.get("key_cards").is_some_and(Value::is_array) {
+            strings(a.get("key_cards").unwrap_or(&Value::Null))
+                .into_iter()
+                .filter(|k| !k.trim().is_empty())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if raw_keys.len() > 3 {
+            problems.push(format!("{anchor}: more than 3 key_cards ({})", raw_keys.len()));
+        }
+        let mut key = Vec::new();
+        for k in raw_keys {
+            if zt_check::mcp::scope::is_topic_address(&k) || !b.known.contains(&k) {
+                problems.push(format!("{anchor}: key_card `[[{k}]]` is invalid or unknown"));
+            } else if key.len() < 3 {
+                key.push(k);
+            }
+        }
+        test_text(&mut problems, &anchor, &adds);
+        let keys_tail = if key.is_empty() {
+            String::new()
+        } else {
+            format!(" 关键卡片：{}。", key.iter().map(|k| format!("[[{k}]]")).collect::<Vec<_>>().join("、"))
+        };
+        let rendered = format!("- [[{anchor}]]：{adds}{keys_tail}");
+        for fault in zt_check::check::line_r2_faults(&rendered) {
+            problems.push(format!("{anchor}: R2 on argument line {fault}"));
+        }
+        argument.push(Argument { anchor, adds, key });
     }
+    for anchor in &b.anchors {
+        if !seen_args.contains(&ps::key(anchor)) {
+            problems.push(format!("argument: missing anchor `{anchor}`"));
+        }
+    }
+
     let mut model_set: CiMap<&Value> = CiMap::new();
     for m in &b.models {
         model_set.insert(&field(m, "address"), m);
     }
     let mut model_lines = Vec::new();
-    for m in ps::pipe(&sk["models"]) {
-        let address = field(m, "address");
-        let Some(model) = model_set.get(&address) else {
-            problems.push(format!("models: `{address}` is no Model Card of the book"));
-            continue;
-        };
-        test_text(&mut problems, &address, &field(m, "shows"));
-        let level = level_name(&model["level"], "模型");
-        let mut both = strings(m.get("built_on_by").unwrap_or(&Value::Null));
-        both.extend(strings(m.get("builds_on").unwrap_or(&Value::Null)));
-        let later = ps::select_unique(both.into_iter().filter(|x| model_set.contains(x)));
-        let tail = if later.is_empty() {
-            String::new()
-        } else {
-            format!(" 依赖它的模型：{}。", later.iter().map(|x| format!("[[{x}]]")).collect::<Vec<_>>().join("、"))
-        };
-        model_lines.push(format!("- [[{address}]]（{level}）：{}{tail}", field(m, "shows").trim()));
+    let mut seen_models: HashSet<String> = HashSet::new();
+    if !(b.models.is_empty() && sk["models"].as_array().is_some_and(Vec::is_empty)) {
+        for m in ps::pipe(&sk["models"]) {
+            let address = field(m, "address");
+            let Some(model) = model_set.get(&address) else {
+                problems.push(format!("models: `{address}` is no Model Card of the book"));
+                continue;
+            };
+            if !seen_models.insert(ps::key(&address)) {
+                problems.push(format!("models: duplicate model `{address}`"));
+                continue;
+            }
+            let shows = field(m, "shows").trim().to_string();
+            if shows.is_empty() {
+                problems.push(format!("{address}: shows is empty"));
+            }
+            test_text(&mut problems, &address, &shows);
+            let level = level_name(&model["level"], "模型");
+            let mut both = if m.get("built_on_by").is_some_and(Value::is_array) {
+                strings(m.get("built_on_by").unwrap_or(&Value::Null))
+            } else {
+                Vec::new()
+            };
+            if m.get("builds_on").is_some_and(Value::is_array) {
+                both.extend(strings(m.get("builds_on").unwrap_or(&Value::Null)));
+            }
+            both.retain(|x| !x.trim().is_empty());
+            for x in &both {
+                if !model_set.contains(x) {
+                    problems.push(format!("{address}: model reference `{x}` is no Model Card of the book"));
+                }
+            }
+            let later = ps::select_unique(both.into_iter().filter(|x| model_set.contains(x)));
+            let tail = if later.is_empty() {
+                String::new()
+            } else {
+                format!(" 依赖它的模型：{}。", later.iter().map(|x| format!("[[{x}]]")).collect::<Vec<_>>().join("、"))
+            };
+            let rendered = format!("- [[{address}]]（{level}）：{shows}{tail}");
+            for fault in zt_check::check::line_r2_faults(&rendered) {
+                problems.push(format!("{address}: R2 on model line {fault}"));
+            }
+            model_lines.push(rendered);
+        }
     }
+    for m in &b.models {
+        let addr = field(m, "address");
+        if !seen_models.contains(&ps::key(&addr)) {
+            problems.push(format!("models: missing model `{addr}`"));
+        }
+    }
+
     let event_set: HashSet<String> = b.events.iter().map(|e| ps::key(&field(e, "address"))).collect();
     let mut event_lines = Vec::new();
-    for e in ps::pipe(&sk["events"]) {
-        let address = field(e, "address");
-        if !event_set.contains(&ps::key(&address)) {
-            problems.push(format!("events: `{address}` is no Event Card of the book"));
-            continue;
+    let mut seen_events: HashSet<String> = HashSet::new();
+    if !(b.events.is_empty() && sk["events"].as_array().is_some_and(Vec::is_empty)) {
+        for e in ps::pipe(&sk["events"]) {
+            let address = field(e, "address");
+            if !event_set.contains(&ps::key(&address)) {
+                problems.push(format!("events: `{address}` is no Event Card of the book"));
+                continue;
+            }
+            if !seen_events.insert(ps::key(&address)) {
+                problems.push(format!("events: duplicate event `{address}`"));
+                continue;
+            }
+            let raw_supports: Vec<String> = if e.get("supports").is_some_and(Value::is_array) {
+                strings(e.get("supports").unwrap_or(&Value::Null))
+                    .into_iter()
+                    .filter(|k| !k.trim().is_empty())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            if raw_supports.len() > 3 {
+                problems.push(format!("{address}: more than 3 supports ({})", raw_supports.len()));
+            }
+            let mut supports = Vec::new();
+            for s_addr in raw_supports {
+                if zt_check::mcp::scope::is_topic_address(&s_addr) || !b.known.contains(&s_addr) {
+                    problems.push(format!("{address}: support `[[{s_addr}]]` is invalid or unknown"));
+                } else if supports.len() < 3 {
+                    supports.push(s_addr);
+                }
+            }
+            let what = if supports.is_empty() {
+                "本书的论证".to_string()
+            } else {
+                supports.iter().map(|x| format!("[[{x}]]")).collect::<Vec<_>>().join("、")
+            };
+            let rendered = format!("- [[{address}]]：例示 {what} 的观点。");
+            for fault in zt_check::check::line_r2_faults(&rendered) {
+                problems.push(format!("{address}: R2 on event line {fault}"));
+            }
+            event_lines.push(rendered);
         }
-        let supports: Vec<String> = strings(e.get("supports").unwrap_or(&Value::Null)).into_iter().filter(|k| b.known.contains(k) && !zt_check::mcp::scope::is_topic_address(k)).take(3).collect();
-        let what = if supports.is_empty() {
-            "本书的论证".to_string()
-        } else {
-            supports.iter().map(|x| format!("[[{x}]]")).collect::<Vec<_>>().join("、")
-        };
-        event_lines.push(format!("- [[{address}]]：例示 {what} 的观点。"));
     }
+    for e in &b.events {
+        let addr = field(e, "address");
+        if !seen_events.contains(&ps::key(&addr)) {
+            problems.push(format!("events: missing event `{addr}`"));
+        }
+    }
+
     if ps::pipe(&sk["topics"]).iter().any(|t| ps::truthy(t)) {
         problems.push("topics: a digest writes no Topic body; Topic trees are zt-idea-grow's".to_string());
     }
@@ -344,7 +535,7 @@ fn apply(p: &mut Params, b: &Book, out: &str, zt: &mut Lazy) -> Result<i32> {
     }
     let sk = common::read_json(&file)?;
     let c = check(&sk, b);
-    if c.problems.iter().any(|x| BAD.is_match(x)) {
+    if !c.problems.is_empty() {
         util::print_line(&ps::json_compact(&json!({ "ok": false, "problems": c.problems })))?;
         return Ok(0);
     }
@@ -436,45 +627,54 @@ mod tests {
         }
     }
 
-    // The index line's first sentence is measured with its group label, so the writer shortens says itself.
+    // The index line's sentences are measured with its group label and arrow link, so the writer shortens says itself.
     #[test]
     fn an_index_line_is_measured_with_its_group_label() {
         let fits = check(&json!({ "chapters": [{ "anchor": "K/1", "says": "简单模型决定企业边界。第二句可以很长很长很长很长很长很长很长很长很长很长很长。" }] }), &book());
-        assert!(!fits.problems.iter().any(|p| p.contains("group label")), "{:?}", fits.problems);
+        assert!(!fits.problems.iter().any(|p| p.contains("R2 on index line")), "{:?}", fits.problems);
         let long = check(&json!({ "chapters": [{ "anchor": "K/2", "says": "简单模型用敲竹杠扭曲、搜寻摩擦与纵向一体化的治理成本共同决定企业的边界与组织模式。" }] }), &book());
-        assert!(long.problems.iter().any(|p| p.starts_with("K/2: the index line's first sentence")), "{:?}", long.problems);
+        assert!(long.problems.iter().any(|p| p.starts_with("K/2: R2 on index line")), "{:?}", long.problems);
+        // A long second sentence on an index line is also caught.
+        let long_second = check(&json!({ "chapters": [{ "anchor": "K/1", "says": "简单模型决定企业边界。第二句把敲竹杠扭曲、搜寻摩擦与纵向一体化的治理成本以及事后分配机制全部展开并逐一比较和检验。" }] }), &book());
+        assert!(long_second.problems.iter().any(|p| p.starts_with("K/1: R2 on index line")), "{:?}", long_second.problems);
     }
 
     #[test]
-    fn skeleton_json_is_checked_as_the_script_checked_it() {
-        let sk = json!({
-            "chapters": [{ "anchor": "K/1", "says": "第一组。" }, { "anchor": "K/9", "says": "不是锚点。" }],
-            "argument": [{ "anchor": "K/2", "adds": "其次。", "key_cards": ["K/2|b", "5/2", "99/9"] }, { "anchor": "K/1", "adds": "首先。", "key_cards": ["5/1", "K/1|b"] }, { "anchor": "X/1", "adds": "x" }],
-            "models": [{ "address": "K/1|a", "shows": "说明。", "built_on_by": ["K/1|a", "K/1|a"] }, { "address": "K/7", "shows": "x" }],
-            "events": [{ "address": "k/2|a", "supports": [] }],
+    fn skeleton_json_is_checked_for_completeness_r2_and_valid_links() {
+        let clean = json!({
+            "chapters": [{ "anchor": "K/1", "says": "第一组。" }, { "anchor": "K/2", "says": "第二组。" }],
+            "argument": [{ "anchor": "K/2", "adds": "其次[[均衡@K/1|b]]。", "key_cards": ["K/2|b"] }, { "anchor": "K/1", "adds": "首先。", "key_cards": ["K/1|b"] }],
+            "models": [{ "address": "K/1|a", "shows": "说明企业边界由剩余控制权决定。", "built_on_by": ["K/1|a"] }],
+            "events": [{ "address": "k/2|a", "supports": [] }]
+        });
+        let ok_res = check(&clean, &book());
+        assert!(ok_res.problems.is_empty(), "{:?}", ok_res.problems);
+        assert_eq!(ok_res.model_lines, ["- [[K/1|a]]（概念模型）：说明企业边界由剩余控制权决定。 依赖它的模型：[[K/1|a]]。"]);
+        assert_eq!(ok_res.event_lines, ["- [[k/2|a]]：例示 本书的论证 的观点。"]);
+        let body = structure_body("标记", "K", &ok_res).unwrap();
+        let nl = ps::NL;
+        assert!(body.starts_with(&format!("标记{nl}{nl}## 论证{nl}{nl}- [[K/1]]：首先。 关键卡片：[[K/1|b]]。{nl}- [[K/2]]：其次[[均衡@K/1|b]]。 关键卡片：[[K/2|b]]。{nl}{nl}## 模型")));
+        assert!(body.ends_with(&format!("{nl}{nl}来源：[[K]]")));
+
+        // Invalid key_cards, topic links, duplicate/missing rows, and R2 length faults all fail validation.
+        let dirty = json!({
+            "chapters": [{ "anchor": "K/1", "says": "第一组。" }, { "anchor": "K/1", "says": "重复。" }, { "anchor": "K/9", "says": "不是锚点。" }],
+            "argument": [{ "anchor": "K/1", "adds": "首先。", "key_cards": ["5/1", "99/9"] }, { "anchor": "X/1", "adds": "x" }],
+            "models": [{ "address": "K/1|a", "shows": "这个模型详细分析了不完全契约下的专用性投资、事后谈判摩擦以及纵向一体化对剩余控制权分配的综合影响。", "built_on_by": ["K/9|z"] }],
+            "events": [{ "address": "k/2|a", "supports": ["5/2"] }],
             "topics": [{ "root": "5/0", "body": "依赖 [[5/1]]。" }]
         });
-        let c = check(&sk, &book());
-        assert_eq!(c.problems, ["argument: `X/1` is no anchor", "models: `K/7` is no Model Card of the book", "topics: a digest writes no Topic body; Topic trees are zt-idea-grow's"]);
-        assert_eq!(c.model_lines, ["- [[K/1|a]]（概念模型）：说明。 依赖它的模型：[[K/1|a]]。"]);
-        assert_eq!(c.event_lines, ["- [[k/2|a]]：例示 本书的论证 的观点。"]);
-        let body = structure_body("标记", "K", &c).unwrap();
-        let nl = ps::NL;
-        assert!(body.starts_with(&format!("标记{nl}{nl}## 论证{nl}{nl}- [[K/1]]：首先。 关键卡片：[[K/1|b]]。{nl}- [[K/2]]：其次。 关键卡片：[[K/2|b]]。{nl}{nl}## 模型")));
-        assert!(body.ends_with(&format!("{nl}{nl}来源：[[K]]")));
-        // A Link to an unknown Card and a semicolon are the problems that stop apply. A list that
-        // is missing is `@($null)`, one empty entry, as in the script.
-        let bad = check(&json!({ "chapters": [{ "anchor": "K/1", "says": "依赖 [[K/1|b]]；见 [[K/9|z]]。" }] }), &book());
-        assert_eq!(
-            bad.problems,
-            [
-                "K/1: [[K/9|z]] does not exist",
-                "K/1: a semicolon",
-                "argument: `` is no anchor",
-                "models: `` is no Model Card of the book",
-                "events: `` is no Event Card of the book"
-            ]
-        );
+        let c = check(&dirty, &book());
+        assert!(c.problems.iter().any(|p| p == "chapters: `K/9` is no anchor"), "{:?}", c.problems);
+        assert!(c.problems.iter().any(|p| p == "chapters: duplicate anchor `K/1`"), "{:?}", c.problems);
+        assert!(c.problems.iter().any(|p| p == "chapters: missing anchor `K/2`"), "{:?}", c.problems);
+        assert!(c.problems.iter().any(|p| p == "K/1: key_card `[[5/1]]` is invalid or unknown"), "{:?}", c.problems);
+        assert!(c.problems.iter().any(|p| p == "K/1: key_card `[[99/9]]` is invalid or unknown"), "{:?}", c.problems);
+        assert!(c.problems.iter().any(|p| p == "argument: missing anchor `K/2`"), "{:?}", c.problems);
+        assert!(c.problems.iter().any(|p| p.starts_with("K/1|a: R2 on model line")), "{:?}", c.problems);
+        assert!(c.problems.iter().any(|p| p.contains("model reference `K/9|z`")), "{:?}", c.problems);
+        assert!(c.problems.iter().any(|p| p == "k/2|a: support `[[5/2]]` is invalid or unknown"), "{:?}", c.problems);
+        assert!(c.problems.iter().any(|p| p.starts_with("topics:")), "{:?}", c.problems);
         assert_eq!(self_check("D:\\s", "D:\\s\\skeleton"), "SELF-CHECK: `zt-digest skeleton -Step apply -Staging \"D:\\s\" -Work \"D:\\s\\skeleton\"`（不要加 -Apply）");
     }
 }
