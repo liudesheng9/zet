@@ -256,3 +256,7 @@ From `D:\zt-digest\hurst2011small\book.zh.md`:
 - **`model-survey.mjs hurst2011small`:** 5 Model Cards (`2|a`, `3|a|a`, `5|a`, `6|a|a`, `10|a|a`; RC=0).
 - **Empirical model checks at final addresses (`2|a`, `3|a|a`, `5|a`, `10|a|a`):** `--stage final` (`self_sufficient true`, `evidence_bound true`, `pass`), `--settings` (`clean`), and `--network` (`clean`) all exit **0**.
 - **`list_broken_links` (`hurst2011small/` & full agent workspace):** `{"total_broken":0,"hurst_broken":[]}`.
+
+## Stage 7: illustrate
+
+Not applicable (`hurst2011small` holds 4 empirical models and 1 concept model, 0 formal models; Stage 7 applies to formal models only).

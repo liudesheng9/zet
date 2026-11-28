@@ -252,3 +252,7 @@ From the digested source headings (引言 through §7 before References): 引言
 - **`model-survey.mjs gottlieb2022career`:** 6 surviving Model Cards (`4|a`, `5|b|a`, `6|g|b`, `7|b`, `7|c|a`, `7|e|b`), `rc=0`.
 - **`list_broken_links` (`agent`):** `{"total_broken":0,"gottlieb_broken":[]}`.
 
+
+## Stage 7: illustrate
+
+Not applicable (`gottlieb2022career` holds 4 empirical models and 2 concept models, 0 formal models; Stage 7 applies to formal models only).

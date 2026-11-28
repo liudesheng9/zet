@@ -245,3 +245,7 @@ Batches (tail-to-head via `batch.mjs --commit`, all previewed with `complete: tr
   - `azoulay2020age/3|f|a`: `--stage final` pass (RC=0, `loose 0`), `--settings` clean (RC=0), `--network` clean (9 blocks, 6 layers, `共用` 6, RC=0).
 - `list_broken_links`: `total_broken: 0`, `azoulay_broken: 0`.
 
+
+## Stage 7: illustrate
+
+Not applicable (`azoulay2020age` holds 3 empirical models, 0 formal models; Stage 7 applies to formal models only).

@@ -139,3 +139,7 @@ From `muendler2012employee.source_headings.txt`: Front matter (`论文信息`, `
 | `zt-check --model 'muendler2012employee/7|a' --settings` | `settings: data tree and specification ladder are clean` | 0 |
 | `zt-check --model 'muendler2012employee/7|a' --network` | `network: clean` (8 blocks, 5 layers, 414px wide, 15 paths) | 0 |
 | `list_broken_links` (`muendler2012employee/`) | `{"broken":[]}` | 0 |
+
+## Stage 7: illustrate
+
+Not applicable (`muendler2012employee` holds 1 empirical model, 0 formal models; Stage 7 applies to formal models only).

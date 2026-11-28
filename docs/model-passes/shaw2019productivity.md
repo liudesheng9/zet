@@ -259,3 +259,7 @@ From the Chinese bilingual source headings (7 unnumbered top sections + referenc
 - `zt-check --model` on all 3 empirical models (`shaw2019productivity/4|a`, `shaw2019productivity/5|a`, `shaw2019productivity/5|e|a`): `--stage final` PASS (`self_sufficient true`, `evidence_bound true`), `--settings` clean, `--network` clean (all RC=0).
 - `list_broken_links`: `{"total_broken":0,"shaw_broken":[]}` (RC=0).
 
+
+## Stage 7: illustrate
+
+Not applicable (`shaw2019productivity` holds 3 empirical models, 0 formal models; Stage 7 applies to formal models only).

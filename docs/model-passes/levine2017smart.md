@@ -257,3 +257,7 @@ From `D:\zt-digest\levine2017smart\book.zh.md` (body from 一、引言 through �
   - `--network`: **PASS** (exit 0 on all 4; `network: clean`)
 - `list_broken_links` (agent workspace): **PASS** — `[]` (0 broken links total, 0 in `levine2017smart/`).
 - No formal models in `levine2017smart` (Stage 7 `zt-model-illustrate` N/A). Post-digest sequence complete.
+
+## Stage 7: illustrate
+
+Not applicable (`levine2017smart` holds 4 empirical models, 0 formal models; Stage 7 applies to formal models only).

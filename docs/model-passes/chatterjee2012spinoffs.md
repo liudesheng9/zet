@@ -237,3 +237,35 @@ From `D:\zt-digest\chatterjee2012spinoffs\book.zh.md`: `1. 引言`, `2. 模型` 
 - `zt-check --model 'chatterjee2012spinoffs/5|b'`: `--stage final` (`pass`, RC=0), `--settings` (`clean`, RC=0), `--network` (`network: clean`, RC=0).
 - `list_broken_links`: `total_broken: 0`, `chatterjee_broken: 0`.
 
+## Stage 7: illustrate
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; all writes serialized under `zt_mutex.py`). Pre-Stage-7 backup: `D:\zt\backups\zt-before-iof10-stage7-illustrate-2026-11-27.sqlite3`.
+
+### Module & illustrated Cards (`2|a`, formal, 117 parts)
+
+- **Module:** `C:\Users\chenx\.claude\skills\zt-model-illustrate\modules\chatterjee2012spinoffs-2_a.mjs` (`head = 'chatterjee2012spinoffs/2|a'`).
+- **Model Card (`2|a`):** 3 `part(title, html)` subcharts in `**图**`:
+  1. `一 · 博弈与筛选顺序` (4-stage single-period screening & spinoff order of moves with backward/equilibrium solution order).
+  2. `二 · 因果结构` (5-layer SVG from exogenous primitives through market pricing $Z$, $\theta$ and worker option $f_0$, ex-ante screening $\mu_L,\mu_H$, ex-post retention $P_L,P_H$, to Yule distribution $\delta_N$, Gibrat's Law, and Pareto upper tail, with dashed market-clearing feedback loop).
+  3. `三 · 变体与扩展对比` (4 clickable chapter panels: general bounded concave baseline & proofs, linear utility / Yule distribution / $\lambda_H/\lambda_L$ comparative statics, CARA risk-aversion variant, and entrepreneur-generated ideas + exogenous entry cost $f>0$ extension).
+- **16 owned `设定`/`假设` Cards** (`2|a|a`, `b`, `c`, `d`, `f`, `f|a`, `f|b`, `g`, `g|a`, `g|b`, `h`, `h|a`, `i`, `i|a`, `j`, `j|a`; 0 `定义` parts in chapters):
+  - Each received 1 economic-structure `chart` figure at the end of `**说明**` (zero card-tree maps, all plot axes named via `axes()`, all `data-zt` targets verified, `--zt-*` `TONE` tokens only) and a lint-clean 3-line `**直觉**` (`是什么`/`为什么需要`/`怎样进入模型`), clearing all 10 pre-existing `intuition-link` and `intuition-long` faults on `h`, `i`, `j`, `g|a`, `h|a`, `i|a`, `j|a`.
+
+### Visual inspection & idempotence
+
+- Rendered all 40 light and dark PNGs (including `-part1/2/3-*`) via headless Edge (`verify.mjs`). Visually inspected the Model Card parts and all 16 setting-card figures; fixed 11 layout/math details (`^{∞}` superscripts in `a`/`f`, nested subscript formatting in `c`/`h`/`i|a`, `, ` spacing in `μ_L, μ_H` on `2|a`/`g`, multi-line box text in `g`, curve/line label clearance in `b`/`c`/`f|a`/`f|b`/`i`, and middle-gap arrow / feedback-line clearance in `2|a` Part 2), re-applied under `zt_mutex.py`, and re-verified all 11 updated PNGs cleanly in both light and dark themes.
+- Idempotence verified both before and after `term-link relink`: `apply.mjs` dry-run returned `same` for all 17 Cards.
+
+### Term relink & Final Stage 7 Gates (post term-relink)
+
+- `zt-digest term-link -Step relink -CitationKey chatterjee2012spinoffs`: `cards_changed: 11, links_added: 15, links_repaired: 0, cards_refused: 0`; follow-up `-PlanOnly`: `cards_changed: 0, links_added: 0, links_repaired: 0`.
+- `zt-check --model 'chatterjee2012spinoffs/2|a' --charts`: **PASS** (RC=0) — `17 chart(s) in 118 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 card(s) without a full 直觉`.
+- `node scripts/verify.mjs --model 'chatterjee2012spinoffs/2|a'`: **PASS** (RC=0) — `17 chart(s) in 118 card(s); 0 lint fault(s); 0 render failure(s); 0 card(s) without a figure; 0 card(s) without a full 直觉`.
+- `zt-check --model 'chatterjee2012spinoffs/2|a' --settings --symbols`: **PASS** (RC=0) — `settings: all in the setting part`.
+- `zt-check --model 'chatterjee2012spinoffs/2|a' --stage final`: **PASS** (RC=0) — `members 117 {"main":8,"off":1,"side":108}`, `loose 0; self_sufficient true; formal_structured true; stage(final) pass`.
+- `zt-check --model 'chatterjee2012spinoffs/2|a' --network`: **PASS** (RC=0) — `network: clean` (9 blocks, 2 layers, 17 paths).
+- `zt-check --model 'chatterjee2012spinoffs/2|a' --premises`: 17 pre-existing pointer / `F_\mu(0)=0` hits (unchanged from Stage 3; 0 new hits).
+- `zt-check --model 'chatterjee2012spinoffs/2|a' --skip-shared`: **PASS** (RC=0) — `faults: 0`.
+- `list_broken_links` (`agent`): **PASS** — `total_broken: 0`, `chatterjee_broken: []`.
+
+

@@ -113,3 +113,29 @@ From `book.zh.md` headings: Abstract + `1. 引言`, `2. 模型`, `3. 初创企�
 - Formal model gates at `anton1995startups/2|a`: `zt-check --model 'anton1995startups/2|a' --stage final` (`pass`, exit 0), `--settings --symbols` (`settings: all in the setting part`, exit 0), `--network` (`network: clean`, 3 blocks, 2 layers, exit 0).
 - `list_broken_links` for `anton1995startups/`: empty (`[]`).
 
+## Stage 7: illustrate
+
+Date: 2026-11-28, live box (`D:\zt`, user-authorized autonomous run), under `zt-model-illustrate`. Backup: `D:\zt\backups\zt-before-iof10-stage7-illustrate-2026-11-27.sqlite3`.
+
+- Module: `C:\Users\chenx\.claude\skills\zt-model-illustrate\modules\anton1995startups-2_a.mjs` (`head = 'anton1995startups/2|a'`).
+- Cards illustrated (5 charts, 4 `**直觉**` sections; no owned `定义` parts in chapters):
+  - `anton1995startups/2|a` (Model Card `**图**`, 3 `part()` subcharts: `一 · 博弈顺序`, `二 · 因果结构`, `三 · 比较维度`).
+  - `anton1995startups/2|a|a` (设定: timing flow + 2×2 four-state reduced-form profit matrix + refreshed `**直觉**`).
+  - `anton1995startups/2|a|a|b` (设定：契约空间与不完备性: ex-post vs ex-ante contract slots + verifiability/incompleteness flow + refreshed `**直觉**`).
+  - `anton1995startups/2|a|a|c` (假设 1：基本利润排序与盈利性: schematic joint-profit stacked bar chart with labeled axes + profitability boxes + refreshed `**直觉**` without stating derived Chapter 1 results).
+  - `anton1995startups/2|a|a|d` (假设 2：雇员有限责任约束: $R_x \ge -L$ number line with feasible/excluded regions and contract scopes + refreshed `**直觉**`).
+- Visual inspection: opened and inspected all 16 light and dark PNGs (including `-part1/2/3-*`) via `read_file`; fixed 4 layout polish items on first pass (2×2 grid for part 1, non-crossing vertical $\alpha$ channel in part 2, wider `雇员三选一` box in `2|a|a`, wider arrow gaps in `2|a|a|b`, bottom-aligned axis line in `2|a|a|d`) and re-verified all updated light and dark PNGs with zero text overlap, zero clipping, and all TeX/SVG subscripts rendered cleanly.
+
+### Gate
+
+- `zt-digest term-link -Step relink -CitationKey anton1995startups`: `ok: true`, `cards_changed: 3`, `links_added: 5`, `links_repaired: 0`; `-PlanOnly`: `cards_changed: 0`, `links_added: 0`.
+- Idempotence (`node scripts/apply.mjs modules/anton1995startups-2_a.mjs` post-relink): `same` for all 5 Cards.
+- `zt-check --model 'anton1995startups/2|a' --charts`: exit 0 (`5 chart(s) in 13 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 card(s) without a full 直觉`).
+- `node scripts/verify.mjs --model 'anton1995startups/2|a'`: exit 0 (`5 chart(s) in 13 card(s); 0 lint fault(s); 0 render failure(s); 0 card(s) without a figure; 0 card(s) without a full 直觉`).
+- `zt-check --model 'anton1995startups/2|a' --settings --symbols`: exit 0 (`settings: all in the setting part`).
+- `zt-check --model 'anton1995startups/2|a' --stage final`: exit 0 (`stage(final) pass`, `self_sufficient true`, `formal_structured true`, `loose 0`).
+- `zt-check --model 'anton1995startups/2|a' --network`: exit 0 (`network: clean`, 3 blocks, 2 layers).
+- `zt-check --model 'anton1995startups/2|a' --premises`: exit 0 (`premises: none used before their card`).
+- `zt-check --model 'anton1995startups/2|a' --skip-shared`: exit 0 (`faults: 0`; 1 advisory R20 only).
+- `list_broken_links` for `anton1995startups/`: empty (`[]`).
+

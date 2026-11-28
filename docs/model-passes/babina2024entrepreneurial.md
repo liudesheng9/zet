@@ -253,3 +253,7 @@ Calls that could go the other way: `VI.B` (`B.1`, `B.2`) and `VI.D` (`D.1–3`, 
 - `zt-check --model '<head>' --stage final`: exit 0 (`pass`, `self_sufficient true`, `evidence_bound true`, `loose 0`) on `3|a`, `4|b`, `6|a`, `7|a`.
 - `zt-check --model '<head>' --settings` and `--network`: exit 0 (`clean`) on `4|b`, `6|a`, `7|a`.
 - `list_broken_links` (`agent` workspace): `[]` (0 total, 0 for `babina2024entrepreneurial/`).
+
+## Stage 7: illustrate
+
+Not applicable (`babina2024entrepreneurial` holds 3 empirical models and 1 concept model, 0 formal models; Stage 7 applies to formal models only).

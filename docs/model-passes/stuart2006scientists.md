@@ -213,3 +213,7 @@ From `D:\zt-digest\stuart2006scientists\book.zh.md`: `# 引言`; `# 研究背景
 | Edited cards | `zt-check --cards "stuart2006scientists,…,5"` | `faults: 0` (advisory lines only) | 0 |
 | Broken links | `list_broken_links` (`stuart2006scientists/`) | `[]` (0 broken links) | 0 |
 
+
+## Stage 7: illustrate
+
+Not applicable (`stuart2006scientists` holds 1 empirical model and 1 concept model, 0 formal models; Stage 7 applies to formal models only).
