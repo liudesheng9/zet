@@ -55,3 +55,45 @@ All writes executed through `zt_mutex.py` on `D:\zt` following `zt-model-fold/SK
 - Card count in `levine2017smart`: **389** (unchanged from 389 pre-fold).
 - `zt-digest term-link -Step relink -CitationKey levine2017smart` (and `-PlanOnly`): **PASS** — `cards_changed: 0`, `links_added: 0`, `links_repaired: 0`, `cards_refused: 0`.
 - Next stage: hand `levine2017smart/4|a`, `levine2017smart/5|a`, `levine2017smart/5|b`, and `levine2017smart/6|a` to `zt-model-settings` (Stage 2).
+
+## Stage 2: settings (2026-11-27)
+
+- Live box: `D:\zt` (agent workspace, all writes serialized through `zt_mutex.py`).
+- Pre-Stage-2 backup: `D:\zt\backups\zt-before-iof10-stage2-settings-2026-11-27.sqlite3`.
+- Display formulas verified byte-for-byte before every write (0 display formulas in any of the 9 dissolved cards; all surviving formulas preserved verbatim).
+
+### Per-model changes
+
+- **`levine2017smart/4|a` (empirical, 26 → 26 parts)**:
+  - Fixed `start` fault on `4|a|a|b` (`测量：任务要求与行业指标`): added one-line summary, `**起点**` (`- 依赖 [[levine2017smart/4|a|a]]：指标基于 CPS 与 DOT 数据构造。`), and `**内容**`; dropped redundant `见 [[levine2017smart/4|a|a]]。`; preserved display formula $\overline{NR}_{k,m}$ byte-for-byte.
+- **`levine2017smart/5|a` (empirical, 31 → 31 parts)**:
+  - Fixed `start` fault on `5|a|a|b` (`测量：早年认知非认知特质与家庭插补`): promoted summary sentence to line 1, added `**起点**` (`- 依赖 [[levine2017smart/5|a|a]]：…`) and `**内容**`, dropped redundant `见` line.
+- **`levine2017smart/5|b` (empirical, 32 → 32 parts)**:
+  - Fixed `start` fault on `5|b|a|b` (`测量：行业任务指标与特质分组`): promoted summary sentence to line 1, added `**起点**` (`- 依赖 [[levine2017smart/5|b|a]]：…`) and `**内容**`, dropped redundant `见` line.
+- **`levine2017smart/6|a` (empirical, folded from `6|a` + `6|b` + `7|a` + `7|b`, 128 → 119 parts)**:
+  - **Tree dissolution (`apply_batch`, 28 items, 70 cards moved, 9 deleted `into`, `links_that_will_break: []`)**:
+    - Moved 3 folded measure cards (`6|a|a|5|a|b`, `6|a|a|6|a|b`, `6|a|a|7|a|b`) under `6|a|a` as `6|a|a|c`–`e`.
+    - Moved 7 folded identifying assumption cards (`5|a|1|a..c`, `6|a|1|a..b`, `7|a|1|a..b`) under `6|a|a|1` (`设计`) as `6|a|a|1|e`–`k`.
+    - Moved the 3 folded specification subtrees onto `6|a|a|2`'s specification ladder under the exact specification each extends: `5|a|2` (Eq. 5 / Table X col 1) → `6|a|a|2|a|a` (under `6|a|a|2|a`, Table IX col 2); `6|a|2` (Eq. 8 / Table XI col 1) → `6|a|a|2|c|b|b` (under `6|a|a|2|c|b`, Table IX col 7); `7|a|2` (Q10–Q90 no-FE) → `6|a|a|2|c|c` (under `6|a|a|2|c`, Table IX col 5).
+    - Promoted folded sub-chapter Direct chains (`5|a|3..4`, `6|a|3..4`, `7|a|3..4`) directly under `6|a|a|5`, `6|a|a|6`, `6|a|a|7` and reordered them ahead of each chapter's `局限` card (`|a`, `|a|1` before `|b`).
+    - Deleted the 9 redundant duplicate cards `into` the surviving `6|a` cards: `5|a|a`, `6|a|a`, `7|a|a` → `6|a|a|a` (`变量表`); `5|a|1`, `6|a|1`, `7|a|1` → `6|a|a|1` (`设计`); `5|a`, `6|a`, `7|a` → `6|a|a` (`数据`).
+  - **Text edits (`edit_card`, 17 parts + head `6|a`)**:
+    - Merged sample details (3,553 spells, Table XI trait subsamples 4,210/13,269, Figs. I–II age note) into `6|a|a` (`数据`).
+    - Merged all 26 new variable/symbol rows (`E_{its}`, `E_{its}^H`, `I_{its}`, `I_{is}`, `I_i^{(1)}`, `U_{its}`, `U_{is}`, `U_i^{(1)}`, `X_{its}`, `\varepsilon_{its}`, `\epsilon_{its}`, `\delta_0`–`\delta_3`, `u_{its}`, `\gamma_0`–`\gamma_4`, `SE_{it}`, `NRC_{it}`, `v_{its}`, `Q_\tau`, `\tau`) into `6|a|a|a` (`变量表`, 41 rows total, 0 `uncovered`, 0 `unused`).
+    - Formatted `6|a|a|b`–`e` with one-line summary and `**起点**` (`- 依赖 [[levine2017smart/6|a|a]]：…`).
+    - Merged design notes into `6|a|a|1` (`设计`) listing all 11 assumptions, and renumbered `6|a|a|1|e`–`k` to `假设 5`–`假设 11`.
+    - Converted `6|a|a|2|a|a`, `6|a|a|2|c|b|b`, `6|a|a|2|c|c` from duplicate `规格：基准` facets to variant facets with `依赖 [[<parent>]]` and `**相对基准的改动**` (display formulas (5), (8), and $Q_\tau$ preserved byte-for-byte).
+    - Rebuilt `levine2017smart/6|a` `**结构**` section from build order (119 parts).
+
+### Gate results (post term-relink)
+
+- `zt-digest term-link -Step relink -CitationKey levine2017smart`: **PASS** — `cards_changed: 4, links_added: 8, links_repaired: 0, cards_refused: 0`; `-PlanOnly` rerun: `cards_changed: 0, links_added: 0, links_repaired: 0`.
+- `zt-check --model '<head>' --settings`: **PASS** (exit 0 on all 4 models — `settings: data tree and specification ladder are clean`).
+- `zt-check --model '<head>' --stage settings`: **PASS** (exit 0 on all 4 models):
+  - `levine2017smart/4|a`: 26 parts (`main: 5, off: 1, side: 20`), `self_sufficient true`, `evidence_bound true`, `stage(settings) pass`.
+  - `levine2017smart/5|a`: 31 parts (`main: 5, off: 1, side: 25`), `self_sufficient true`, `evidence_bound true`, `stage(settings) pass`.
+  - `levine2017smart/5|b`: 32 parts (`main: 5, off: 1, side: 26`), `self_sufficient true`, `evidence_bound true`, `stage(settings) pass`.
+  - `levine2017smart/6|a`: 119 parts (`main: 8, off: 1, side: 110`), `evidence_bound true`, `stage(settings) pass` (only expected Stage 3 deferred `unanchored` notices on folded chapters `6|a|a|5`, `6|a|a|6`, `6|a|a|7`).
+- `list_broken_links` (agent workspace): **PASS** — 0 broken links total, 0 in `levine2017smart/`.
+- Card count in `levine2017smart`: **380** (389 − 9 dissolved duplicate cards).
+- Next stage: hand `levine2017smart/4|a`, `levine2017smart/5|a`, `levine2017smart/5|b`, and `levine2017smart/6|a` to `zt-model-restructure` (Stage 3).

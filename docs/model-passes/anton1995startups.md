@@ -22,3 +22,18 @@ No fold required (0 writes).
 - `zt-check --model 'anton1995startups/2|a' --stage fold`: pass (`members 12 {main:2, off:1, side:9}`, `loose 0`, `self_sufficient true`, `formal_structured true`).
 - `list_broken_links`: verified clean (0 broken links in `anton1995startups/`).
 - Term relink: not needed (no Cards edited in Stage 1).
+
+## Stage 2: settings
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D:\zt\backups\zt-before-iof10-stage2-settings-2026-11-27.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok).
+
+`anton1995startups/2|a` (formal, 12 parts) already passed strict settings checks out of the digest with 0 faults (0 writes required):
+- Setting card `2|a|a` (introduces $q, \alpha, \pi_0, \sigma_0, \sigma_{\mathrm{M}}, \pi_{\mathrm{L}}, \pi_{\mathrm{M}}, \sigma_{\mathrm{D}}, \pi_{\mathrm{D}}$), notation card `2|a|a|a`, Side setting cards `2|a|a|b` (introduces $R_{\mathrm{M}}, R_{\mathrm{D}}, R_0, R_{\sigma}, R_x$) and `2|a|a|d` (introduces $L$).
+- All 7 `uses` advice lines inspected via `--format json`: mid-sentence prose references in `2|a|a|1`, `2|a|a|1|a`, and limitation card `2|a|b` (all stay per skill rule).
+
+### Gate
+
+- `zt-check --model 'anton1995startups/2|a' --settings --symbols`: `ok: true` (`settings: all in the setting part`, 0 faults).
+- `zt-check --model 'anton1995startups/2|a' --stage settings`: `pass` (`self_sufficient true`, `formal_structured true`).
+- `list_broken_links`: 0 broken.
+- Term relink: not needed (0 Cards edited).

@@ -63,3 +63,46 @@ Three folds executed under `zt_mutex.py` (no duplicate parts deleted in Stage 1;
 ### Next stages
 
 All three surviving heads (`shaw2019productivity/4|a`, `shaw2019productivity/5|a`, `shaw2019productivity/5|b`) are `empirical` models and proceed to Stage 2 (`zt-model-settings`, including consolidating the folded data/spec/variable cards in `5|a` and deduplicating the folded Table 3 parts in `5|b`), Stage 3 (`zt-model-restructure`), Stage 4 (`zt-model-import`, where `5|a` and `5|b` import `4|a`'s shared 5-registry administrative data/measurement blocks), and Stage 6 (`zt-evidence-dialogue`), followed by Stage 7 (`zt-literature-organize`). Stage 5 (`zt-model-illustrate`) does not apply (no formal models).
+
+
+## Stage 2: settings
+
+Date: 2026-11-27 (UTC 2026-11-28), live box `D:\zt`.
+
+Pre-Stage-2 backup: `D:\zt\backups\zt-before-iof10-stage2-settings-2026-11-27.sqlite3`.
+
+All writes serialized via `zt_mutex.py`; every display formula and equation number (`\tag{1}`, `\tag{2}`, `\tag{3}`, and all Table 2/3/4/5/6 specs) verified byte-for-byte before writing.
+
+### `shaw2019productivity/4|a` (empirical, 23 → 23 parts)
+
+- Fixed 2 `start` faults on `4|a|a|b` (`测量：活跃初创与连续创业者`) and `4|a|a|c` (`样本：全样本与主回归样本`): restructured each with a one-line summary, `**起点**` (`- 依赖 [[shaw2019productivity/4|a|a]]：…`), and `**内容**`, dropping the redundant leading `见 [[shaw2019productivity/4|a|a]]。`. No cards moved.
+
+### `shaw2019productivity/5|a` (empirical, 105 → 95 parts)
+
+- Dissolved the folded setting blocks of `5|a|a|7` (former `3|a`, §3 framework) and `5|a|a|8` (former `6|a`, §6 Tables 4–6) in one atomic `apply_batch` (`tidy`, 57 cards moved, 10 redundant duplicates deleted `into` surviving targets, `links_that_will_break: []`):
+  - **Deleted `into` surviving counterparts (10 cards):** `7|a` and `8|a` (`数据`) into `5|a|a`; `7|a|a` and `8|a|a` (`变量表`) into `5|a|a|a`; `7|a|5` and `8|a|1` (`设计`) into `5|a|a|1`; `7|a|5|a` (`假设 1`) into `5|a|a|1|a`; `7|a|5|b` and `8|a|1|b` (`假设 2`) into `5|a|a|1|b`; `7|a|5|c` (`假设 3`) into `5|a|a|1|c`.
+  - **Moved into unified data tree & design:** `7|a|b` → `5|a|a|b` (`测量：创业决策代理`) and `8|a|b` → `5|a|a|c` (`测量：顺序型与组合型占比`), both given one-line summary, `**起点**`, and `**内容**`; distinct identifying assumptions `7|a|5|d` → `5|a|a|1|d` (`假设 4`), `8|a|1|a` → `5|a|a|1|e` (renumbered `假设 5`), and `8|a|1|c` → `5|a|a|1|f` (renumbered `假设 6`).
+  - **Moved onto unified specification ladder:** `7|a|6` (+ 4 Side variants including eqs (1)–(3)) → `5|a|a|2|b` (facet `规格：式 (1) 完整框架`, preserving `\tag{1}`–`\tag{3}`); `8|a|2` (+ 17 Side variants for Tables 4–6) → `5|a|a|2|c` (facet `规格：男性基准 OLS(1)`). Both converted to variants of `5|a|a|2` with `依赖 [[shaw2019productivity/5|a|a|2]]` and `**相对基准的改动**`.
+  - **Promoted folded chapter content ahead of `局限`:** `7|a|1–4` + `7|a|7` → `5|a|a|7|a` chain ahead of `5|a|a|7|b`; `8|a|3–5` → `5|a|a|8|a` chain ahead of `5|a|a|8|b`.
+- Merged subsample sizes and 6-year right-censoring notes into `5|a|a`, unified design/threat/assumption list (Assumptions 1–6) into `5|a|a|1`, enriched `5|a|a|1|a–c`, and added the 7 new symbol rows ($\alpha, \Sigma, \Phi, \zeta_{ijt}, Share_{rc}, Count_{rc}, Total_c$) to `5|a|a|a` (`变量表`, 24 rows, 0 `uncovered`/`unused`).
+- Rebuilt `**结构**` on `shaw2019productivity/5|a` (95 parts).
+
+### `shaw2019productivity/5|b` (empirical, 41 → 31 parts)
+
+- Dissolved the exact-duplicate Table 3 setting block inside folded chapter `5|b|a|5` (former `6|b`) in one atomic `apply_batch` (`tidy`, 52 link macros rewritten, `links_that_will_break: []`):
+  - Moved `5|b|a|5|a|3` (+ 7 Side estimate/table/test children) → `5|b|a|5|a` ahead of `5|b|a|5|b` (`局限`).
+  - Deleted 10 exact-duplicate cards leaf-first `into` their surviving counterparts: `5|b|a|5|a|2*` (5 specs, all display formulas verified identical) into `5|b|a|2*`; `5|b|a|5|a|1|a–b` (`假设 1–2`) into `5|b|a|1|a–b`; `5|b|a|5|a|1` (`设计`) into `5|b|a|1`; `5|b|a|5|a|a` (`变量表`) into `5|b|a|a`; `5|b|a|5|a` (`数据`) into `5|b|a`.
+- Enriched `5|b|a`, `5|b|a|1`, and `5|b|a|1|b` with minor unique details (1990–2000 exclusion, conditional-correlation threat, endnote 18 citation). Duplicate estimate-chapter consolidation (`5|b|a|5` vs `5|b|a|4`) deferred to Stage 3.
+- Rebuilt `**结构**` on `shaw2019productivity/5|b` (31 parts).
+
+### Gate
+
+- Term relink (`zt-digest term-link -Step relink -CitationKey shaw2019productivity` under `zt_mutex.py`): `{"ok":true,"complete":true,"book":"shaw2019productivity","cards_changed":3,"links_added":10,"links_repaired":0,"cards_refused":0,"rounds":1,"applied":true}`; `-PlanOnly` confirmed `0` pending changes.
+- `zt-check --model 'shaw2019productivity/4|a' --settings`: exit 0 (`settings: data tree and specification ladder are clean`).
+- `zt-check --model 'shaw2019productivity/4|a' --stage settings`: exit 0 (`members 23 {main:4, off:1, side:18}`, `relations {refers:39, rests-on:8}`, `loose 1`, `self_sufficient true`, `evidence_bound true`, `stage(settings) pass`).
+- `zt-check --model 'shaw2019productivity/5|a' --settings`: exit 0 (`settings: data tree and specification ladder are clean`).
+- `zt-check --model 'shaw2019productivity/5|a' --stage settings`: exit 0 (`members 95 {main:9, off:1, side:85}`, `relations {contrasts:4, refers:177, rests-on:31}`, `loose 2`, `evidence_bound true`, `stage(settings) pass`; only expected Stage 3 deferred `unanchored` on `5|a|a|7` and `5|a|a|8`).
+- `zt-check --model 'shaw2019productivity/5|b' --settings`: exit 0 (`settings: data tree and specification ladder are clean`).
+- `zt-check --model 'shaw2019productivity/5|b' --stage settings`: exit 0 (`members 31 {main:6, off:1, side:24}`, `relations {refers:66, rests-on:10}`, `loose 2`, `evidence_bound true`, `stage(settings) pass`; only expected Stage 3 deferred `unanchored` on `5|b|a|5`).
+- `list_broken_links` (`prefix: shaw2019productivity/`): `{"broken":[]}` (0 broken links).
+- Tree card count: 315 → 295 Cards (−20 redundant folded duplicate cards deleted `into` surviving targets).

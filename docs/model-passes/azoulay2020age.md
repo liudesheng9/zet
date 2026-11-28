@@ -47,3 +47,38 @@ None required (0 folds executed; no Cards edited, retyped, or moved on `D:\zt`).
 ### Next stages
 
 All three surviving heads (`azoulay2020age/2|a`, `azoulay2020age/3|a`, `azoulay2020age/5|a`) are `empirical` models and proceed to Stage 2 (`zt-model-settings`), Stage 3 (`zt-model-restructure`), Stage 4 (`zt-model-import`, where `3|a` and `5|a` import `2|a`'s shared administrative data/measurement blocks), and Stage 6 (`zt-evidence-dialogue`), followed by Stage 7 (`zt-literature-organize`). Stage 5 (`zt-model-illustrate`) does not apply (no formal models).
+
+## Stage 2: settings
+
+Date: 2026-11-27 (UTC 2026-11-28), live box `D:\zt`.
+
+Pre-Stage-2 backup: `D:\zt\backups\zt-before-iof10-stage2-settings-2026-11-27.sqlite3`.
+
+### Baseline audit and per-model changes
+
+All writes executed via `zt-digest call -Allow` serialized with `zt_mutex.py`. Formula and term-macro preservation verified programmatically before write (0 display formulas altered or dropped across all 5 edited Cards; 0 Cards moved; 0 Cards added or deleted).
+
+1. **`azoulay2020age/2|a` (empirical, 24 parts)**
+   - Baseline faults: 4 `start` faults (`2|a|a|b`, `2|a|a|c`, `2|a|a|d`, `2|a|a|e` lacked `**起点**`).
+   - Edits (4 Cards): added a one-line summary, `**起点**` (`- 依赖 [[azoulay2020age/2|a|a]]：…`), and `**内容**` heading to `azoulay2020age/2|a|a|b`, `2|a|a|c`, `2|a|a|d`, and `2|a|a|e`, preserving all existing prose and `[[label@address]]` term macros verbatim.
+2. **`azoulay2020age/3|a` (empirical, 41 parts)**
+   - Baseline faults: 1 `unused` fault (`azoulay2020age/3|a|a|a` listed `$S$`, which appears only inside summation subscripts `\sum_{i \in S_{g,k}}` / `\sum_{i \in S_{k,m}}`).
+   - Edits (1 Card): dropped the unused `$S$` row from `azoulay2020age/3|a|a|a` (`变量表`).
+3. **`azoulay2020age/5|a` (empirical, 24 parts)**
+   - Baseline faults: none (already clean).
+   - Edits: 0 Cards; re-verified after term relink.
+
+### Term relink
+
+- `zt-digest term-link -Step relink -CitationKey azoulay2020age` (via `zt_mutex.py`): `{"ok":true,"complete":true,"book":"azoulay2020age","cards_changed":1,"links_added":1,"links_repaired":0,"cards_refused":0,"rounds":1,"applied":true}`.
+- `zt-digest term-link -Step relink -CitationKey azoulay2020age -PlanOnly`: `{"ok":true,"complete":true,"book":"azoulay2020age","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`.
+
+### Gate (post term-relink)
+
+- `zt-check --model 'azoulay2020age/2|a' --settings`: exit 0 (`data azoulay2020age/2|a|a  variables azoulay2020age/2|a|a|a`; `settings: data tree and specification ladder are clean`).
+- `zt-check --model 'azoulay2020age/2|a' --stage settings`: exit 0 (`members 24 {"main":5,"off":1,"side":18}`, `relations {"corresponds":5,"refers":20,"rests-on":15}; loose 1; self_sufficient true; evidence_bound true; stage(settings) pass`).
+- `zt-check --model 'azoulay2020age/3|a' --settings`: exit 0 (`data azoulay2020age/3|a|a  variables azoulay2020age/3|a|a|a`; `settings: data tree and specification ladder are clean`).
+- `zt-check --model 'azoulay2020age/3|a' --stage settings`: exit 0 (`members 41 {"main":6,"off":1,"side":34}`, `relations {"refers":84,"rests-on":12}; loose 1; self_sufficient true; evidence_bound true; stage(settings) pass`).
+- `zt-check --model 'azoulay2020age/5|a' --settings`: exit 0 (`data azoulay2020age/5|a|a  variables azoulay2020age/5|a|a|a`; `settings: data tree and specification ladder are clean`).
+- `zt-check --model 'azoulay2020age/5|a' --stage settings`: exit 0 (`members 24 {"main":7,"off":1,"side":16}`, `relations {"corresponds":2,"refers":30,"rests-on":15}; loose 1; self_sufficient true; evidence_bound true; stage(settings) pass`).
+- `list_broken_links` (`workspace: agent`): 0 broken links overall, 0 for `azoulay2020age/`.

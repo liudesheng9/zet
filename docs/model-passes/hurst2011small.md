@@ -56,3 +56,43 @@ Folded `hurst2011small/7|a` into `hurst2011small/6|a` (all writes serialized via
 - Tree card count: **345** (unchanged).
 - `zt-digest term-link -Step relink -CitationKey hurst2011small` & `-PlanOnly`: **0 cards changed, 0 pending changes**.
 - Note for Stage 3 (`zt-model-restructure` / illustrate): `hurst2011small/6|a|a|3|a` (former `7|a|a|1`) has an inline SVG `data-zt="hurst2011small/7|a|a|2"` attribute that should be refreshed to final addresses in Stage 3/illustrate; `hurst2011small/6|a|a|3` needs a `依赖` rests-on line in Stage 3.
+
+---
+
+## Stage 2: settings
+
+- **Date:** 2026-11-27
+- **Pre-Stage-2 backup:** `D:\zt\backups\zt-before-iof10-stage2-settings-2026-11-27.sqlite3`
+- **Scope:** All 4 empirical models (`hurst2011small/2|a`, `3|a`, `5|a`, `10|a`); concept model `hurst2011small/6|a` skipped per `zt-post-digest`.
+- **Formula & link preservation:** Verified byte-for-byte by script across all 20 edited cards before writing; no cards moved (model head `**结构**` unchanged).
+
+### Per-model changes
+
+1. **`hurst2011small/2|a`** (28 members; 5 cards edited):
+   - Added one-line summary + `**起点**` + `**内容**` to data-tree cards `2|a|a|b` (`测量：企业口径与小企业界定`) and `2|a|a|c` (`样本：无雇员企业补充`), keeping existing `依赖 [[hurst2011small/2|a|a]]` lines in `**起点**`.
+   - Cleaned redundant `（补：书中未写）` marker in `**估计式**` on `2|a|a|2|a`, `2|a|a|2|b`, `2|a|a|2|c` while preserving the canonical `原书没有写出本规格的估计式。本卡按原文补写：` opening and all display formulas byte-for-byte.
+2. **`hurst2011small/3|a`** (36 members; 2 cards edited):
+   - Added one-line summary + `**起点**` + `**内容**` to `3|a|a|b` (`测量：DHS 对称岗位变动率`), preserving its display formula byte-for-byte.
+   - Cleaned redundant `（补：书中未写）` marker in `**估计式**` on `3|a|a|2|f` (`规格：微观成长与创新描述比例`).
+3. **`hurst2011small/5|a`** (27 members; 7 cards edited):
+   - Added one-line summary + `**起点**` + `**内容**` to `5|a|a|b` (`测量：五大创业动机编码与表 A2`) and `5|a|a|c` (`样本：2006 正收入与 2010 存续样本`).
+   - Cleaned redundant `（补：书中未写）` marker in `**估计式**` on `5|a|a|2`, `5|a|a|2|a`, `5|a|a|2|b`, `5|a|a|2|c`, `5|a|a|2|d`.
+4. **`hurst2011small/10|a`** (25 members; 6 cards edited):
+   - Added one-line summary + `**起点**` + `**内容**` to `10|a|a|b` (`测量：同事均值与高成长界定`).
+   - Cleaned redundant `（补：书中未写）` marker in `**估计式**` on `10|a|a|2`, `10|a|a|2|a`, `10|a|a|2|b`, `10|a|a|2|c`, `10|a|a|2|d`.
+
+### Stage 2 gate results (post term-relink)
+
+- `zt-digest term-link -Step relink -CitationKey hurst2011small`: `cards_changed: 3, links_added: 6, links_repaired: 0, cards_refused: 0`; `-PlanOnly` confirmed `cards_changed: 0, links_added: 0`.
+- `zt-check --model '<head>' --settings`: **PASS (exit 0 on all 4 empirical models)**:
+  - `hurst2011small/2|a`: `settings: data tree and specification ladder are clean`
+  - `hurst2011small/3|a`: `settings: data tree and specification ladder are clean`
+  - `hurst2011small/5|a`: `settings: data tree and specification ladder are clean`
+  - `hurst2011small/10|a`: `settings: data tree and specification ladder are clean`
+- `zt-check --model '<head>' --stage settings`: **PASS (exit 0 on all 4 empirical models)**:
+  - `hurst2011small/2|a`: 28 members (`main:6, off:1, side:21`), `self_sufficient true; evidence_bound true; stage(settings) pass`
+  - `hurst2011small/3|a`: 36 members (`main:6, off:1, side:29`), `self_sufficient true; evidence_bound true; stage(settings) pass`
+  - `hurst2011small/5|a`: 27 members (`main:7, off:1, side:19`), `self_sufficient true; evidence_bound true; stage(settings) pass`
+  - `hurst2011small/10|a`: 25 members (`main:6, off:1, side:18`), `self_sufficient true; evidence_bound true; stage(settings) pass`
+- `node E:\zet\skills\zt-model-settings\scripts\check-settings.mjs '<head>' --symbols`: **PASS (exit 0 on all 4 empirical models)** — `settings: the data tree and the specification ladder are in place`.
+- `list_broken_links` for `hurst2011small/`: **0 broken links**.

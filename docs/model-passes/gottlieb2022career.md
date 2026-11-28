@@ -60,3 +60,44 @@ All 5 folds into `gottlieb2022career/4|a` were executed in book order (`2|a`, `6
 - **`list_broken_links`:** PASS — 0 broken links in `gottlieb2022career/`. Tree card count: **489** (unchanged).
 - **`zt-digest term-link -Step relink -CitationKey gottlieb2022career` (and `-PlanOnly`):** PASS — `ok: true, complete: true, cards_changed: 0, links_added: 0, links_repaired: 0, cards_refused: 0`.
 - **Handoff:** Next stage is `zt-model-settings` (Stage 2), then `zt-model-restructure` (Stage 3), then `zt-model-import` (Stage 4) on the 6 surviving heads (`4|a`, `5|a`, `7|c`, `8|a`, `8|b`, `8|d`).
+
+## Stage 2: settings
+
+- **Date:** 2026-11-27
+- **Archive:** Live box `D:\zt` (all writes serialized via `zt_mutex.py`)
+- **Pre-Stage-2 backup:** `D:\zt\backups\zt-before-iof10-stage2-settings-2026-11-27.sqlite3`
+- **Scope:** Strict `zt-model-settings` on the 4 empirical models (`4|a`, `7|c`, `8|b`, `8|d`); concept models `5|a` and `8|a` skipped per `zt-post-digest`. Every display formula and equation tag was verified byte-for-byte before every write.
+
+### Per-model changes
+
+1. **`gottlieb2022career/4|a` (empirical, 164 → 146 parts):**
+   - **Atomic dissolution (`apply_batch`, 38 items, 114 moved, 18 deleted `into` surviving cards, `links_that_will_break: []`):**
+     - Moved 4 measurement cards (`4|a|b`, `4|a|c`, `7|a|b`, `8|a|b`) to `4|a|a|b–e` under the unified data card `4|a|a`.
+     - Moved 11 distinct identifying assumptions (`4|a|1|a–d`, `5|a|1|a–d`, `6|a|2|b`, `7|a|1|b`, `8|a|2|b`) to `4|a|a|1|f–p` under the unified design card `4|a|a|1` (renumbered `假设 5`–`假设 15`).
+     - Moved the 5 folded specification ladders (`4|a|2`, `5|a|2`, `6|a|3`, `7|a|2`, `8|a|3`, with all Side variants intact) to `4|a|a|2|e–i` under `规格：基准` (`4|a|a|2`).
+     - Deleted 18 redundant duplicates `into` their surviving counterparts: 3 "inherits base DD-RD" assumptions (`6|a|2|a`, `7|a|1|a`, `8|a|2|a` → `4|a|a|1|c`), 5 duplicate `变量表` (`→ 4|a|a|a`), 5 duplicate `设计` (`→ 4|a|a|1`), and 5 duplicate `数据` (`→ 4|a|a`). Folded sub-chapters and hypotheses rose cleanly into `4|a|a|4|a..8|a` ahead of their `局限` cards.
+   - **Unified text edits (45 cards + head `**结构**`):**
+     - Merged unique sample/source/design/threat details into `4|a|a` (`数据`) and `4|a|a|1` (`设计`, listing `假设 1`–`假设 15`).
+     - Unified `4|a|a|a` (`变量表`, 30 rows covering all symbols across Eqs. (1)–(4), Table 1, Tables 3–9, and Table 12; 0 `uncovered`, 0 `unused`).
+     - Added one-line summary + `**起点**` + `**内容**` to `4|a|a|b–e` (fixed 4 `start` faults).
+     - Re-faceted `4|a|a|2|e–i` to non-baseline facets (`规格：母亲描述统计（表 1）`, `规格：30 天带宽基准（表 4 第 4 列）`, `规格：省际全交互（表 8 第 4 列）`, `规格：自报总创业率（表 9 第 1 列）`, `规格：高启动资金行业（表 12 第 1 列）`), added `依赖 [[gottlieb2022career/4|a|a|2]]` and `**相对基准的改动**` (fixed 5 `variant_change` + 5 `spec_unbound` faults).
+     - Removed redundant `（补：书中未写）` marker from 26 `补写` specification cards while keeping canonical `原书没有写出本规格的估计式。本卡按……补写：` and all display formulas intact (fixed 26 `equation` faults).
+     - Rebuilt `**结构**` on `gottlieb2022career/4|a` (146 entries in `build.order`).
+2. **`gottlieb2022career/7|c` (empirical, 31 parts, 0 moves):**
+   - Added one-line summary + `**起点**` + `**内容**` to `7|c|a|b` (`start` fault); removed redundant `（补：书中未写）` from 8 `补写` spec cards `7|c|a|2|a–h` (`equation` faults).
+3. **`gottlieb2022career/8|b` (empirical, 39 parts, 0 moves):**
+   - Added `**起点**` + `**内容**` to `8|b|a|b` (`start` fault); removed redundant `（补：书中未写）` from 12 `补写` spec cards `8|b|a|3` and `8|b|a|3|a–k` (`equation` faults).
+4. **`gottlieb2022career/8|d` (empirical, 31 parts, 0 moves):**
+   - Added one-line summary + `**起点**` + `**内容**` to `8|d|a|b` (`start` fault); removed redundant `（补：书中未写）` from 6 `补写` spec cards `8|d|a|3` and `8|d|a|3|a–e` (`equation` faults).
+
+### Stage 2 Gate verification (post term-relink)
+
+- **Term relink (`zt-digest term-link -Step relink -CitationKey gottlieb2022career`):** `ok: true, complete: true, cards_changed: 8, links_added: 18, links_repaired: 0, cards_refused: 0`; `-PlanOnly` confirmed `cards_changed: 0, links_added: 0`.
+- **`zt-check --model '<head>' --settings` & `check-settings.mjs '<head>' --symbols`:** PASS (exit 0 on all 4 empirical models — `data tree and specification ladder are clean` / `the data tree and the specification ladder are in place`).
+- **`zt-check --model '<head>' --stage settings`:** PASS (exit 0 on all 4 empirical models):
+  - `4|a`: `members 146 {"main":9,"off":1,"side":136}`, `relations {"corresponds":4,"illustrates":4,"refers":265,"rests-on":63}`, `evidence_bound true`, `stage(settings) pass` (only expected Stage 3 deferred `unanchored` notices on folded chapters `4|a|a|4..8`).
+  - `7|c`: `members 31 {"main":6,"off":1,"side":24}`, `self_sufficient true`, `evidence_bound true`, `stage(settings) pass`.
+  - `8|b`: `members 39 {"main":7,"off":1,"side":31}`, `self_sufficient true`, `evidence_bound true`, `stage(settings) pass`.
+  - `8|d`: `members 31 {"main":7,"off":1,"side":23}`, `self_sufficient true`, `evidence_bound true`, `stage(settings) pass`.
+- **`list_broken_links`:** PASS — 0 broken links total, 0 for `gottlieb2022career/`. Tree card count: **489 → 471** (−18 deleted duplicates).
+- **Handoff:** Ready for Stage 3 (`zt-model-restructure`).

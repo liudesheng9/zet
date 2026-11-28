@@ -57,3 +57,37 @@ Executed via `fold.mjs` under `zt_mutex.py` (no math or prose changed; no Links 
 
 - `stuart2006scientists/3|a` (concept): no further model passes needed (fold only).
 - `stuart2006scientists/5|a` (empirical): hand to `zt-model-settings` (merge duplicate Data/Variable/Hypothesis/Design/Assumption/Spec subtrees from `5|a|a|8|a` into the unified setting & specification ladder), then `zt-model-restructure`, `zt-model-import` (import concept predictions from `3|a`), and `zt-evidence-dialogue`.
+
+## Stage 2: settings (2026-11-27)
+
+- Live box: `D:\zt` (`stuart2006scientists`, 270 -> 264 Cards; all writes serialized via `zt_mutex.py`, display formulas verified byte-for-byte before and after: 18/18 exact match)
+- Pre-Stage-2 backup: `D:\zt\backups\zt-before-iof10-stage2-settings-2026-11-27.sqlite3`
+- Scope: empirical model `stuart2006scientists/5|a` (77 -> 71 parts); conceptual model `stuart2006scientists/3|a` skipped per `zt-post-digest`.
+
+### Changes on `stuart2006scientists/5|a`
+
+1. **Atomic dissolution of folded chapter `5|a|a|8` (`apply_batch`, 15 items, `links_that_will_break: []`, `link_macros_rewritten: 57`)**:
+   - Moved distinct cards out before deleting duplicates:
+     - Two measurement cards `5|a|a|8|a|b` and `5|a|a|8|a|c` -> `5|a|a|c` and `5|a|a|d` under unified data card `5|a|a`.
+     - Four distinct identifying assumptions `5|a|a|8|a|2|a`, `2|b`, `2|d`, `2|f` -> `5|a|a|2|d`–`2|g` under unified design card `5|a|a|2` (renumbered `假设 4`–`假设 7`).
+     - Barlow general specification ladder `5|a|a|8|a|3` (with its 3 variants `3|a`–`3|c`) -> `5|a|a|3|g` (and `3|g|a`–`3|g|c`) under baseline specification `5|a|a|3` (this also resolved the prior Stage 3 `forward` notice on `5|a|a|8`).
+     - Calibration & sensitivity chapter `5|a|a|8|a|4` (with `4|a`–`4|d`) -> `5|a|a|8|a` (and `8|a|a`–`8|a|d`), reordered ahead of limitation card `5|a|a|8|b`.
+   - Deleted 6 redundant duplicates leaf-first `into` surviving cards (each with 0 remaining successors): `5|a|a|8|a|2|c` -> `5|a|a|2|c`; `5|a|a|8|a|2|e` -> `5|a|a|2|a`; `5|a|a|8|a|2` -> `5|a|a|2`; `5|a|a|8|a|1` -> `5|a|a|1`; `5|a|a|8|a|a` -> `5|a|a|a`; `5|a|a|8|a` -> `5|a|a`.
+2. **Unified data tree, design, and specification ladder (`edit_card` batch, 32 cards, 0 errors)**:
+   - Merged sample/source/rule details from `8|a` into `5|a|a` (`数据`), 17 new symbol rows and dual readings from `8|a|a` into `5|a|a|a` (`变量表`, 0 `uncovered` / 0 `unused`), framing into `5|a|a|1` (`假说`), risk-set rules/threats and all 7 assumptions (`2|a`–`2|g`) into `5|a|a|2` (`设计`), and duplicate assumption details into `5|a|a|2|a` (`假设 1`) and `5|a|a|2|c` (`假设 3`).
+   - Added one-line summary, `**起点**`, and `**内容**` to all 5 data-tree / descriptive cards with `start` faults (`5|a|a|b`, `5|a|a|c`, `5|a|a|d`, `5|a|a|4|a`, `5|a|a|4|b`), preserving equations `(5)` and `(6)` byte-for-byte.
+   - Renamed `5|a|a|3|g` facet to `规格：Barlow 伪似然通式` (no second `规格：基准`), bound it to `5|a|a|3` with `依赖 [[stuart2006scientists/5|a|a|3]]`, and added `**相对基准的改动**`.
+   - Removed redundant `（补：书中未写）` from `**估计式**` intro lines on 13 `补写` specification cards (`5|a|a|3`, `3|a`–`3|f`, `3|f|a`, `3|f|a|a`, `3|f|a|a|a`, `3|f|a|b`, `3|g|b`, `3|g|c`), keeping all equations byte-for-byte identical.
+   - Updated prose assumption numbers in the 3 moved test cards (`5|a|a|8|a|b`, `8|a|c`, `8|a|d`) to `假设 5`, `假设 6`, `假设 7`.
+3. **Structure & term relink**:
+   - Rebuilt `5|a` `**结构**` from the 71-part build order.
+   - Ran `zt-digest term-link -Step relink -CitationKey stuart2006scientists` under `zt_mutex.py` (`cards_changed: 4`, `links_added: 5`, `links_repaired: 0`, `cards_refused: 0`), confirmed with `-PlanOnly` (`cards_changed: 0`, `links_added: 0`).
+
+### Stage 2 gate results (post term-relink)
+
+- `zt-check --model 'stuart2006scientists/5|a' --settings`: **PASS** (exit 0; `data stuart2006scientists/5|a|a  variables stuart2006scientists/5|a|a|a`; `settings: data tree and specification ladder are clean`).
+- `zt-check --model 'stuart2006scientists/5|a' --stage settings`: **PASS** (exit 0; `members 71 {"main":9,"off":1,"side":61}`, `relations {"contrasts":1,"illustrates":7,"objects":1,"refers":130,"rests-on":31}`, `loose 2`, `self_sufficient true`, `evidence_bound true`, `stage(settings) pass`).
+- `node E:\zet\skills\zt-model-settings\scripts\check-settings.mjs 'stuart2006scientists/5|a'`: **PASS** (exit 0; `settings: the data tree and the specification ladder are in place`).
+- `list_broken_links` (`stuart2006scientists/`): **PASS** (`[]`, 0 broken links overall).
+- Formula preservation: **PASS** (18 display formulas before and after, `exact_match: true`).
+- Tree card count: **264** (270 -> 264, exact `-6` deleted redundant duplicates).

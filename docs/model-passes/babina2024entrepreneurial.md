@@ -55,3 +55,50 @@ Executed on live box `D:\zt` under `zt_mutex.py` (1 fold: `5|a` -> `6|a`):
   - `7|a`: `members 25 {"main":6,"off":1,"side":18}`; `loose 1`; `self_sufficient true`; `evidence_bound true`; `stage(fold) pass`.
 - `list_broken_links` (`agent` workspace): 0 broken links total, 0 touching `babina2024entrepreneurial/`; tree card count unchanged at 342.
 - `zt-digest term-link -Step relink -CitationKey babina2024entrepreneurial` (under `zt_mutex.py`) and `-PlanOnly`: `{"ok":true,"complete":true,"book":"babina2024entrepreneurial","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`.
+
+## Stage 2: settings
+
+Date: 2026-11-27, live box (`D:\zt`). Pre-Stage-2 backup: `D:\zt\backups\zt-before-iof10-stage2-settings-2026-11-27.sqlite3`. All writes executed under `zt_mutex.py`; concept model `3|a` skipped per `zt-post-digest`.
+
+### `4|a` (empirical, 25 parts)
+
+- `4|a|a|a` (`变量表`): dropped unused `$W_{e,t}$` row (`$W$` appeared only inside `\sum_{w \in W_{e,t}}` subscripts in `4|a|a|2`).
+- `4|a|a|b` (`测量：员工创业与分支单元`) and `4|a|a|c` (`测量：准中位数与舍入`): added one-line summary, `**起点**` (`- 依赖 [[babina2024entrepreneurial/4|a|a]]：…`), and `**内容**`, keeping all existing content and `**直觉**` intact. No structural moves.
+
+### `6|a` (empirical, 56 -> 50 parts)
+
+Dissolved folded chapter `6|a|a|7`'s duplicate `数据`/`变量表`/`假说`/`设计`/`规格` sub-hierarchy in one atomic `apply_batch` (12 items, 23 link macros rewritten, 0 broken links):
+
+- Moved surviving unique parts out first:
+  - `6|a|a|7|a|2|a` -> `6|a|a|2|d` (renumbered to `假设 4：企业固定效应与多维时间交互 FE 吸收选择与区域冲击`)
+  - `6|a|a|7|a|2|b` -> `6|a|a|2|e` (renumbered to `假设 5：时变基本面、员工结构、专利与市场研发不混杂效应`)
+  - `6|a|a|7|a|3|a` -> `6|a|a|3|l` (`规格：研发税收价格 IV`, preserving original §IV.B equation `\tag{2}`)
+  - `6|a|a|7|a|3|b` -> `6|a|a|3|m` (`规格：稳健性拓展`, preserving its equation)
+  - `6|a|a|7|a|4` (+ `4|a`, `4|b`) -> `6|a|a|7|a` (+ `a|a`, `a|b`), reordered ahead of `局限` at `6|a|a|7|b`.
+- Deleted 6 redundant duplicates `into` their surviving unified counterparts (leaves first, re-pointing all links):
+  - `6|a|a|7|a|a` (`变量表`) `into` `6|a|a|a` (added `$W_{e,f,t}$` and `$\gamma$` rows and noted §IV.B eq. (2) timing on `$\mathrm{R\&D}_{f,t-1}$`, `$\rho_{f,t-1}^{S}$`, `$\rho_{f,t-1}^{F}$`).
+  - `6|a|a|7|a|2|c` (`假设 3：排他性约束`) `into` `6|a|a|2|b` (`假设 2`, merged unique FE remark).
+  - `6|a|a|7|a|3` (`规格：基准`, byte-for-byte duplicate of eq. `(1)`) `into` `6|a|a|3`.
+  - `6|a|a|7|a|2` (`设计`) `into` `6|a|a|2` (merged §IV.A–B variation/comparison/threat details and listed `假设 4`–`5`).
+  - `6|a|a|7|a|1` (`假说：研发促进创业`) `into` `6|a|a|1`.
+  - `6|a|a|7|a` (`数据`) `into` `6|a|a` (merged flow-R&D, control-set, and tax-price IV details).
+- Rebuilt `**结构**` on `babina2024entrepreneurial/6|a` from live `build.order` (all 50 members).
+
+### `7|a` (empirical, 25 parts)
+
+Already clean in baseline; unchanged and re-verified after term relink.
+
+### Gate results (post term-relink)
+
+- Term relink (`zt-digest term-link -Step relink -CitationKey babina2024entrepreneurial` under `zt_mutex.py` and `-PlanOnly`): `{"ok":true,"complete":true,"book":"babina2024entrepreneurial","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`.
+- `zt-check --model '<head>' --settings` (exit 0 on all 3 empirical models):
+  - `4|a`: `settings: data tree and specification ladder are clean`
+  - `6|a`: `settings: data tree and specification ladder are clean`
+  - `7|a`: `settings: data tree and specification ladder are clean`
+- `zt-check --model '<head>' --stage settings` (exit 0 on all 3 empirical models):
+  - `4|a`: `members 25 {"main":4,"off":2,"side":19}`; `relations {"refers":34,"rests-on":12}`; `loose 2`; `self_sufficient true`; `evidence_bound true`; `stage(settings) pass`
+  - `6|a`: `members 50 {"main":8,"off":1,"side":41}`; `relations {"corresponds":1,"illustrates":5,"refers":83,"rests-on":19}`; `loose 2`; `evidence_bound true`; `stage(settings) pass` (1 expected `[deferred -> Stage 3 (restructure)] unanchored` on folded chapter `6|a|a|7`)
+  - `7|a`: `members 25 {"main":6,"off":1,"side":18}`; `relations {"corresponds":1,"illustrates":5,"refers":40,"rests-on":13}`; `loose 1`; `self_sufficient true`; `evidence_bound true`; `stage(settings) pass`
+- `list_broken_links` (`agent` workspace): 0 broken links total, 0 for `babina2024entrepreneurial/`.
+- Formula preservation script: all 25 unique display formulas across `4|a`, `6|a`, `7|a` preserved byte-for-byte (0 missing).
+- Tree card count: 342 -> 336 (6 duplicate parts merged `into` surviving counterparts in `6|a`).
