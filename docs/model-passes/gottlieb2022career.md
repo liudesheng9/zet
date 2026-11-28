@@ -142,3 +142,47 @@ All 5 folds into `gottlieb2022career/4|a` were executed in book order (`2|a`, `6
 
 - **`4|a` `--premises` audit (10 hits, 0 hidden forward uses):** `4|a|a|a` (`变量表`, 2 rows naming `(1)` and `(4)`), `4|a|a|1|c` & `4|a|a|1|d` (`怎样进入模型` pointers to Eqs. `(2)`–`(3)`), `4|a|a|1|o` (Table 9 Col. `(1)` + pointer to Eq. `(3)`), `4|a|a|2` & `4|a|a|2|a` (nested-equation pointers `(1) → (2) → (3)` across Side variants), and `4|a|a|5|a` (Table 3 Panel A SE `(32.30)` matching `4|a|a|5|d` title).
 - **Handoff:** Ready for Stage 4 (`zt-model-import` + `zt-evidence-dialogue`) on all surviving models.
+
+## Stage 4: imports and explanations
+
+- **Date:** 2026-11-27
+- **Archive:** Live box `D:\zt` (all writes serialized via `zt_mutex.py`)
+- **Pre-Stage-4 backup:** `D:\zt\backups\zt-before-iof10-stage4-import-2026-11-27.sqlite3`
+- **Scope:** `zt-model-import` (steps 1–9) + `model-explain` on all 6 surviving models in lender order: concept lenders `5|a`, `8|a`, empirical lenders `4|a`, `7|c`, then empirical borrowers `8|b`, `8|d`. All display formulas were verified byte-for-byte unchanged before every write.
+
+### Per-model changes
+
+1. **`gottlieb2022career/5|a` (concept lender, 5 → 3 parts):**
+   - Fixed 2 `false_share` links in `**关联**` (`4|a|a|6`, `4|a|a|8` → `[[gottlieb2022career/4|a]]` naming Ch. 4 and Ch. 6 in prose). False shares `2 → 0`, tolerated `3 → 0`, members `5 → 3` (all own). Lends `5|a|a|2` (`结论`) `单卡` to `4|a`.
+2. **`gottlieb2022career/8|a` (concept lender, 5 → 4 parts):**
+   - Fixed 1 `false_share` link in `**关联**` (`4|a|a|10` → `[[gottlieb2022career/4|a]]` naming Ch. 8 in prose). False shares `1 → 0`, tolerated `2 → 0`, members `5 → 4` (all own). Lends `8|a|a|2` (`结论`) `单卡` to `4|a`, `8|b`, and `8|d`.
+3. **`gottlieb2022career/4|a` (empirical, 138 → 140 parts, +2 shared):**
+   - Wired `4|a|a|8|a` (`假说：假期增幅越大效应越强`) to rest on `5|a|a|2` (`依赖 [[gottlieb2022career/5|a|a|2]]`，`（经 **引入**）`) and `4|a|a|10|a` (`假说：直接机制行业比较静态`) to rest on `8|a|a|2` (`依赖 [[gottlieb2022career/8|a|a|2]]`，`（经 **引入**）`).
+   - `imports.mjs apply` wrote `单卡 [[gottlieb2022career/5|a|a|2]]` and `单卡 [[gottlieb2022career/8|a|a|2]]` (`tolerated 0 → 2`, advice on `5|a|a|1` and `8|a|a|1`); both intentionally kept `单卡` per empirical-hypothesis rule (a test takes the prediction, not its proof). Refined `**引入**` descriptions. Lends `4|a|a` to `8|b` (`单卡`) and `8|d` (`整块`).
+4. **`gottlieb2022career/7|c` (empirical lender, 31 parts, 0 imports):**
+   - Independent LAD longitudinal tax panel (`7|c|a`) with loose net self-employment measure (`7|c|a|b`); no outside premises, no imports. Lends `7|c|a` to `8|b` (`单卡`) and `8|d` (`整块`).
+5. **`gottlieb2022career/8|b` (empirical, 39 → 42 parts, +3 shared):**
+   - Wired `8|b|a|1` (`假说`) to rest on `8|a|a|2` (`依赖`，`（经 **引入**）`) and `8|b|a` (`数据` `**起点**`) to rest on `7|c|a` (LAD panel, subsetted to wage-stayers) and `4|a|a` (2006 Census 30-day sample).
+   - `imports.mjs apply` wrote `单卡 [[gottlieb2022career/7|c|a]]`, `单卡 [[gottlieb2022career/4|a|a]]`, and `单卡 [[gottlieb2022career/8|a|a|2]]` (`tolerated 0 → 1`, advice on `8|a|a|1`; `8|a|a|2` kept `单卡` per empirical-hypothesis rule; `7|c|a` and `4|a|a` have 0 tolerated premises and stay `单卡` since `8|b` does not use the entrepreneurship outcome measures). Refined `**引入**` descriptions.
+6. **`gottlieb2022career/8|d` (empirical, 31 → 41 parts, +10 shared):**
+   - Wired `8|d|a|1` (`假说`) to rest on `8|a|a|2` (`依赖`，`（经 **引入**）`) and `8|d|a` (`数据` `**起点**`) to rest on `7|c|a` + `7|c|a|b` (LAD 30-day sample + loose net self-employment measure) and `4|a|a` + `4|a|a|c` (2006 Census 30-day sample + income-based entrepreneurship measure).
+   - `imports.mjs apply` wrote `整块 [[gottlieb2022career/7|c|a]]` (absorbing `7|c|a|b`, +3 shared), `整块 [[gottlieb2022career/4|a|a]]` (absorbing `4|a|a|c`, +6 shared), and `单卡 [[gottlieb2022career/8|a|a|2]]` (+1 shared; `tolerated 0 → 1`, advice on `8|a|a|1`; kept `单卡` per empirical-hypothesis rule). Refined `**引入**` descriptions.
+
+### Step 8 (`model-explain`) and Term relink
+
+- **`zt-digest model-explain -Step plan -Force`** on all 4 empirical models (`4|a`, `7|c`, `8|b`, `8|d`): `nothing to explain` (`parts: 0, jobs: []`; 0 DeepSeek jobs).
+- **`zt-digest term-link -Step relink -CitationKey gottlieb2022career`** (under `zt_mutex.py`): `ok: true, complete: true, cards_changed: 4, links_added: 5, links_repaired: 0, cards_refused: 0`; final `-PlanOnly` confirmed `cards_changed: 0, links_added: 0`.
+- **`list_broken_links` (`agent`):** `[]` (0 broken links in `gottlieb2022career/`).
+
+### Stage 4 Final Gate verification (post term-relink)
+
+| Model | Level | Imports (`**引入**`) | `imports check` | `--stage final` | `--settings` | `--network` | `--skip-shared` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `gottlieb2022career/5\|a` | concept | none | `rc=0`, 0 false shares, 0 tolerated | pass (`members 3`, `loose 0`, `self_sufficient true`) | n/a | n/a | n/a |
+| `gottlieb2022career/8\|a` | concept | none | `rc=0`, 0 false shares, 0 tolerated | pass (`members 4`, `loose 1`, `self_sufficient true`) | n/a | n/a | n/a |
+| `gottlieb2022career/4\|a` | empirical | `单卡 5\|a\|a\|2`, `单卡 8\|a\|a\|2` | `rc=0`, 0 false shares, 2 tolerated | pass (`members 140`, `shared:2`, `loose 0`, `self_sufficient true`, `evidence_bound true`) | clean (`rc=0`) | clean (14 blocks, 4 layers, `rc=0`) | `faults: 0` (`rc=0`, R20 adv only) |
+| `gottlieb2022career/7\|c` | empirical | none | `rc=0`, 0 false shares, 0 tolerated | pass (`members 31`, `loose 0`, `self_sufficient true`, `evidence_bound true`) | clean (`rc=0`) | clean (7 blocks, 6 layers, `rc=0`) | `faults: 0` (`rc=0`, R20 adv only) |
+| `gottlieb2022career/8\|b` | empirical | `单卡 7\|c\|a`, `单卡 4\|a\|a`, `单卡 8\|a\|a\|2` | `rc=0`, 0 false shares, 1 tolerated | pass (`members 42`, `shared:3`, `loose 0`, `self_sufficient true`, `evidence_bound true`) | clean (`rc=0`) | clean (11 blocks, 8 layers, `rc=0`) | `faults: 0` (`rc=0`, R20 adv only) |
+| `gottlieb2022career/8\|d` | empirical | `整块 7\|c\|a`, `整块 4\|a\|a`, `单卡 8\|a\|a\|2` | `rc=0`, 0 false shares, 1 tolerated | pass (`members 41`, `shared:10`, `loose 0`, `self_sufficient true`, `evidence_bound true`) | clean (`rc=0`) | clean (11 blocks, 7 layers, `rc=0`) | `faults: 0` (`rc=0`, R20 adv only) |
+
+- **Handoff:** Ready for `zt-evidence-dialogue` on `4|a`, `7|c`, `8|b`, `8|d` and `zt-literature-organize` on `gottlieb2022career`.

@@ -137,3 +137,38 @@ Folded `hurst2011small/7|a` into `hurst2011small/6|a` (all writes serialized via
 - **Term relink:** `zt-digest term-link -Step relink -CitationKey hurst2011small` applied `cards_changed: 4, links_added: 5, links_repaired: 0, cards_refused: 0, rounds: 1`; `-PlanOnly` confirmed `cards_changed: 0, links_added: 0`.
 - **Broken links:** `list_broken_links` for `hurst2011small/` (and full agent workspace): `[]` (0 broken links).
 - **Stage 3 invariants:** `self_sufficient: true`, `evidence_bound: true` on all 4 models; no cards moved or deleted.
+
+---
+
+## Stage 4: imports and explanations
+
+- **Date:** 2026-11-27
+- **Pre-Stage-4 backup:** `D:\zt\backups\zt-before-iof10-stage4-import-2026-11-27.sqlite3`
+- **Scope:** All 4 empirical models (`hurst2011small/2|a`, `3|a`, `5|a`, `10|a`); concept model `hurst2011small/6|a` inspected solely as a potential lender of theoretical predictions.
+- **Writes to `D:\zt`:** 0 card edits; `term-link -Step relink` serialized via `zt_mutex.py` (0 cards changed).
+
+### Import decisions
+
+1. **Theoretical predictions from `hurst2011small/6|a` (concept model):** None imported. None of `2|a`, `3|a`, `5|a`, or `10|a` contains a `假说` card testing a prediction of `6|a`; in the paper, Pugsley's (2011a, 2011b) conceptual model (§V.A & §VI) is introduced *after* the §I/§II/§IV empirical facts to interpret them rather than as a formal theory whose predictions are tested.
+2. **Same-book empirical data/measure blocks (`2|a`, `3|a`, `5|a`, `10|a`):** None imported; each empirical model owns a distinct data/measurement design with 0 outside premises, 0 legacy shares, 0 false shares, 0 copy advices, and 0 tolerated premises (`imports.mjs check --json` and `imports.mjs plan --json` both returned `faults: [], changes: [], manual: [], advice: []` on all 4 heads):
+   - **`2|a` → `3|a`:** `2|a` uses the 2007 SUSB + Economic Census cross-section (`2|a|a`, `2|a|a|b`, `2|a|a|c`) for decile concentration, whereas `3|a` combines five datasets (2005 BDS, 2003 SSBF, 2004–2008 KFS, 2006–2010 PSED II, and the 2003–2006 SUSB annual panel) with DHS symmetric job-flow measurement (`3|a|a|b`). Importing `2|a|a|b` or `2|a|a|2` `整块` would pull the 2007 cross-section data (`2|a|a`) or decile-sorting design (`2|a|a|1`) into `3|a`; the shared concept $x_j$ is already linked via Term Card `[[行业小企业份额@hurst2011small/1|b|h]]`.
+   - **`3|a` → `5|a`:** `5|a` uses PSED II 2006/2010 (1,214 / 602 / 162) with its own 44→5 open-ended motive coding (`5|a|a|b`) and 3-subsample design (`5|a|a|c`); importing `3|a|a` would pull BDS/SSBF/KFS/SUSB into a pure PSED II model.
+   - **`2|a`/`3|a`/`5|a` → `10|a`:** `10|a` is John Haltiwanger's BPEA discussant comment using 2003–2005 BDS full employer microdata (~6M/yr) and distinct estimands (coworker mean $C_j$, 6-digit NAICS $R^2$, firm-level DHS net growth skewness); its links with `3|a` and `5|a` are `对照` comparisons and remain comparisons, not premises.
+3. **Cross-book blocks:** None (`0` external-book links across all 4 empirical models).
+
+### Explanation refresh (step 8)
+
+- `zt-digest model-explain -Step plan` returned `nothing to explain` (`parts: 0, jobs: []`) on all 4 empirical models (`2|a`, `3|a`, `5|a`, `10|a`). None of the four empirical models has `推导：估计式` parts, and no estimate premises changed.
+
+### Stage 4 final gate results (post term-relink)
+
+| Model | members (main/side/off) | `imports check` | `--stage final` | `--settings` | `--network` | `--skip-shared` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `hurst2011small/2|a` | 28 (6/21/1) | ok, 0 faults, 0 advice (rc=0) | pass (`self_sufficient true`, `evidence_bound true`; rc=0) | clean (rc=0) | clean (7 blocks, 5 layers; rc=0) | faults: 0 (3 adv R20; rc=0) |
+| `hurst2011small/3|a` | 36 (6/29/1) | ok, 0 faults, 0 advice (rc=0) | pass (`self_sufficient true`, `evidence_bound true`; rc=0) | clean (rc=0) | clean (7 blocks, 4 layers; rc=0) | faults: 0 (3 adv R20; rc=0) |
+| `hurst2011small/5|a` | 27 (7/19/1) | ok, 0 faults, 0 advice (rc=0) | pass (`self_sufficient true`, `evidence_bound true`; rc=0) | clean (rc=0) | clean (8 blocks, 5 layers; rc=0) | faults: 0 (4 adv R20; rc=0) |
+| `hurst2011small/10|a` | 25 (6/18/1) | ok, 0 faults, 0 advice (rc=0) | pass (`self_sufficient true`, `evidence_bound true`; rc=0) | clean (rc=0) | clean (7 blocks, 4 layers; rc=0) | faults: 0 (3 adv R20; rc=0) |
+
+- **Term relink:** `zt-digest term-link -Step relink -CitationKey hurst2011small` (under `zt_mutex.py`): `cards_changed: 0, links_added: 0, links_repaired: 0, cards_refused: 0`; `-PlanOnly` confirmed `cards_changed: 0, links_added: 0`.
+- **Broken links:** `list_broken_links` for `hurst2011small/` (and full agent workspace): `[]` (0 broken links).
+

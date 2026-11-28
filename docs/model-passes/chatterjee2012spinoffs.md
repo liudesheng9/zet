@@ -156,3 +156,34 @@ Dissolved all 11 redundant nested sub-chapter wrapper cards left by the Stage 1 
 |---|---|---|---|---|---|---|---|
 | `2\|a` (formal) | 117 (8/108/1) | 0 | pass (`self_sufficient: true`, `formal_structured: true`, rc=0) | `network: clean` (9 blocks, 2 layers, 3 parts, rc=0) | `all in the setting part` (rc=0) | `faults: 0` (rc=0) | 17 pointers / false-pos `(0)`, 0 hidden uses |
 | `5\|b` (empirical) | 30 (7/22/1) | 0 | pass (`self_sufficient: true`, `evidence_bound: true`, rc=0) | `network: clean` (8 blocks, 5 layers, rc=0) | `clean` (rc=0) | `faults: 0` (rc=0) | `none` (rc=0) |
+
+## Stage 4: imports and explanations
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; all writes serialized under `zt_mutex.py`). Pre-Stage-4 backup: `D:\zt\backups\zt-before-iof10-stage4-import-2026-11-27.sqlite3`.
+
+### 2\|a (formal, 117 parts — lender)
+
+- **Imports:** 0 imports added (`imports.mjs check`: exit 0; `imports.mjs plan`: `nothing to import`; `false_share: 0`, `tolerated: 0`). `2|a|a|4|h` (`校准：图 7 比较静态的规模上限与比值网格`) keeps its external SBA benchmark citation (`0.0736`) without importing `5|b|a|4|c`, avoiding an import cycle with borrower `5|b`.
+- **Lending:** `2|a` now lends `2|a|a|4|d` (`整块`, 3 members + 14 closure cards = 17 shared cards) and `2|a|a|4|g` (`单卡`, 1 shared card) to `5|b`.
+- **Explanations (step 8, `model-explain`):** `model-explain -Step plan -Force` emitted 1 job covering 3 Derivation parts (`2|a|a|4|c|a`, `2|a|a|4|c|a|1`, `2|a|a|4|c|a|2` — Proposition 3 proof chain refreshed after Stage 3 cleanup, including fixing a stale `第 1 章` reference in `4|c|a|2`). Written directly (no DeepSeek), self-checked with `zt-digest model -Step explain-check` (`faults: 0`), applied (`applied: 3, refused: 0, blocked: 0`), and finished (`left: 0, refused: 0, blocked: 0, link.second: 0`).
+
+### 5\|b (empirical, 30 own + 18 shared = 48 members — borrower)
+
+- **Premise wiring:**
+  - `5|b|a|1` (`假说：尤尔分布与进入规模`): replaced `参照 [[chatterjee2012spinoffs/2|a|a|4]]` with `依赖 [[chatterjee2012spinoffs/2|a|a|4|d]]` (Corollary 1 & bounded-support rescaled Yule distribution $\tilde{\delta}_N$) and `依赖 [[chatterjee2012spinoffs/2|a|a|4|g]]` (Proposition 5 Pareto upper tail / thinner tails under truncation), clearing the baseline `advice (copy)` on `5|b|a|1 ~ 2|a|a|4`.
+  - `5|b|a|3` (`规格：基准`): added `依赖 [[chatterjee2012spinoffs/2|a|a|4|d]]` because the baseline calibration specification directly uses Corollary 1 eq. (12) and its bounded-support rescaling $\tilde{\delta}_N$.
+- **Imports (`imports.mjs plan` + `apply`, 2 rounds):**
+  - Round 1: wrote `单卡 [[chatterjee2012spinoffs/2|a|a|4|d]]` and `单卡 [[chatterjee2012spinoffs/2|a|a|4|g]]` (`tolerated 0 -> 6`).
+  - Round 2: upgraded `2|a|a|4|d` to `整块 [[chatterjee2012spinoffs/2|a|a|4|d]]` (members `4|d`, `4|d|a`, `4|d|b` + 14 closure cards: `4|c`, `4|b`, `g*`, `f*`, `a`–`e`; `tolerated 6 -> 0`), while keeping `2|a|a|4|g` as `单卡` (rested on only by `假说` `5|b|a|1`).
+  - Round 3 `plan`: `nothing to import`. Polished both `**引入**` descriptions in `5|b` and noted `（经 **引入**）` in `**关联**`.
+- **Symbols & Explanations:** `5|b` keeps its `变量表` (`5|b|a|a`); `zt-check --settings` clean. `model-explain -Step plan -Force` returned `nothing to explain` (`parts: 0, jobs: []`).
+
+### Term relink & Final Stage 4 Gate (post term-relink)
+
+- `zt-digest term-link -Step relink -CitationKey chatterjee2012spinoffs`: `cards_changed: 2, links_added: 3, links_repaired: 0, cards_refused: 0`; follow-up `-PlanOnly`: `cards_changed: 0, links_added: 0, links_repaired: 0`.
+- `list_broken_links` (`agent`, `chatterjee2012spinoffs/`): `[]` (0 broken links).
+
+| Model | Members (main/side/shared/off) | `imports check` | `--stage final` | `--settings [--symbols]` | `--network` | `--skip-shared` | `tolerated` / `false_share` |
+|---|---|---|---|---|---|---|---|
+| `2\|a` (formal) | 117 (8/108/0/1) | exit 0 | pass (`self_sufficient: true`, `formal_structured: true`, `loose: 0`, rc=0) | `all in the setting part` (rc=0) | `network: clean` (9 blocks, 2 layers, rc=0) | `faults: 0` (rc=0) | 0 / 0 |
+| `5\|b` (empirical) | 48 (7/22/18/1) | exit 0 | pass (`self_sufficient: true`, `evidence_bound: true`, `loose: 0`, rc=0) | `clean` (rc=0) | `network: clean` (10 blocks, 5 layers, 2 `共用` shelves, rc=0) | `faults: 0` (rc=0) | 0 / 0 |

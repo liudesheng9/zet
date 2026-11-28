@@ -143,3 +143,42 @@ All writes executed through `zt_mutex.py` on `D:\zt` following `zt-model-fold/SK
 - `list_broken_links` (agent workspace): **PASS** — `[]` (0 broken links total, 0 in `levine2017smart/`).
 - Card count in `levine2017smart`: **374** (380 − 6 dissolved inner chapter cards).
 - Next stage: hand `levine2017smart/4|a`, `levine2017smart/5|a`, `levine2017smart/5|b`, and `levine2017smart/6|a` to `zt-model-import` (Stage 4).
+
+## Stage 4: imports and explanations (2026-11-27)
+
+- Live box: `D:\zt` (agent workspace, all writes serialized through `zt_mutex.py`).
+- Pre-Stage-4 backup: `D:\zt\backups\zt-before-iof10-stage4-import-2026-11-27.sqlite3`.
+- Order: lenders `4|a`, `5|a` first, then borrowers `5|b`, `6|a`.
+- Baseline (`imports.mjs check` / `plan`): all 4 models exited 0 with `nothing to import`, 0 legacy shares, 0 false shares, 0 possible copies, 0 tolerated premises; shared measurement dependencies across models had been restated inline rather than wired via `依赖` + `**引入**`.
+
+### Per-model changes
+
+- **`levine2017smart/4|a` (empirical, lender — no imports)**:
+  - CPS 1995–2012 matched panel (`4|a|a`) and 1991 DOT task requirements / Table VI hours-weighted industry task score $\overline{NR}_{k,m}$ (`4|a|a|b`). No imports needed; off-spine limits card `4|a|b` keeps its `参照 [[levine2017smart/5|a]]` comparison (not a premise or false share).
+  - Now lends `整块 [[levine2017smart/4|a|a|b]]` (closure: `4|a|a|b`, `4|a|a`, 2 cards) to `5|b` and `6|a`.
+- **`levine2017smart/5|a` (empirical, lender — no imports)**:
+  - NLSY79 1982–2012 employed panel (`5|a|a`) and 1979–1980 pre-labor-market trait measures (AFQT, Rosenberg self-esteem, Rotter locus of control, 20-item standardized Illicit index, `5|a|a|b`). Distinct dataset and measures from `4|a`; no imports needed.
+  - Now lends `整块 [[levine2017smart/5|a|a|b]]` (closure: `5|a|a|b`, `5|a|a`, 2 cards) to `5|b` and `6|a`.
+- **`levine2017smart/5|b` (empirical, borrower — 2 `整块` imports, +4 shared cards)**:
+  - Wired `5|b|a|b` (`测量：表 VI 行业工时加权任务分与四特质子样本界定`) `**起点**` to rest on `4|a|a|b` (Table VI hours-weighted CPS/DOT industry task scores) and `5|a|a|b` (1980 AFQT and 20-item standardized Illicit index) (`依赖 …（经 **引入**）`), and tightened `**内容**` to build on the imported constructions rather than restating them verbatim.
+  - `imports.mjs plan/apply` round 1 wrote `单卡 [[4|a|a|b]]` and `单卡 [[5|a|a|b]]` (`tolerated 0 -> 2`); round 2 upgraded both to `整块 [[4|a|a|b]]` and `整块 [[5|a|a|b]]` (`tolerated 2 -> 0`, bringing in `4|a|a` and `5|a|a`); round 3 `plan`: `nothing to import`. Polished both `**引入**` line descriptions in `5|b`.
+- **`levine2017smart/6|a` (empirical, borrower — 2 `整块` imports, +4 shared cards)**:
+  - Wired `6|a|a|b` (`测量：水平值收入与控制变量消去规则`) `**起点**` to rest on `5|a|a|b` (the 4 pre-labor-market trait controls in Eq. (3)), and wired `6|a|a|d` (`测量：特质分组、持续期首年形式与非常规认知行业`) `**起点**` to rest on `5|a|a|b` (AFQT and Illicit index for the "smart and illicit" split) and `4|a|a|b` (Table VI DOT Analytical & DCP industry scores for $NRC_{it}$).
+  - Decision: `6|a` does not import from `5|b` — its $NRC_{it}$ indicator draws directly on `4|a|a|b`'s Table VI industry task scores and its trait split draws on `5|a|a|b`, while `6|a|a|6|i` merely notes footnote 29's 4-way robustness check analogous to Table VIII without resting on `5|b`'s estimates.
+  - `imports.mjs plan/apply` round 1 wrote `单卡 [[5|a|a|b]]` and `单卡 [[4|a|a|b]]` (`tolerated 0 -> 2`); round 2 upgraded both to `整块 [[5|a|a|b]]` and `整块 [[4|a|a|b]]` (`tolerated 2 -> 0`, bringing in `5|a|a` and `4|a|a`); round 3 `plan`: `nothing to import`. Polished both `**引入**` line descriptions in `6|a`.
+- **Symbols (step 6)**: Neither `5|b` nor `6|a` imports a notation card (`4|a|a|a` and `5|a|a|a` are outside the closures of `4|a|a|b` and `5|a|a|b`); both keep their complete local `变量表` (`--settings` clean, no `沿用` line needed).
+- **Explanations (step 8)**: `zt-digest model-explain -Step plan -Force` on all 4 models returned `nothing to explain` (`parts: 0, jobs: []`, no Derivation parts, no DeepSeek job).
+
+### Final Stage 4 gate (post term-relink)
+
+| Model | Imports | Members (main/side/shared/off) | Tolerated | `imports check` | `--stage final` | `--settings` | `--network` | `--skip-shared` |
+| --- | --- | --- | ---: | --- | --- | --- | --- | --- |
+| `levine2017smart/4|a` | none (lends `4\|a\|a\|b` to `5\|b`, `6\|a`) | 26 (5/20/0/1) | 0 | pass (rc=0) | pass (`self_sufficient true`, `evidence_bound true`) | clean (rc=0) | clean (6 blocks, 4 layers) | `faults: 0` (rc=0) |
+| `levine2017smart/5|a` | none (lends `5\|a\|a\|b` to `5\|b`, `6\|a`) | 31 (5/25/0/1) | 0 | pass (rc=0) | pass (`self_sufficient true`, `evidence_bound true`) | clean (rc=0) | clean (6 blocks, 4 layers) | `faults: 0` (rc=0) |
+| `levine2017smart/5|b` | `整块 4\|a\|a\|b`, `整块 5\|a\|a\|b` | 36 (5/26/4/1) | 0 | pass (rc=0) | pass (`self_sufficient true`, `evidence_bound true`) | clean (rc=0) | clean (8 blocks, 5 layers, 2 `共用` shelves) | `faults: 0` (rc=0) |
+| `levine2017smart/6|a` | `整块 5\|a\|a\|b`, `整块 4\|a\|a\|b` | 117 (8/104/4/1) | 0 | pass (rc=0) | pass (`self_sufficient true`, `evidence_bound true`) | clean (rc=0) | clean (11 blocks, 5 layers, 2 `共用` shelves) | `faults: 0` (rc=0) |
+
+- `zt-digest term-link -Step relink -CitationKey levine2017smart` (under `zt_mutex.py`): **PASS** — `cards_changed: 3, links_added: 5, links_repaired: 0, cards_refused: 0`; `-PlanOnly` rerun: `cards_changed: 0, links_added: 0, links_repaired: 0`.
+- `list_broken_links`: **PASS** — `[]` (0 broken links total, 0 in `levine2017smart/`).
+- Card count in `levine2017smart`: **374** (unchanged).
+- Next stage: `zt-evidence-dialogue` (Stage 5) on empirical models `4|a`, `5|a`, `5|b`, `6|a`, then `zt-literature-organize` (Stage 6).

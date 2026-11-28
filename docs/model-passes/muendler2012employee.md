@@ -67,3 +67,18 @@ Verified the 2 `--premises` hits (`H|a|1|c` and `H|a|2|c|a|b`) against `H|a|2|c|
 | `zt-check --model 'muendler2012employee/7|a' --skip-shared` | `faults: 0` (4 R20 advisory notices on `**本章估计**`) | 0 |
 | `zt-check --model 'muendler2012employee/7|a' --premises` | 2 hits verified as pure table-column `(8)` pointers (`H|a|1|c`, `H|a|2|c|a|b`), 0 hidden equation uses | 1 (advisory pointer hits) |
 | `list_broken_links` (`muendler2012employee`) | `broken: []` (0 broken links) | 0 |
+
+## Stage 4: imports and explanations
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D:\zt\backups\zt-before-iof10-stage4-import-2026-11-27.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok).
+
+- Imports (`muendler2012employee/7|a`): single self-contained empirical model in the book; `imports.mjs check` and `imports.mjs plan` report `nothing to import` (`0` tolerated premises, `0` false shares, `0` legacy shares).
+- Explanation refresh (Step 8): `zt-digest model-explain -Step plan -Model 'muendler2012employee/7|a'` returned `nothing to explain` (`parts: 0`, `jobs: []`).
+
+### Gate
+
+- `imports.mjs check 'muendler2012employee/7|a'`: exit 0 (`takes what it uses from other models by import lines`).
+- `zt-check --model 'muendler2012employee/7|a' --stage final`: pass (`self_sufficient true`, `evidence_bound true`, `loose 0`).
+- `zt-check --model 'muendler2012employee/7|a' --skip-shared`: `faults: 0`.
+- `list_broken_links`: 0 broken.
+- Term relink: not needed (0 Cards edited).

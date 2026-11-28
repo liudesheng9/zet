@@ -119,3 +119,54 @@ All 12 Card edits executed via `zt-digest call -Allow` serialized with `zt_mutex
 - `list_broken_links` (`workspace: agent`): `{"broken":[]}` (0 broken links overall, 0 for `azoulay2020age/`).
 - Advisory `R20` lines only on chapter `**本章估计**` headings (0 blocking faults).
 - Tree unlocked throughout; no `card_locked` met.
+
+## Stage 4: imports and explanations
+
+Date: 2026-11-27 (UTC 2026-11-28), live box `D:\zt`.
+
+Pre-Stage-4 backup: `D:\zt\backups\zt-before-iof10-stage4-import-2026-11-27.sqlite3`.
+
+### Imports and per-model changes
+
+All writes executed via `zt-digest call -Allow` and `imports.mjs apply` serialized with `zt_mutex.py`. Zero Cards moved, added, or deleted; no `card_locked` encountered.
+
+1. **`azoulay2020age/2|a` (empirical, lender; 0 Cards edited)**
+   - No imports (`imports.mjs check` exit 0, `plan` `nothing to import`; `false_share: []`, `tolerated: []`).
+   - Lends its shared administrative data and measurement block `整块 [[azoulay2020age/2|a|a]]` (6 Cards: `2|a|a`, `2|a|a|a`, `2|a|a|b`, `2|a|a|c`, `2|a|a|d`, `2|a|a|e`) to both `3|a` and `5|a`.
+2. **`azoulay2020age/3|a` (empirical; 2 Cards edited: `3|a|a`, `3|a`)**
+   - Replaced `- 原始设定：不依赖其他设定。` in `3|a|a`'s `**起点**` with five `依赖` lines pointing to `2|a|a` (linked Census/IRS administrative database), `2|a|a|b` (de novo startup definition), `2|a|a|c` (founder identification), `2|a|a|d` (ex-ante tech indicators), and `2|a|a|e` (ex-post 5-year employment growth & exit definitions).
+   - `imports.mjs plan` collapsed all five premises into one `整块 [[azoulay2020age/2|a|a]]` (absorbing `2|a|a|b..e`); `imports.mjs apply` wrote the import line (`tolerated 0 -> 0`; subsequent `plan`: `nothing to import`).
+   - Refined the text after `：` on `3|a`'s `**引入**` line to state what `3|a` uses for Tables 1–2.
+   - Symbols: `3|a|a|a` (`变量表`) unchanged; `zt-check --settings` clean.
+3. **`azoulay2020age/5|a` (empirical; 2 Cards edited: `5|a|a`, `5|a`)**
+   - Replaced `- 原始设定：不依赖其他设定。` in `5|a|a`'s `**起点**` with four `依赖` lines pointing to `2|a|a`, `2|a|a|b`, `2|a|a|c`, and `2|a|a|e` (for $Exit_i$ and $TopEmp_i$).
+   - `imports.mjs plan` collapsed all four premises into one `整块 [[azoulay2020age/2|a|a]]` (absorbing `2|a|a|b`, `c`, `e`); `imports.mjs apply` wrote the import line (`tolerated 0 -> 0`; subsequent `plan`: `nothing to import`).
+   - Refined the text after `：` on `5|a`'s `**引入**` line (shortened to 73 chars after an initial 81-char `R2` lint catch).
+   - `5|a|a|1` (`假说`) tests general literature hypotheses (Planck principle vs. capital accumulation) rather than a formal model in the box, so no `单卡` theory import applies.
+   - Symbols: `5|a|a|a` (`变量表`) unchanged; `zt-check --settings` clean.
+
+| Model | `**引入**` lines | Absorbed | Members (main/side/shared/off) | Tolerated before → after |
+|---|---|---|---|---|
+| `azoulay2020age/2\|a` | none (lender of `2\|a\|a` block) | — | 24 (5/18/0/1) | 0 → 0 |
+| `azoulay2020age/3\|a` | `整块 [[azoulay2020age/2\|a\|a]]` | `2\|a\|a\|b`, `c`, `d`, `e` | 47 (6/34/6/1) | 0 → 0 |
+| `azoulay2020age/5\|a` | `整块 [[azoulay2020age/2\|a\|a]]` | `2\|a\|a\|b`, `c`, `e` | 30 (7/16/6/1) | 0 → 0 |
+
+### Explanation refresh (step 8)
+
+- `zt-digest model-explain -Step plan` on `azoulay2020age/2|a`, `3|a`, and `5|a`: `nothing to explain` (`parts: 0, jobs: []`) on all three models (no `推导：估计式` parts; no estimate premise content changed). Zero DeepSeek calls.
+
+### Term relink
+
+- After edits + import refinement: `zt-digest term-link -Step relink -CitationKey azoulay2020age` (via `zt_mutex.py`): round 1 `cards_changed: 2, links_added: 4, links_repaired: 0, cards_refused: 0`; round 2 (after shortening `5|a`'s `**引入**` line for `R2`): `cards_changed: 1, links_added: 1, links_repaired: 0, cards_refused: 0`.
+- Verification `-PlanOnly`: `{"ok":true,"complete":true,"book":"azoulay2020age","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`.
+
+### Gate (post term-relink)
+
+| Model | `imports.mjs check` | `--stage final` | `--settings` | `--network` | `--skip-shared` |
+|---|---|---|---|---|---|
+| `azoulay2020age/2\|a` | pass (rc=0) | pass (`self_sufficient true`, `evidence_bound true`, `loose 0`, rc=0) | clean (rc=0) | clean (6 blocks, 4 layers, rc=0) | faults: 0 (rc=0) |
+| `azoulay2020age/3\|a` | pass (rc=0) | pass (`self_sufficient true`, `evidence_bound true`, `loose 0`, rc=0) | clean (rc=0) | clean (8 blocks, 6 layers, `共用` 6 张, rc=0) | faults: 0 (rc=0) |
+| `azoulay2020age/5\|a` | pass (rc=0) | pass (`self_sufficient true`, `evidence_bound true`, `loose 0`, rc=0) | clean (rc=0) | clean (9 blocks, 6 layers, `共用` 6 张, rc=0) | faults: 0 (rc=0) |
+
+- `list_broken_links` (`workspace: agent`): `total_broken: 0`, `azoulay_broken: 0`.
+- Advisory `R20` lines only on chapter `**本章估计**` headings (0 blocking faults).

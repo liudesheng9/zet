@@ -124,3 +124,35 @@ Executed via `fold.mjs` under `zt_mutex.py` (no math or prose changed; no Links 
 | Premises | `zt-check --model 'stuart2006scientists/5\|a' --premises` | `premises: none used before their card` | 0 |
 | Broken links | `list_broken_links` (`stuart2006scientists/`) | `[]` (0 broken links) | 0 |
 | Integrity | Formula & estimate snapshot diff + tree count | 18 formulas & 22 `**估计**` blocks byte-for-byte unchanged (`Diffs: []`); tree 264 -> 263 (`-1` dissolved inner chapter) | 0 |
+
+## Stage 4: imports and explanations (2026-11-27)
+
+- Live box: `D:\zt` (`stuart2006scientists`, 263 Cards unchanged; all writes serialized via `zt_mutex.py`)
+- Pre-Stage-4 backup: `D:\zt\backups\zt-before-iof10-stage4-import-2026-11-27.sqlite3`
+- Scope: conceptual lender `stuart2006scientists/3|a` (4 parts) and empirical model `stuart2006scientists/5|a` (70 -> 71 members with 1 shared `单卡` import).
+
+### Changes
+
+1. **Empirical hypothesis wired to conceptual predictions (`5|a|a|1` -> `3|a|a|2`)**:
+   - Replaced `参照 [[stuart2006scientists/3|a]]：本假说来自它的预测。` on `5|a|a|1` (`假说：检验工作情境、博士烙印与合著网络的八项假说`) with `依赖 [[stuart2006scientists/3|a|a|2]]：本假说逐项检验概念模型导出的八项工作情境、博士烙印与合著网络假说（经 **引入**）。`.
+   - Ran `imports.mjs plan` (`premise: 单卡 [[stuart2006scientists/3|a|a|2]]`) and `imports.mjs apply` under `zt_mutex.py` (`wrote 1 import line(s); tolerated 0 -> 1; check passes`).
+   - Kept the import `单卡` (did not apply the round-2 `upgrade: 整块` proposal): per `zt-model-import`, an empirical hypothesis takes the theory's prediction alone, not its mechanism/setting chain; `3|a|a|1` (`机制`) stays `tolerated` (1, advice only) in its home model `3|a`.
+   - Refined the `**引入**` line in `5|a` to `- 单卡 [[stuart2006scientists/3|a|a|2]]：概念模型导出的假说 1 至假说 8（工作情境、博士烙印与跨校合著网络对学术创业的影响方向与调节预测）`.
+   - Both `3|a` and `5|a` have `false_share: []`, 0 copies, and 0 cross-book imports (existing cross-book `对照` comparisons stay on `3|a` and `5|a` for `zt-evidence-dialogue`). `3|a` now reports `lent: [{"model":"stuart2006scientists/5|a","roots":["stuart2006scientists/3|a|a|2"]}]`.
+2. **Explanation refresh (step 8)**:
+   - `zt-digest model-explain -Step plan -Model 'stuart2006scientists/5|a'` returned `nothing to explain` (`parts: 0, jobs: []`) both before and after the import; no explanation job needed and no DeepSeek run started.
+3. **Term relink**:
+   - Ran `zt-digest term-link -Step relink -CitationKey stuart2006scientists` under `zt_mutex.py` (`cards_changed: 2`, `links_added: 2`, `links_repaired: 0`, `cards_refused: 0`), confirmed with `-PlanOnly` (`cards_changed: 0`, `links_added: 0`).
+
+### Stage 4 final gate results (post term-relink)
+
+| Gate | Command | Result | Exit |
+| --- | --- | --- | ---: |
+| Imports (`5\|a`) | `node E:\zet\skills\zt-model-import\scripts\imports.mjs check 'stuart2006scientists/5\|a'` | pass (`tolerated` 1 advice: `3\|a\|a\|2` -> `3\|a\|a\|1`) | 0 |
+| Imports (`3\|a`) | `node E:\zet\skills\zt-model-import\scripts\imports.mjs check 'stuart2006scientists/3\|a'` | pass (0 faults, 0 advice) | 0 |
+| Final (`5\|a`) | `zt-check --model 'stuart2006scientists/5\|a' --stage final` | `members 71 (main:9, side:60, shared:1, off:1)`, `loose 0`, `self_sufficient true`, `evidence_bound true`, `stage(final) pass` | 0 |
+| Settings (`5\|a`) | `zt-check --model 'stuart2006scientists/5\|a' --settings` | `settings: data tree and specification ladder are clean` | 0 |
+| Network (`5\|a`) | `zt-check --model 'stuart2006scientists/5\|a' --network` | `network: clean` (11 blocks incl. `共用` shelf, 5 layers, 428px wide, 19 paths) | 0 |
+| Card rules (`5\|a`) | `zt-check --model 'stuart2006scientists/5\|a' --skip-shared` | `faults: 0` (advisory R20 only) | 0 |
+| Final (`3\|a`) | `zt-check --model 'stuart2006scientists/3\|a' --stage final` | `members 4 (main:3, side:1)`, `loose 0`, `self_sufficient true`, `stage(final) pass` | 0 |
+| Broken links | `list_broken_links` (`stuart2006scientists/`) | `{"broken":[]}` (0 broken links) | 0 |

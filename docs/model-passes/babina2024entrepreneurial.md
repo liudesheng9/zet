@@ -144,3 +144,45 @@ Date: 2026-11-27, live box (`D:\zt`). Pre-Stage-3 backup: `D:\zt\backups\zt-befo
 - `list_broken_links` (`agent` workspace): `[]` (0 total, 0 for `babina2024entrepreneurial/`).
 - Formula preservation check: all 25 unique display formulas (`4|a`: 2, `6|a`: 18, `7|a`: 5) preserved byte-for-byte (`missing: 0`).
 - Tree card count: 336 -> 335 (`-1` dissolved inner chapter wrapper `6|a|a|7|a`).
+
+## Stage 4: imports and explanations
+
+Date: 2026-11-27, live box (`D:\zt`). Pre-Stage-4 backup: `D:\zt\backups\zt-before-iof10-stage4-import-2026-11-27.sqlite3`. All writes executed under `zt_mutex.py` with `-Allow` scoping; no DeepSeek calls. Order: lenders `3|a` (concept, 4 parts) and `4|a` (empirical, shared 5-source 31-state data/measurement, 25 parts), then borrowers `6|a` (establishment-panel OLS/IV, 49 own parts) and `7|a` (startup-level mechanisms, 25 own parts).
+
+### Lenders (`3|a`, `4|a`)
+
+- **`3|a` (concept, 4 parts):** no imports (`imports.mjs check` exit 0, `plan` `nothing to import`, 0 false shares, 0 legacy shares). Now lends `3|a|a|3` (`结论：研发催生高风险高成长且跨行业的外部 VC 初创`) as `单卡` to both `6|a` and `7|a`.
+- **`4|a` (empirical, 25 parts):** no imports (`imports.mjs check` exit 0, `plan` `nothing to import`, 0 false shares, 0 legacy shares; cross-book `对照 [[guzman2020state/4|a]]` left for `zt-evidence-dialogue`). Now lends `4|a|a` (`数据：五大微观与财务数据源构建 31 州分支面板`, `整块` block of 4 cards: `4|a|a`, `4|a|a|a`, `4|a|a|b`, `4|a|a|c`) to both `6|a` and `7|a`.
+
+### Borrowers (`6|a`, `7|a`)
+
+1. **Hypotheses resting on `3|a`'s predictions (`单卡`):**
+   - `6|a|a|1` (`假说：研发因果促创业`): replaced `参照 [[babina2024entrepreneurial/3|a]]` with `依赖 [[babina2024entrepreneurial/3|a|a|3]]` (`（经 **引入**）`) for prediction 1 (parent R&D causally raises employee entrepreneurship).
+   - `7|a|a|1` (`假说：高风险多元化与契约`): replaced `参照 [[babina2024entrepreneurial/3|a]]` with `依赖 [[babina2024entrepreneurial/3|a|a|3]]` (`（经 **引入**）`) for predictions 2–3 (high-risk/VC-backed and cross-industry startups).
+   - Both `6|a` and `7|a` keep `单卡 [[babina2024entrepreneurial/3|a|a|3]]` (tolerated `0 -> 2`: `3|a|a|1`, `3|a|a|2` stay in `3|a`). Because `3|a` is a concept model (`facet: 结论`), `imports.mjs plan` continues to suggest upgrading `3|a|a|3` to `整块` as advice; per the empirical-hypothesis rule (tests take the prediction, not its derivation/mechanisms), the upgrade was intentionally not applied.
+2. **Shared 5-source 31-state panel and employee-entrepreneurship measure (`整块`):**
+   - `6|a|a` (`数据`) and `7|a|a` (`数据`): replaced `原始设定：不依赖其他设定。` in `**起点**` with `依赖 [[babina2024entrepreneurial/4|a|a]]` and `依赖 [[babina2024entrepreneurial/4|a|a|b]]` (`（经 **引入**）`).
+   - `imports.mjs apply` wrote `整块 [[babina2024entrepreneurial/4|a|a]]` (absorbing `4|a|a|b`, bringing 4 shared cards: `4|a|a`, `4|a|a|a`, `4|a|a|b`, `4|a|a|c`; 0 tolerated premises from `4|a`) into both `6|a` and `7|a`.
+3. **Model Card polish & `6|a` `**结构**` repair:**
+   - Refined the text after `：` on both `**引入**` lines in `6|a` and `7|a` to state specifically what each model uses.
+   - Restored `6|a`'s `**结构**` bullet list (49 own parts from live `build.order`) and removed the duplicate `来源：[[babina2024entrepreneurial]] §IV.C, §V` line left over from Stage 3.
+4. **Symbols (step 6):** both `6|a` and `7|a` retain their own `变量表` (`6|a|a|a`, `7|a|a|a`); `zt-check --settings` clean on all three empirical models.
+5. **Explanations (step 8):** `zt-digest model-explain -Step plan -Force` returned `nothing to explain` (`parts: 0, jobs: []`) on `4|a`, `6|a`, and `7|a` (no `推导：估计式` parts).
+6. **Cross-book blocks:** none written; existing cross-book `对照` links remain for `zt-evidence-dialogue`.
+
+| Model | Import lines | Members (main/side/shared/off) | Tolerated before → after |
+|---|---|---|---|
+| `3\|a` | none (lender) | 4 (4/0/0/0) | 0 → 0 |
+| `4\|a` | none (lender) | 25 (4/19/0/2) | 0 → 0 |
+| `6\|a` | `整块 4\|a\|a` (absorbs `4\|a\|a\|b`); `单卡 3\|a\|a\|3` | 54 (8/40/5/1) | 0 → 2 (`3\|a\|a\|1`, `3\|a\|a\|2`) |
+| `7\|a` | `整块 4\|a\|a` (absorbs `4\|a\|a\|b`); `单卡 3\|a\|a\|3` | 30 (6/18/5/1) | 0 → 2 (`3\|a\|a\|1`, `3\|a\|a\|2`) |
+
+### Gate results (post term-relink)
+
+- Term relink (`zt-digest term-link -Step relink -CitationKey babina2024entrepreneurial` under `zt_mutex.py`): `{"ok":true,"complete":true,"book":"babina2024entrepreneurial","cards_changed":2,"links_added":3,"links_repaired":0,"cards_refused":0,"rounds":1,"applied":true}`; `-PlanOnly` confirmed 0 changes (`cards_changed: 0, links_added: 0`).
+- `imports.mjs check`: exit 0 on `3|a`, `4|a`, `6|a` (2 tolerated advice), `7|a` (2 tolerated advice).
+- `zt-check --model '<head>' --stage final`: exit 0 on all 3 empirical models (`self_sufficient true`, `evidence_bound true`, `loose 0`, `stage(final) pass`).
+- `zt-check --model '<head>' --settings`: exit 0 (`clean`) on `4|a`, `6|a`, `7|a`.
+- `zt-check --model '<head>' --network`: exit 0 (`network: clean`) on `4|a` (5 blocks, 4 layers), `6|a` (11 blocks, 7 layers, both `共用` shelves), `7|a` (9 blocks, 6 layers, both `共用` shelves).
+- `zt-check --model '<head>' --skip-shared`: exit 0 (`faults: 0`; advisory R20 only) on `4|a`, `6|a`, `7|a`.
+- `list_broken_links` (`agent` workspace): `[]` (0 total, 0 for `babina2024entrepreneurial/`).

@@ -54,3 +54,18 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D
 - `zt-check --model 'anton1995startups/2|a' --settings --symbols`: `ok: true`.
 - `list_broken_links`: 0 broken.
 - Term relink: not needed (0 Cards edited).
+
+## Stage 4: imports and explanations
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D:\zt\backups\zt-before-iof10-stage4-import-2026-11-27.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok).
+
+- Imports (`anton1995startups/2|a`): single self-contained formal model in the book; `imports.mjs check` and `imports.mjs plan` report `nothing to import` (`0` tolerated premises, `0` false shares, `0` legacy shares).
+- Explanation refresh (Step 8): `zt-digest model-explain -Step plan -Model 'anton1995startups/2|a'` returned `nothing to explain` (`parts: 0`, `jobs: []`).
+
+### Gate
+
+- `imports.mjs check 'anton1995startups/2|a'`: exit 0 (`takes what it uses from other models by import lines`).
+- `zt-check --model 'anton1995startups/2|a' --stage final`: pass (`self_sufficient true`, `formal_structured true`, `loose 0`).
+- `zt-check --model 'anton1995startups/2|a' --skip-shared`: `faults: 0`.
+- `list_broken_links`: 0 broken.
+- Term relink: not needed (0 Cards edited).

@@ -156,3 +156,43 @@ Term relink (`zt-digest term-link -Step relink -CitationKey shaw2019productivity
   - `5|b` (2 pointers): `假设 1` (`5|b|a|1|a`) pointing forward to Table 3 columns `FE(4)` and `FE(5)` (`- 怎样进入模型：规格 FE(4) 与 FE(5) 纳入 \lambda_j…`).
 - `list_broken_links` (`prefix: shaw2019productivity/`): `{"broken":[]}` (0 broken links).
 - Tree card count: 295 → 284 Cards (−11: −2 folded model-card wrappers in `5|a`, −9 exact-duplicate Table 3 cards in `5|b`, all deleted `into` surviving targets).
+
+
+## Stage 4: imports and explanations
+
+Date: 2026-11-27 (UTC 2026-11-28), live box `D:\zt`.
+
+Pre-Stage-4 backup: `D:\zt\backups\zt-before-iof10-stage4-import-2026-11-27.sqlite3`.
+
+All writes serialized via `zt_mutex.py` under `-Allow`; no `card_locked` or broken-link errors occurred.
+
+### Shared data & measurement imports (`4|a` → `5|a`, `5|b`)
+
+- **`shaw2019productivity/4|a` (lender, standalone Danish 5-registry data/measurement model):** no imports of its own (`imports check` rc=0, `plan` `nothing to import`). Lends its 4-card data/measurement/sample block rooted at `4|a|a` (`4|a|a` 数据, `4|a|a|a` 变量表, `4|a|a|b` 测量：活跃初创与连续创业者, `4|a|a|c` 样本：全样本与主回归样本) as `整块` to both `5|a` and `5|b`.
+- **`shaw2019productivity/5|a` (semi-annual sales & TFP panel + heterogeneity + LLC mechanism):**
+  - Replaced `- 原始设定：不依赖其他设定。` in `5|a|a`'s `**起点**` with three `依赖` lines pointing to `4|a|a` (5-registry panel & semi-annual interpolation), `4|a|a|b` (active startup, serial entrepreneur & LLC/SP definitions), and `4|a|a|c` (128,537-firm complete regression sample & 1990–2000 left-truncation filter).
+  - `imports.mjs plan` proposed `整块 [[shaw2019productivity/4|a|a]]` (absorbing `4|a|a|b` and `4|a|a|c`); `imports.mjs apply` wrote 1 import line (`tolerated 0 -> 0`, round 2 `plan`: `nothing to import`).
+  - Refined `**引入**` line description on `5|a`: `整块 [[shaw2019productivity/4|a|a]]：沿用丹麦五库关联面板与半年度频率插值、活跃初创与连续创业者及 LLC/SP 界定，以及 128,537 家企业完整回归样本筛选规则`.
+  - Cross-book link `对照 [[levine2017smart/6|a]]` on `5|a` remains a comparison (not a premise), left for Stage 6 (`zt-evidence-dialogue`).
+- **`shaw2019productivity/5|b` (annual employment panel):**
+  - Replaced `- 原始设定：不依赖其他设定。` in `5|b|a`'s `**起点**` with three `依赖` lines pointing to `4|a|a` (General Enterprise Statistics annual employment & capital), `4|a|a|b` (active startup & serial entrepreneur definitions), and `4|a|a|c` (128,537-firm regression sample & 1990–2000 left-truncation filter).
+  - `imports.mjs plan` proposed `整块 [[shaw2019productivity/4|a|a]]` (absorbing `4|a|a|b` and `4|a|a|c`); `imports.mjs apply` wrote 1 import line (`tolerated 0 -> 0`, round 2 `plan`: `nothing to import`).
+  - Refined `**引入**` line description on `5|b`: `整块 [[shaw2019productivity/4|a|a]]：沿用丹麦五库关联面板中的通用企业统计年度就业与资本数据、活跃初创与连续创业者界定，以及 128,537 家企业完整回归样本筛选规则`.
+- **Symbols (step 6):** both `5|a` and `5|b` keep their own `变量表` (`5|a|a|a`, `5|b|a|a`); `4|a|a|a` comes along inside `整块 [[4|a|a]]` without conflict (`--settings` clean on all three).
+
+### Explanation refresh (step 8)
+
+- `zt-digest model-explain -Step plan -Force` returned `nothing to explain` (`parts: 0, jobs: []`) on all three models (`4|a`, `5|a`, `5|b`): no `推导：估计式` or Derivation parts needed refresh. No estimate's content changed, so no **量级**/**为什么** rewrite was required.
+
+### Gate
+
+Term relink (`zt-digest term-link -Step relink -CitationKey shaw2019productivity` under `zt_mutex.py`): `{"ok":true,"complete":true,"book":"shaw2019productivity","cards_changed":3,"links_added":3,"links_repaired":0,"cards_refused":0,"rounds":1,"applied":true}`; `-PlanOnly` confirmed `0` pending changes. All gates below were run **after** term-relink:
+
+| Model | Imports | Members (main/side/shared/off) | Tolerated | `imports check` | `--stage final` | `--settings` | `--network` | `--skip-shared` |
+|---|---|---|---|---|---|---|---|---|
+| `4\|a` | none (lender) | 23 (4/18/0/1) | 0 | pass (rc=0) | pass (`self_sufficient true`, `evidence_bound true`) | clean (rc=0) | clean (5 blocks, 4 layers) | `faults: 0` (rc=0) |
+| `5\|a` | `整块 4\|a\|a` (+4) | 97 (12/80/4/1) | 0 → 0 | pass (rc=0) | pass (`self_sufficient true`, `evidence_bound true`) | clean (rc=0) | clean (14 blocks, 5 layers, 3 parts) | `faults: 0` (rc=0) |
+| `5\|b` | `整块 4\|a\|a` (+4) | 26 (5/16/4/1) | 0 → 0 | pass (rc=0) | pass (`self_sufficient true`, `evidence_bound true`) | clean (rc=0) | clean (7 blocks, 5 layers) | `faults: 0` (rc=0) |
+
+- `list_broken_links` (`prefix: shaw2019productivity/`): `{"broken":[]}` (0 broken links).
+- Tree card count: 284 Cards (unchanged).
