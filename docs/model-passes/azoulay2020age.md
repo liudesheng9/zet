@@ -82,3 +82,40 @@ All writes executed via `zt-digest call -Allow` serialized with `zt_mutex.py`. F
 - `zt-check --model 'azoulay2020age/5|a' --settings`: exit 0 (`data azoulay2020age/5|a|a  variables azoulay2020age/5|a|a|a`; `settings: data tree and specification ladder are clean`).
 - `zt-check --model 'azoulay2020age/5|a' --stage settings`: exit 0 (`members 24 {"main":7,"off":1,"side":16}`, `relations {"corresponds":2,"refers":30,"rests-on":15}; loose 1; self_sufficient true; evidence_bound true; stage(settings) pass`).
 - `list_broken_links` (`workspace: agent`): 0 broken links overall, 0 for `azoulay2020age/`.
+
+## Stage 3: restructure
+
+Date: 2026-11-27 (UTC 2026-11-28), live box `D:\zt`.
+
+Pre-Stage-3 backup: `D:\zt\backups\zt-before-iof10-stage3-restructure-2026-11-27.sqlite3`.
+
+### Baseline audit and per-model changes
+
+All 12 Card edits executed via `zt-digest call -Allow` serialized with `zt_mutex.py`. Zero Cards moved, added, or deleted; all display formulas (`$$...$$`) and empirical estimate numbers verified unchanged programmatically before write.
+
+1. **`azoulay2020age/2|a` (empirical, 24 parts; 3 Cards edited)**
+   - Baseline faults: 2 `lead` faults (`2|a|a|1`, `2|a|a|2` lacked `**直觉**`); `loose 1` (`2|a|b`).
+   - Edits: prepended `**直觉**` leads (>=20 chars) to `2|a|a|1` (设计) and `2|a|a|2` (规格); appended plain reference `见设计 [[azoulay2020age/2|a|a|1]]。` to `2|a|b` (局限) so `loose: 1 → 0`.
+2. **`azoulay2020age/3|a` (empirical, 41 parts; 4 Cards edited)**
+   - Baseline faults: 3 `lead` faults (`3|a|a`, `3|a|a|1`, `3|a|a|2` lacked `**直觉**`); `loose 1` (`3|a|b`).
+   - Edits: prepended `**直觉**` leads (>=20 chars) to `3|a|a` (数据), `3|a|a|1` (设计), and `3|a|a|2` (规格); appended plain reference `见设计 [[azoulay2020age/3|a|a|1]]。` to `3|a|b` (局限) so `loose: 1 → 0`.
+3. **`azoulay2020age/5|a` (empirical, 24 parts; 5 Cards edited)**
+   - Baseline faults: 4 `lead` faults (`5|a|a`, `5|a|a|1`, `5|a|a|2`, `5|a|a|3` lacked `**直觉**`); 1 `R22` bare LaTeX fault on `5|a|a|3` (`D_{ia}` outside `$...$`); `loose 1` (`5|a|b`).
+   - Edits: prepended `**直觉**` leads (>=20 chars) to `5|a|a` (数据), `5|a|a|1` (假说), `5|a|a|2` (设计), and `5|a|a|3` (规格); wrapped `$Exit_i$`, `$D_{ia}$`, and `$a=21,\dots,65$` in `5|a|a|3`'s `**各项**` (display formula untouched); inserted plain reference `见设计 [[azoulay2020age/5|a|a|2]]。` before `来源：` on `5|a|b` (局限) so `loose: 1 → 0`.
+
+### Term relink
+
+- `zt-digest term-link -Step relink -CitationKey azoulay2020age` (via `zt_mutex.py`): `{"ok":true,"complete":true,"book":"azoulay2020age","cards_changed":4,"links_added":5,"links_repaired":0,"cards_refused":0,"rounds":1,"applied":true}`.
+- `zt-digest term-link -Step relink -CitationKey azoulay2020age -PlanOnly`: `{"ok":true,"complete":true,"book":"azoulay2020age","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`.
+
+### Gate (post term-relink)
+
+| Model | members (main/side/off) | loose | `--stage restructure` | `--network` | `--settings` | `--skip-shared` | `--premises` |
+|---|---|---|---|---|---|---|---|
+| `azoulay2020age/2\|a` | 24 (5/18/1) | 0 | pass (rc=0) | clean (6 blocks, 4 layers, rc=0) | clean (rc=0) | faults: 0 (rc=0) | none (rc=0) |
+| `azoulay2020age/3\|a` | 41 (6/34/1) | 0 | pass (rc=0) | clean (7 blocks, 5 layers, rc=0) | clean (rc=0) | faults: 0 (rc=0) | none (rc=0) |
+| `azoulay2020age/5\|a` | 24 (7/16/1) | 0 | pass (rc=0) | clean (8 blocks, 5 layers, rc=0) | clean (rc=0) | faults: 0 (rc=0) | none (rc=0) |
+
+- `list_broken_links` (`workspace: agent`): `{"broken":[]}` (0 broken links overall, 0 for `azoulay2020age/`).
+- Advisory `R20` lines only on chapter `**本章估计**` headings (0 blocking faults).
+- Tree unlocked throughout; no `card_locked` met.

@@ -106,3 +106,53 @@ All writes serialized via `zt_mutex.py`; every display formula and equation numb
 - `zt-check --model 'shaw2019productivity/5|b' --stage settings`: exit 0 (`members 31 {main:6, off:1, side:24}`, `relations {refers:66, rests-on:10}`, `loose 2`, `evidence_bound true`, `stage(settings) pass`; only expected Stage 3 deferred `unanchored` on `5|b|a|5`).
 - `list_broken_links` (`prefix: shaw2019productivity/`): `{"broken":[]}` (0 broken links).
 - Tree card count: 315 → 295 Cards (−20 redundant folded duplicate cards deleted `into` surviving targets).
+
+
+## Stage 3: restructure
+
+Date: 2026-11-27 (UTC 2026-11-28), live box `D:\zt`.
+
+Pre-Stage-3 backup: `D:\zt\backups\zt-before-iof10-stage3-restructure-2026-11-27.sqlite3`.
+
+All writes serialized via `zt_mutex.py`; every unique display formula `$$…$$`, equation number (`\tag{1}`, `\tag{2}`, `\tag{3}`), and empirical estimate number preserved byte-for-byte.
+
+### `shaw2019productivity/4|a` (empirical, 23 → 23 parts, 0 moves)
+
+- Added crisp `**直觉**` leads (≥20 chars) to main-line cards `4|a|a` (`数据`), `4|a|a|1` (`设计`), and `4|a|a|2` (`规格：分组均值`).
+- Fixed 3 `R22` bare-LaTeX faults on `4|a|a|2|a` (`$Serial_{ij}$`, `$X_{ij}$`, `$Z_{ij}$`).
+- Anchored off-spine limitation card `4|a|b` with plain pointer `见设计 [[shaw2019productivity/4|a|a|1]]。` (`loose` 1 → 0).
+
+### `shaw2019productivity/5|a` (empirical, 95 → 93 parts)
+
+- Dissolved the two folded model-card wrappers (`5|a|a|7`, former `3|a`, and `5|a|a|8`, former `6|a`) in one atomic `apply_batch` (`tidy`, 88 cards moved, 2 wrapper cards deleted `into` their promoted chapters, `links_that_will_break: []`):
+  - **Placed §3 hypotheses in the evidence spine's `假说` slot:** folded `H2`–`H4` (`7|a|1..3`) as Side chain under `H1` (`7|a`) and moved `7|a` onto the main line right after `数据` → `5|a|a|1` (`假说：开业优势`, with `H2`–`H4` at `5|a|a|1|a..a|2`).
+  - **Promoted 4 inner chapters directly onto the main line:** `7|a|4` → `5|a|a|8` (`第 4 章：样本存续期与右删失测算`, carrying `7|b` limitation as Side `8|c`), `8|a` → `5|a|a|9` (`第 5 章：按性别分样本的销售额与生产率`, Table 4), `8|a|1` → `5|a|a|10` (`第 6 章：顺序型与组合型对比`, Table 5), `8|a|2` → `5|a|a|11` (`第 7 章：有限责任公司与机制检验`, Table 6, carrying `8|b` limitation as Side `11|e`).
+  - **Deleted redundant wrappers `into` promoted chapters:** `5|a|a|7` (which duplicated `\tag{1}`–`\tag{3}` already carried on `5|a|a|3|b`, `3|b|c`, `3|b|d` and triggered `R13`) `into` `第 4 章`; `5|a|a|8` `into` `第 5 章`.
+- Added `**直觉**` leads (≥20 chars) to `5|a|a` (`数据`), `5|a|a|1` (`假说`), `5|a|a|2` (`设计`), and `5|a|a|3` (`规格：基准`); updated facets, titles, and `**承上启下**` on `第 4–7 章`.
+- Cleared all 13 blocking `--skip-shared` faults (`R2`/`R3` on `5|a|a` and `5|a|a|c`, `R22` bare LaTeX on `5|a|a|3|b|b`, `3|b|c`, `3|c|b|a`, and `R13` via dissolving `5|a|a|7`).
+- Anchored all limitation cards (`5|a|a|8|c` → `第 4 章`, `5|a|a|11|e` → `第 7 章`, `5|a|b` → `设计 5|a|a|2`; `loose` 2 → 0).
+- Rebuilt `**结构**` on `shaw2019productivity/5|a` (93 parts) and added `**分部**` (3 parts covering 8 chapters: `第一部分 设定与假说` from `5|a|a`, `第二部分 基准回归与学习曲线` from `5|a|a|4`, `第三部分 样本删失、异质性与机制` from `5|a|a|8`).
+
+### `shaw2019productivity/5|b` (empirical, 31 → 22 parts)
+
+- Consolidated duplicate Table 3 chapter `5|b|a|5` (former `6|b`) into `5|b|a|4` (`第 1 章：就业起步差异与观望扩张动态`):
+  - **Preserved all unique numbers before deduplication:** merged the 5 extra personal-background control rows (`Married`, `Education`, `Male`, `Prior business experience`, `Age`) from `5|b|a|5|a|a` into `5|b|a|4|a` (`表 3`), enriched `5|b|a|4|f` with `FE(5)` novice/quadratic coefficients (`0.184`, `-0.018`, `-0.029`), and preserved the distinct `OLS(2)` estimate card `5|b|a|5|a|c` (`Serial = -0.185`) as Side branch `5|b|a|4|g` (added to `5|b|a|4`'s `**本章估计**`).
+  - **Atomic `tidy` batch:** moved `5|b|a|5|a|c` → `5|b|a|4|g` and deleted 9 exact-duplicate cards leaf-first `into` their surviving twins (`5|a|e|a` → `4|e|a`, `5|a|f` → `4|f`, `5|a|e` → `4|e`, `5|a|d` → `4|c`, `5|a|b` → `4|b`, `5|a|a` → `4|a`, `5|a` → `4`, `5|b` → `5|b|b`, `5` → `4`).
+- Added `**直觉**` leads (≥20 chars) to `5|b|a` (`数据`), `5|b|a|1` (`设计`), and `5|b|a|2` (`规格：基准`); cleared all 7 blocking `--skip-shared` faults (`R3` semicolons on `5|b|a` and `5|b|a|1`, `R22` bare LaTeX on `5|b|a|2|a`, `2|a|a`, `2|a|b`, `2|a|b|a`).
+- Anchored `5|b|b` (`见设计 [[shaw2019productivity/5|b|a|1]]。`; `loose` 2 → 0) and rebuilt `**结构**` on `shaw2019productivity/5|b` (22 parts).
+
+### Gate
+
+Term relink (`zt-digest term-link -Step relink -CitationKey shaw2019productivity` under `zt_mutex.py`): `{"ok":true,"complete":true,"book":"shaw2019productivity","cards_changed":4,"links_added":11,"links_repaired":0,"cards_refused":0,"rounds":1,"applied":true}`; `-PlanOnly` confirmed `0` pending changes. All gates below were run **after** term-relink:
+
+| Model | parts (main/side/off) | loose | `--stage restructure` | `--network` | `--settings` | `--skip-shared` | `--premises` |
+|---|---|---|---|---|---|---|---|
+| `4\|a` | 23 (4/18/1) | 0 | pass (rc=0, `self_sufficient true`) | `network: clean` (5 blocks, 4 layers) | clean (rc=0) | `faults: 0` (rc=0) | none (rc=0) |
+| `5\|a` | 93 (12/80/1) | 0 | pass (rc=0, `self_sufficient true`) | `network: clean` (13 blocks, 4 layers, 3 parts) | clean (rc=0) | `faults: 0` (rc=0) | 9 pointers (0 hidden uses) |
+| `5\|b` | 22 (5/16/1) | 0 | pass (rc=0, `self_sufficient true`) | `network: clean` (6 blocks, 4 layers) | clean (rc=0) | `faults: 0` (rc=0) | 2 pointers (0 hidden uses) |
+
+- `--premises` audit (0 hidden forward uses):
+  - `5|a` (9 pointers): 3 in `变量表` (`5|a|a|a`) naming eqs `(1)`–`(3)`; 4 in hypotheses `H1`–`H4` (`5|a|a|1`, `1|a`, `1|a|1`, `1|a|2`) pointing forward to the estimating equations `(1)`–`(3)` that operationalize them; 2 in `设计` (`5|a|a|2`) and `假设 1` (`5|a|a|2|a`) pointing to eq `(3)` and `(1)`.
+  - `5|b` (2 pointers): `假设 1` (`5|b|a|1|a`) pointing forward to Table 3 columns `FE(4)` and `FE(5)` (`- 怎样进入模型：规格 FE(4) 与 FE(5) 纳入 \lambda_j…`).
+- `list_broken_links` (`prefix: shaw2019productivity/`): `{"broken":[]}` (0 broken links).
+- Tree card count: 295 → 284 Cards (−11: −2 folded model-card wrappers in `5|a`, −9 exact-duplicate Table 3 cards in `5|b`, all deleted `into` surviving targets).

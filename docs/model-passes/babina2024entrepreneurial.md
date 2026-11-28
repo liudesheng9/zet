@@ -102,3 +102,45 @@ Already clean in baseline; unchanged and re-verified after term relink.
 - `list_broken_links` (`agent` workspace): 0 broken links total, 0 for `babina2024entrepreneurial/`.
 - Formula preservation script: all 25 unique display formulas across `4|a`, `6|a`, `7|a` preserved byte-for-byte (0 missing).
 - Tree card count: 342 -> 336 (6 duplicate parts merged `into` surviving counterparts in `6|a`).
+
+## Stage 3: restructure
+
+Date: 2026-11-27, live box (`D:\zt`). Pre-Stage-3 backup: `D:\zt\backups\zt-before-iof10-stage3-restructure-2026-11-27.sqlite3`. All writes executed under `zt_mutex.py`; concept model `3|a` skipped per `zt-post-digest`.
+
+### `4|a` (empirical, 25 parts)
+
+- Added `**直觉**` leads (>= 20 chars) to `4|a|a|1` (`设计`) and `4|a|a|2` (`规格：基准`), clearing both `--network` `lead` faults.
+- Anchored both off-spine limitation cards (`4|a|b`, `4|a|c`) with plain `见设计 [[babina2024entrepreneurial/4|a|a|1]]。` links (`loose` 2 -> 0).
+- No structural moves; all 2 display formulas and all empirical estimates unchanged.
+
+### `6|a` (empirical, 50 -> 49 parts)
+
+- **Structural `tidy` batch** (1 atomic `apply_batch`, 37 link macros rewritten, 0 broken links):
+  - Dissolved redundant inner chapter wrapper `6|a|a|7|a` (`第 1 章：基准与一阶检验`) `into` `6|a|a|7`: promoted `6|a|a|7|a|a` (`估计：式 (1) 基准 OLS`) and `6|a|a|7|a|b` (`估计：式 (2) IV 第一阶段`) to Side branches `6|a|a|7|a` and `6|a|a|7|b`, ordered ahead of `局限：时间下标与附录缺失` at `6|a|a|7|c`.
+  - Reordered `6|a|a|3`'s Side branches so `规格：研发税收价格 IV` (which defines eq. `(2)`, formerly `3|l`) sits at `6|a|a|3|j` ahead of `表 4 偏好 IV` (`3|k`) and `表 4 含控制 IV` (`3|k|a`), eliminating both true forward `--premises` hits on `(2)`.
+- **Card & head edits** (18 cards):
+  - Rewrote folded chapter `6|a|a|7` into clean chapter format (`第 4 章：基准 OLS 方程 (1) 与研发税收价格一阶方程 (2) 对应估计（§IV.A–B）`, anchored with `依赖 [[babina2024entrepreneurial/6|a|a|3]]`, `**直觉**`, `**本章估计**` listing `7|a` and `7|b`, verbatim `**对应方程**` preserving both display formulas `(1)` and `(2)`, and `**承上启下**`), clearing `unanchored`, `lead`, `R13`, and `R22`. Model has 4 chapters (`第 1–4 章`), so no `**分部**` section needed.
+  - Added `**直觉**` leads (>= 20 chars) to `6|a|a` (`数据`), `6|a|a|1` (`假说`), `6|a|a|2` (`设计`), `6|a|a|3` (`规格：基准`), and `6|a|a|7`.
+  - Cleared all 20 blocking `--skip-shared` faults: fixed `R22` bare LaTeX on `6|a`, `6|a|a|3`, `6|a|a|3|a`–`h`, `6|a|a|3|j` (formerly `3|l`), `6|a|a|4|e`, and `6|a|a|7`; fixed `R2`/`R3` semicolon/length splits on `6|a|a` (items 6–8) and `6|a|a|2` (`工具变量 2SLS`).
+  - Anchored both loose limitation cards (`6|a|a|7|c` -> `见 [[babina2024entrepreneurial/6|a|a|7]]。`; `6|a|b` -> `见设计 [[babina2024entrepreneurial/6|a|a|2]]。`), clearing `loose` 2 -> 0.
+  - Rebuilt `**结构**` on `babina2024entrepreneurial/6|a` from live `build.order` (all 49 members).
+
+### `7|a` (empirical, 25 parts)
+
+- Added `**直觉**` leads (>= 20 chars) to `7|a|a|1` (`假说`), `7|a|a|2` (`设计`), and `7|a|a|3` (`规格：基准`).
+- Fixed 1 `R22` bare LaTeX fault on `7|a|a|3` (`$\text{Firm log }\mathrm{R\&D}_{t-1}$`).
+- Anchored off-spine limitation card `7|a|b` with `见设计 [[babina2024entrepreneurial/7|a|a|2]]。` (`loose` 1 -> 0).
+- No structural moves; all 5 display formulas and all empirical estimates unchanged.
+
+### Gate results (post term-relink)
+
+| Model | Members (main/side/off) | Loose | `--stage restructure` | `--network` | `--settings` | `--skip-shared` | `--premises` |
+|---|---|---|---|---|---|---|---|
+| `4\|a` | 25 (4/19/2) | 0 | pass (`self_sufficient true`, `evidence_bound true`) | clean (5 blocks, 4 layers) | clean | `faults: 0` | none |
+| `6\|a` | 49 (8/40/1) | 0 | pass (`self_sufficient true`, `evidence_bound true`) | clean (9 blocks, 6 layers) | clean | `faults: 0` | 1 pointer (`6\|a\|a\|a` variable table noting eq. `(2)`) |
+| `7\|a` | 25 (6/18/1) | 0 | pass (`self_sufficient true`, `evidence_bound true`) | clean (7 blocks, 5 layers) | clean | `faults: 0` | 1 pointer (`7\|a\|a\|a` variable table naming Table 5A col. `(5)`) |
+
+- Term relink (`zt-digest term-link -Step relink -CitationKey babina2024entrepreneurial` under `zt_mutex.py`): `{"ok":true,"complete":true,"book":"babina2024entrepreneurial","cards_changed":7,"links_added":9,"links_repaired":0,"cards_refused":0,"rounds":1,"applied":true}`; `-PlanOnly` confirmed 0 changes (`cards_changed: 0, links_added: 0`).
+- `list_broken_links` (`agent` workspace): `[]` (0 total, 0 for `babina2024entrepreneurial/`).
+- Formula preservation check: all 25 unique display formulas (`4|a`: 2, `6|a`: 18, `7|a`: 5) preserved byte-for-byte (`missing: 0`).
+- Tree card count: 336 -> 335 (`-1` dissolved inner chapter wrapper `6|a|a|7|a`).

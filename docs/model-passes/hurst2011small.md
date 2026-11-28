@@ -96,3 +96,44 @@ Folded `hurst2011small/7|a` into `hurst2011small/6|a` (all writes serialized via
   - `hurst2011small/10|a`: 25 members (`main:6, off:1, side:18`), `self_sufficient true; evidence_bound true; stage(settings) pass`
 - `node E:\zet\skills\zt-model-settings\scripts\check-settings.mjs '<head>' --symbols`: **PASS (exit 0 on all 4 empirical models)** — `settings: the data tree and the specification ladder are in place`.
 - `list_broken_links` for `hurst2011small/`: **0 broken links**.
+
+---
+
+## Stage 3: restructure
+
+- **Date:** 2026-11-27
+- **Pre-Stage-3 backup:** `D:\zt\backups\zt-before-iof10-stage3-restructure-2026-11-27.sqlite3`
+- **Scope:** All 4 empirical models (`hurst2011small/2|a`, `3|a`, `5|a`, `10|a`); concept model `hurst2011small/6|a` skipped per `zt-post-digest`.
+- **Formula, estimate & link preservation:** Verified by script before writing across all 16 edited cards (all display formulas `$$...$$`, empirical estimates, and existing links preserved byte-for-byte; no cards moved, so head `**结构**` sections stay unchanged).
+
+### Per-model changes
+
+1. **`hurst2011small/2|a`** (28 members; 4 cards edited; 3 chapters, no `**分部**` needed):
+   - Added crisp `**直觉**` leads (>=20 chars) to main-line cards `2|a|a` (`数据`), `2|a|a|1` (`设计`), and `2|a|a|2` (`规格：基准`).
+   - Added plain reference line `见设计 [[hurst2011small/2|a|a|1]]。` to off-spine limits card `2|a|b` (`loose` 1 → 0).
+2. **`hurst2011small/3|a`** (36 members; 4 cards edited; 3 chapters, no `**分部**` needed):
+   - Added crisp `**直觉**` leads (>=20 chars) to main-line cards `3|a|a` (`数据`), `3|a|a|1` (`设计`), and `3|a|a|2` (`规格：基准`).
+   - Fixed `R22` bare LaTeX in `3|a|a|2` (`g_{jt}^{Ms}` → `$g_{jt}^{Ms}$`).
+   - Added plain reference line `见设计 [[hurst2011small/3|a|a|1]]。` (and replaced `本模型` with `该实证分析`) on off-spine limits card `3|a|b` (`loose` 1 → 0).
+3. **`hurst2011small/5|a`** (27 members; 4 cards edited; 4 chapters, no `**分部**` needed):
+   - Added crisp `**直觉**` leads (>=20 chars) to main-line cards `5|a|a` (`数据`), `5|a|a|1` (`设计`), and `5|a|a|2` (`规格：基准`).
+   - Fixed 2 `R22` bare LaTeX faults in `5|a|a|2` (`D_{idea,i}` → `$D_{\text{idea},i}$`, `D_{nonpec,i}` → `$D_{\text{nonpec},i}$`).
+   - Added plain reference line `见设计 [[hurst2011small/5|a|a|1]]。` (and replaced `本实证模型` with `该实证分析`) on off-spine limits card `5|a|b` (`loose` 1 → 0).
+4. **`hurst2011small/10|a`** (25 members; 4 cards edited; 3 chapters, no `**分部**` needed):
+   - Added crisp `**直觉**` leads (>=20 chars) to main-line cards `10|a|a` (`数据`), `10|a|a|1` (`设计`), and `10|a|a|2` (`规格：基准`).
+   - Added plain reference line `见设计 [[hurst2011small/10|a|a|1]]。` to off-spine limits card `10|a|b` (`loose` 1 → 0).
+
+### Stage 3 gate results (post term-relink)
+
+| Model | members (main/side/off) | loose | `--stage restructure` | `--network` | `--settings` | `--skip-shared` | `--premises` |
+| --- | --- | ---: | --- | --- | --- | --- | --- |
+| `hurst2011small/2|a` | 28 (6/21/1) | 0 | pass (rc=0) | clean (7 blocks, 5 layers; rc=0) | clean (rc=0) | faults: 0 (3 adv R20; rc=0) | none (rc=0) |
+| `hurst2011small/3|a` | 36 (6/29/1) | 0 | pass (rc=0) | clean (7 blocks, 4 layers; rc=0) | clean (rc=0) | faults: 0 (3 adv R20; rc=0) | 4 SE/pointer hits (0 hidden uses) |
+| `hurst2011small/5|a` | 27 (7/19/1) | 0 | pass (rc=0) | clean (8 blocks, 5 layers; rc=0) | clean (rc=0) | faults: 0 (4 adv R20; rc=0) | none (rc=0) |
+| `hurst2011small/10|a` | 25 (6/18/1) | 0 | pass (rc=0) | clean (7 blocks, 4 layers; rc=0) | clean (rc=0) | faults: 0 (3 adv R20; rc=0) | none (rc=0) |
+
+- **`--premises` hits on `hurst2011small/3|a` (all 4 documented, 0 hidden forward uses):**
+  - `3|a|a|4` (`第 1 章` `**本章估计**` pointer list) and `3|a|a|4|a` (`表 5` regression table) contain standard errors `(0.25)` and `(0.27)` next to coefficients `-2.14` and `-0.73`. Because estimate cards `3|a|a|4|b` and `3|a|a|4|c` carry `-2.14 (0.25)` and `-0.73 (0.27)` in their titles, `check-premises` matches `(0.25)` and `(0.27)` as equation numbers. All 4 are standard-error/chapter-pointer references and stay untouched.
+- **Term relink:** `zt-digest term-link -Step relink -CitationKey hurst2011small` applied `cards_changed: 4, links_added: 5, links_repaired: 0, cards_refused: 0, rounds: 1`; `-PlanOnly` confirmed `cards_changed: 0, links_added: 0`.
+- **Broken links:** `list_broken_links` for `hurst2011small/` (and full agent workspace): `[]` (0 broken links).
+- **Stage 3 invariants:** `self_sufficient: true`, `evidence_bound: true` on all 4 models; no cards moved or deleted.

@@ -91,3 +91,36 @@ Executed via `fold.mjs` under `zt_mutex.py` (no math or prose changed; no Links 
 - `list_broken_links` (`stuart2006scientists/`): **PASS** (`[]`, 0 broken links overall).
 - Formula preservation: **PASS** (18 display formulas before and after, `exact_match: true`).
 - Tree card count: **264** (270 -> 264, exact `-6` deleted redundant duplicates).
+
+## Stage 3: restructure (2026-11-27)
+
+- Live box: `D:\zt` (`stuart2006scientists`, 264 -> 263 Cards; all writes serialized via `zt_mutex.py`, 18 display formulas and 22 `**估计**` blocks verified byte-for-byte identical before and after: `Diffs: []`)
+- Pre-Stage-3 backup: `D:\zt\backups\zt-before-iof10-stage3-restructure-2026-11-27.sqlite3`
+- Scope: empirical model `stuart2006scientists/5|a` (71 -> 70 parts); conceptual model `stuart2006scientists/3|a` skipped per `zt-post-digest`.
+
+### Changes on `stuart2006scientists/5|a`
+
+1. **Dissolved folded inner chapter wrapper `5|a|a|8|a` into Chapter 4 (`5|a|a|8`)** (two atomic `tidy` batches):
+   - Promoted the 4 calibration & sensitivity cards (`5|a|a|8|a|a`–`8|a|d`) and limitation card (`5|a|a|8|b`) to clean Side branches of `5|a|a|8` (`5|a|a|8|a`–`8|e`).
+   - Deleted the redundant inner chapter card `5|a|a|8|a` `into` `5|a|a|8` (zt automatically rewrote `见 [[stuart2006scientists/5|a|a|8|a]]。` on the 4 promoted cards to `5|a|a|8`).
+   - Retitled and refaceted `5|a|a|8` as `第 4 章：测量校准与敏感性核验` (`第 4 章：指数引用校准与加权、时间起点敏感性核验`, `emphasis` cleared), giving it clean empirical chapter structure (`依赖 [[stuart2006scientists/5|a|a|3|g]]`, `**直觉**`, `**本章估计**`, `**承上启下**`).
+   - Preserved the cross-book link from dissolved `5|a|a|8` (`跨书关联：对照 [[babina2024entrepreneurial/4|a]]…`) on head `5|a`.
+2. **Main-line `**直觉**` leads, `loose` anchoring, and R-rule cleanup** (`edit_card` batch, 9 cards + head `5|a`, 0 errors):
+   - Added crisp `**直觉**` leads (>= 20 chars) to `5|a|a` (`数据`), `5|a|a|1` (`假说`), `5|a|a|2` (`设计`), `5|a|a|3` (`规格：基准`), and `5|a|a|8` (`第 4 章`), clearing all 5 `--network` `lead` faults.
+   - Anchored both loose limitation cards (`5|a|a|8|e` -> `见第 4 章 [[stuart2006scientists/5|a|a|8]] 与设计 [[stuart2006scientists/5|a|a|2]]。`; `5|a|b` -> `见第 3 章 [[stuart2006scientists/5|a|a|7]] 与设计 [[stuart2006scientists/5|a|a|2]]。`), clearing `loose` 2 -> 0.
+   - Cleared all 10 blocking `--skip-shared` faults: split long/semicolon items in `5|a|a` (3 × R2, 2 × R3), tightened `5|a|a|2` prose to 19 sentences without semicolons (R3, R13), split two semicolon sentences in `5|a|a|2|c` (2 × R3), and wrapped bare LaTeX `UnivPeers_{it-1}` as `$\mathrm{UnivPeers}_{it-1}$` on `5|a|a|3|a` (R22).
+3. **Head `5|a` `**分部**` & `**结构**`, and term relink**:
+   - Added `**分部**` for the 5-chapter model (`第一部分 数据与识别设计` from `5|a|a`, `第二部分 描述与主回归结果` from `5|a|a|4`, `第三部分 稳健性与方法核验` from `5|a|a|7`) and rebuilt `**结构**` for all 70 parts.
+   - Ran `zt-digest term-link -Step relink -CitationKey stuart2006scientists` under `zt_mutex.py` (`cards_changed: 1`, `links_added: 4`, `links_repaired: 0`, `cards_refused: 0`), confirmed with `-PlanOnly` (`cards_changed: 0`, `links_added: 0`).
+
+### Stage 3 gate results (post term-relink)
+
+| Gate | Command | Result | Exit |
+| --- | --- | --- | ---: |
+| Restructure | `zt-check --model 'stuart2006scientists/5\|a' --stage restructure` | `members 70 (main:9, side:60, off:1)`, `loose 0`, `self_sufficient true`, `evidence_bound true`, `stage(restructure) pass` | 0 |
+| Network | `zt-check --model 'stuart2006scientists/5\|a' --network` | `network: clean` (10 blocks, 5 layers, 414px wide, 19 paths) | 0 |
+| Settings | `zt-check --model 'stuart2006scientists/5\|a' --settings` | `settings: data tree and specification ladder are clean` | 0 |
+| Card rules | `zt-check --model 'stuart2006scientists/5\|a' --skip-shared` | `faults: 0` (advisory R20 only) | 0 |
+| Premises | `zt-check --model 'stuart2006scientists/5\|a' --premises` | `premises: none used before their card` | 0 |
+| Broken links | `list_broken_links` (`stuart2006scientists/`) | `[]` (0 broken links) | 0 |
+| Integrity | Formula & estimate snapshot diff + tree count | 18 formulas & 22 `**估计**` blocks byte-for-byte unchanged (`Diffs: []`); tree 264 -> 263 (`-1` dissolved inner chapter) | 0 |

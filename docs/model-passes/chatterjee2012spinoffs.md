@@ -114,3 +114,45 @@ All 5 folded setting subtrees from chapters `2|a|a|3..7` were gathered into `2|a
 - `zt-check --model 'chatterjee2012spinoffs/5|b' --settings`: **PASS** (exit 0) — `settings: data tree and specification ladder are clean`.
 - `zt-check --model 'chatterjee2012spinoffs/5|b' --stage settings`: **PASS** (exit 0) — `members 30 {"main":7,"off":1,"side":22}`, `self_sufficient true; evidence_bound true; stage(settings) pass`.
 - `list_broken_links` (`agent`): **PASS** — `0` broken links total, `0` for `chatterjee2012spinoffs/`.
+
+
+## Stage 3: restructure
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; all writes serialized under `zt_mutex.py`). Pre-Stage-3 backup: `D:\zt\backups\zt-before-iof10-stage3-restructure-2026-11-27.sqlite3`.
+
+### 2\|a (formal, 128 -> 117 parts): the intuition spine
+
+Dissolved all 11 redundant nested sub-chapter wrapper cards left by the Stage 1 fold (`3|a`, `3|a|1`; `4|a`, `4|a|1`, `4|a|2`; `5|a`, `5|a|1`, `5|a|2`; `6|a`; `7|a`, `7|a|1`) in one atomic `apply_batch` (`26` result/calibration/experiment subtrees promoted to direct Side branches of `2|a|a|3..7`, `11` empty wrappers deleted `into` their parent chapters, `5` chapter Side lists reordered so each chapter's `局限` card sits last; `links_that_will_break: []`).
+
+```
+2|a|a      设定：偏好、职业与利润结构 (a 符号表与读法, b–e 基准假设与解概念, f 线性变体, g 规模演进变体, h 证明算子, i CARA 变体, j 全员产创意扩展; 23 cards)
+2|a|a|1    第 1 章：激励相容定价与在位筛选 (§2.1; a 统一定价, b–d 引理 1–3, e 在位筛选分段方程)                         ← e
+2|a|a|2    第 2 章：工人衍生与事后留存门槛 (§2.2; a 引理 4, b 工人衍生分段价值, c 事后留存退出门槛)                      ← 1, e
+2|a|a|3    第 3 章：线性效用下的长期均衡刻画 (§2.3–§3; a 出清不确定性, b 命题 1, c 创意市场必要性, d 方程 (5)–(7), e 命题 2, f 局限)  ← 2, f, f|c
+2|a|a|4    第 4 章：企业规模不变分布、尤尔分布与吉布拉法则 (§5.1; a 出清比率 (9), b 转移核与总量扩张, c 命题 3, d 推论 1, e 命题 4, f 均值回归, g 命题 5, h 校准图 7, i 数值实验图 7, j 局限) ← 3, g, g|c
+2|a|a|5    第 5 章：基准与线性均衡证明（附录 A.1–A.6; a–d 引理 1–4 证明, e–f 命题 1 上下半证明, g 命题 2 证明, h 局限) ← 3, 4, h|b
+2|a|a|6    第 6 章：CARA 指数效用变体（附录 A.7; a 命题 6 含两条推导链与边界, b 局限)                                  ← 2, i, i|b
+2|a|a|7    第 7 章：企业家产创意与外生进入成本扩展（附录 B; a 均衡比率 θ=1, b 命题 7, c 去专属性, d 渐近帕累托收敛, e 局限) ← 4, j, j|b
+2|a|b      局限：无储蓄、无融资摩擦与固定项目规模 (off main line, anchored to 2|a|a)
+```
+
+- **Chapter card rewrites (`2|a|a|3..7`)**: converted all 5 folded former-Model-Card chapters to clean Chapter Card format (`第 3–7 章` titles/facets, `依赖` anchors, `**直觉**` >= 20 chars, `**本章结果**` TOC, `**承上启下**`, `来源`), preserving all three cross-book links (`akcigit2025transformative/17|a`, `aghion2026nobel/2|b|1` on `2|a|a|4`; `atkinson2015lectures/7|a|c|b|3` on `2|a|a|6`) and keeping App. A (`第 5 章`) as a dedicated anchored formal-proofs chapter after `第 4 章` because App. A.6 (`2|a|a|5|g`) depends on Corollary 1 (`2|a|a|4|d`).
+- **Model Card `2|a`**: rebuilt 2-level `**结构**`, added `**分部**` (3 parts for 7 chapters: 第一部分 设定与一般筛选 `2|a|a` 起; 第二部分 线性均衡与规模分布 `2|a|a|3` 起; 第三部分 严格证明与扩展变体 `2|a|a|5` 起), expanded `**主要结果**` across the unified model, and wrapped `- 标签：` onto two lines (`R2` cleared).
+- **Card-form & setting-tree hygiene (0 structural changes to `2|a|a` tree)**: cleared all 15 `R3` semicolon faults across `2|a|a|a`, `f`, `f|a`, `g`, `g|a`, `g|b`, `h|a`, `h|b`, `i`, `j`; fixed 3 corrupted-backslash LaTeX titles (`f|a`, `f|c`, `g|a`); updated `2|a|a|a` first-appearance links (`g_{S,N}` -> `4|f`; split `p(N,N'), p(N,A)` -> `4|b` and `g_N` -> `4|e`); replaced list numbering `（1）`–`（5）` on `2|a|a|i|b` to eliminate false `(4)`/`(5)` premise hits; removed inline `\tag {10}`/`\tag {11}` on `2|a|a|4|c|a..2` (`R22` ×5 cleared) while preserving every `$$...$$` display formula and `\tag{...}` byte-for-byte; anchored all 9 loose `局限`/`边界` cards (`loose` 9 -> 0).
+- **`--premises` audit (17 hits, 0 hidden forward uses)**: 3 false-positive `F_\mu(0)=0` matches against `(0)` (`H|a|c`, `H|a|5|c`, `H|a|5|c|a`); 5 Appendix A setting/solution-concept pointers (`H|a|h|a`, `H|a|h|b` naming eqs. (4)–(7)); 6 chapter TOC pointers (`H|a|3`, `H|a|4`, `H|a|5`); 2 explicit Appendix A.5 external-proof pointers (`H|a|3|d` naming `(A.1)–(A.2)`); 1 prose remark pointer (`H|a|3|b` noting eq. (6) allows $\mu_H\le w$ when $Z$ is small).
+
+### 5\|b (empirical, 30 parts)
+
+- Added `**直觉**` leads (>= 20 chars) to all 4 main-line setup cards (`5|b|a` 数据, `5|b|a|1` 假说, `5|b|a|2` 设计, `5|b|a|3` 规格：基准), preserving all existing text, display formulas, artifact images, and links byte-for-byte.
+- Fixed bare LaTeX `\hat{m}_j` -> `$\hat{m}_j$` on `5|b|a|6` (`R22` cleared).
+- Anchored off-spine limits card `5|b|b` (`见设计 [[chatterjee2012spinoffs/5|b|a|2]]。`, `loose` 1 -> 0).
+
+### Term relink & Gate results
+
+- `zt-digest term-link -Step relink -CitationKey chatterjee2012spinoffs`: `cards_changed: 8, links_added: 23, links_repaired: 0, cards_refused: 0`; follow-up relink and `-PlanOnly` confirmed `cards_changed: 0, links_added: 0, links_repaired: 0`.
+- `list_broken_links` (`agent`): `[]` (0 broken links).
+
+| Model | Members (main/side/off) | `loose` | `--stage restructure` | `--network` | `--settings [--symbols]` | `--skip-shared` | `--premises` |
+|---|---|---|---|---|---|---|---|
+| `2\|a` (formal) | 117 (8/108/1) | 0 | pass (`self_sufficient: true`, `formal_structured: true`, rc=0) | `network: clean` (9 blocks, 2 layers, 3 parts, rc=0) | `all in the setting part` (rc=0) | `faults: 0` (rc=0) | 17 pointers / false-pos `(0)`, 0 hidden uses |
+| `5\|b` (empirical) | 30 (7/22/1) | 0 | pass (`self_sufficient: true`, `evidence_bound: true`, rc=0) | `network: clean` (8 blocks, 5 layers, rc=0) | `clean` (rc=0) | `faults: 0` (rc=0) | `none` (rc=0) |

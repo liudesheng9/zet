@@ -97,3 +97,49 @@ All writes executed through `zt_mutex.py` on `D:\zt` following `zt-model-fold/SK
 - `list_broken_links` (agent workspace): **PASS** — 0 broken links total, 0 in `levine2017smart/`.
 - Card count in `levine2017smart`: **380** (389 − 9 dissolved duplicate cards).
 - Next stage: hand `levine2017smart/4|a`, `levine2017smart/5|a`, `levine2017smart/5|b`, and `levine2017smart/6|a` to `zt-model-restructure` (Stage 3).
+
+## Stage 3: restructure (2026-11-27)
+
+- Live box: `D:\zt` (agent workspace, all writes serialized through `zt_mutex.py`).
+- Pre-Stage-3 backup: `D:\zt\backups\zt-before-iof10-stage3-restructure-2026-11-27.sqlite3`.
+- Integrity: all 61 display-formula cards across the 4 models verified byte-for-byte identical before and after edits (`diffs: 0`); no empirical estimate number altered; no Link or `依赖` dropped.
+
+### Per-model changes
+
+- **`levine2017smart/4|a` (empirical, 26 → 26 parts, 3 cards edited, 0 moves)**:
+  - Added `**直觉**` leads (>=20 chars) on `4|a|a|1` (`设计`) and `4|a|a|2` (`规格：基准`).
+  - Anchored off-spine limits card `4|a|b` with plain reference `见设计 [[levine2017smart/4|a|a|1]]。` (`loose` 1 → 0).
+- **`levine2017smart/5|a` (empirical, 31 → 31 parts, 2 cards edited, 0 moves)**:
+  - Added `**直觉**` leads (>=20 chars) on `5|a|a|1` (`设计`) and `5|a|a|2` (`规格：基准`).
+- **`levine2017smart/5|b` (empirical, 32 → 32 parts, 3 cards edited, 0 moves)**:
+  - Added `**直觉**` leads (>=20 chars) on `5|b|a|1` (`设计`) and `5|b|a|2` (`规格：基准`).
+  - Cleared 4 `R22` bare-LaTeX faults on `5|b|a|2` (`$I_{it}$`, `$U_{it}$`, `$\mu_i$`, `$\lambda_t$`).
+  - Anchored off-spine limits card `5|b|b` with plain reference `见设计 [[levine2017smart/5|b|a|1]]。` (`loose` 1 → 0).
+- **`levine2017smart/6|a` (empirical, 119 → 113 parts, 1 atomic `tidy` batch + 12 cards edited)**:
+  - **Inner-chapter dissolution (`apply_batch`, 35 cards moved, 6 deleted `into`, `links_that_will_break: []`, 178 link macros rewritten)**:
+    - Dissolved the 6 redundant inner chapter wrappers inside folded chapters `6|a|a|5..7` (`5|a`, `5|a|1` → `6|a|a|5`; `6|a`, `6|a|1` → `6|a|a|6`; `7|a`, `7|a|1` → `6|a|a|7`) and promoted all tables, figures, estimates, and tests directly as Side branches ahead of each chapter's limits card (`5|a..m`, `6|a..l` with `6|e|a`, `7|a..i`).
+  - **Chapter anchoring & card-form cleanup**:
+    - Rewrote `6|a|a|5`, `6|a|a|6`, and `6|a|a|7` as standard empirical chapter cards (`第 3 章`–`第 5 章`) with `依赖` links to `6|a|a|3` and their respective specification cards, `**直觉**` leads (>=20 chars, <=80 chars), `**本章估计**`, and `**承上启下**` (clearing all 3 `unanchored` faults).
+    - Added `**直觉**` leads (>=20 chars) on `6|a|a` (`数据`), `6|a|a|1` (`设计`), and `6|a|a|2` (`规格：基准`).
+    - Anchored all 3 chapter limits cards (`6|a|a|5|m`, `6|a|a|6|l`, `6|a|a|7|i`) to their chapter cards (`loose` 3 → 0).
+    - Cleared all 11 blocking `--skip-shared` faults: `6|a|a|1` (`R3` split, `R4` `并非由做大后注册主导`, `R13` trimmed to <=24 sentences, `R2` <=80 chars), and `R22` bare LaTeX on `6|a|a|2`, `6|a|a|2|c|b|b`, and `6|a|a|2|d`.
+    - Rebuilt `**结构**` (113 owned parts in build order) and added `**分部**` (4 parts covering `6|a|a`..`6|a|a|7`) on head `levine2017smart/6|a`.
+
+### Gate results (post term-relink)
+
+| Model | Parts (main/side/off) | loose | self_sufficient | `--stage restructure` | `--network` | `--settings` | `--skip-shared` | `--premises` |
+| --- | --- | ---: | --- | --- | --- | --- | --- | --- |
+| `levine2017smart/4|a` | 26 (5/20/1) | 0 | true | pass (rc=0) | clean (6 blocks, 4 layers, rc=0) | clean (rc=0) | faults: 0 (rc=0) | 1 pointer (0 hidden uses) |
+| `levine2017smart/5|a` | 31 (5/25/1) | 0 | true | pass (rc=0) | clean (6 blocks, 4 layers, rc=0) | clean (rc=0) | faults: 0 (rc=0) | 5 Table VII col pointers (0 hidden uses) |
+| `levine2017smart/5|b` | 32 (5/26/1) | 0 | true | pass (rc=0) | clean (6 blocks, 4 layers, rc=0) | clean (rc=0) | faults: 0 (rc=0) | none (rc=0) |
+| `levine2017smart/6|a` | 113 (8/104/1) | 0 | true | pass (rc=0) | clean (9 blocks, 4 layers, rc=0) | clean (rc=0) | faults: 0 (rc=0) | 26 symbol-table/col/pointer hits (0 hidden uses) |
+
+- `--premises` audit (all 0 hidden forward uses):
+  - `4|a`: 1 hit in `4|a|a` (`怎样进入模型：规格：基准用该面板估计式 (1)` — forward pointer to eq. (1)).
+  - `5|a`: 5 hits in `5|a|a|1` and `5|a|a|1|c` naming Table VII columns `(1)`, `(2)`, `(5)`, `(9)`.
+  - `5|b`: 0 hits.
+  - `6|a`: 26 hits — 6 variable-table rows (`6|a|a|a`), 1 superscript `$I_i^{(1)}$` (`6|a|a|c`), 1 forward spec pointer (`6|a|a|d` eq. (7)), 4 design roadmap pointers (`6|a|a|1` eqs. (3)–(8), (7), `$I_i^{(1)}$`), 11 assumption/footnote pointers & Table X column numbers (`6|a|a|1|b`, `1|e`, `1|f`, `1|g`, `1|k`), and 3 Table IX/X column `(1)` + eq. (6) decomposition pointers (`6|a|a|2`, `6|a|a|2|a|a`).
+- `zt-digest term-link -Step relink -CitationKey levine2017smart`: **PASS** (18 links added across 9 cards across passes; final `-PlanOnly`: `cards_changed: 0, links_added: 0, links_repaired: 0, cards_refused: 0`).
+- `list_broken_links` (agent workspace): **PASS** — `[]` (0 broken links total, 0 in `levine2017smart/`).
+- Card count in `levine2017smart`: **374** (380 − 6 dissolved inner chapter cards).
+- Next stage: hand `levine2017smart/4|a`, `levine2017smart/5|a`, `levine2017smart/5|b`, and `levine2017smart/6|a` to `zt-model-import` (Stage 4).

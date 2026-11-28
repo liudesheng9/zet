@@ -37,3 +37,20 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D
 - `zt-check --model 'anton1995startups/2|a' --stage settings`: `pass` (`self_sufficient true`, `formal_structured true`).
 - `list_broken_links`: 0 broken.
 - Term relink: not needed (0 Cards edited).
+
+## Stage 3: restructure
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D:\zt\backups\zt-before-iof10-stage3-restructure-2026-11-27.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok).
+
+`anton1995startups/2|a` (formal, 12 parts, 1 chapter) already passed all Stage 3 gates out of the digest with 0 faults (0 writes required):
+- Spine: `2|a|a` (设定, 6 parts) → `2|a|a|1` (`第 1 章：利润蕴含与期望收益`, 5 parts, 2 results), plus limitation card `2|a|b`.
+
+### Gate
+
+- `zt-check --model 'anton1995startups/2|a' --stage restructure`: `pass` (`self_sufficient true`, `formal_structured true`, `loose 0`).
+- `zt-check --model 'anton1995startups/2|a' --network`: `network: clean` (3 blocks, 2 layers).
+- `zt-check --model 'anton1995startups/2|a' --premises`: `premises: none used before their card`.
+- `zt-check --model 'anton1995startups/2|a' --skip-shared`: `faults: 0` (1 advisory R20 only).
+- `zt-check --model 'anton1995startups/2|a' --settings --symbols`: `ok: true`.
+- `list_broken_links`: 0 broken.
+- Term relink: not needed (0 Cards edited).

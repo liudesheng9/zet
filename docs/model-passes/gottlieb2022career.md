@@ -101,3 +101,44 @@ All 5 folds into `gottlieb2022career/4|a` were executed in book order (`2|a`, `6
   - `8|d`: `members 31 {"main":7,"off":1,"side":23}`, `self_sufficient true`, `evidence_bound true`, `stage(settings) pass`.
 - **`list_broken_links`:** PASS — 0 broken links total, 0 for `gottlieb2022career/`. Tree card count: **489 → 471** (−18 deleted duplicates).
 - **Handoff:** Ready for Stage 3 (`zt-model-restructure`).
+
+## Stage 3: restructure
+
+- **Date:** 2026-11-27
+- **Archive:** Live box `D:\zt` (all writes serialized via `zt_mutex.py`)
+- **Pre-Stage-3 backup:** `D:\zt\backups\zt-before-iof10-stage3-restructure-2026-11-27.sqlite3`
+- **Scope:** Full `zt-model-restructure` on the 4 empirical models (`4|a`, `7|c`, `8|b`, `8|d`); concept models `5|a` and `8|a` skipped. All unique display formulas (`\tag{1}`–`\tag{4}` and every specification formula) and all empirical estimate numbers were verified byte-for-byte unchanged.
+
+### Per-model changes
+
+1. **`gottlieb2022career/4|a` (empirical, 146 → 138 parts):**
+   - **Atomic structural reorganization (`apply_batch`, 77 moved, 8 redundant inner chapter wrappers deleted `into` surviving chapter heads, `links_that_will_break: []`):**
+     - Dissolved inner chapter `4|a|a|4|a` `into` `4|a|a|4` and moved `4|a|a|4` before `4|a|a|3` as `第 1 章：描述性统计基线` (§1, Table 1); `4|a|a|3` became `第 2 章：设计前提验证` (§3, Fig. 1 & LFS).
+     - Promoted `4|a|a|5|a` (§5.1) before `4|a|a|5` as `第 3 章：识别有效性检验`, promoted `4|a|a|5|a|2` (§5.3) after `4|a|a|5` as `第 5 章：稳健性检验`, and dissolved `4|a|a|5|a|1` (§5.2) `into` `4|a|a|5` (`4|a|a|6`, `第 4 章：基准估计与安慰剂`; `4|a|a|5`'s duplicate display formulas already live byte-for-byte on `4|a|a|2|f` and `4|a|a|2|f|d`).
+     - Dissolved inner chapter `4|a|a|6|a|1` `into` `4|a|a|8` (`第 6 章：省际异质性`, §5.4); dissolved `4|a|a|7|a` & `4|a|a|7|a|1` `into` `4|a|a|9` (`第 7 章：创业企业质量分解`, §5.5, preserving cross-book link `guzman2020state/3|a`); dissolved `4|a|a|8|a|1..3` `into` `4|a|a|10` (`第 8 章：行业启动资金与失败率`, §6.3).
+   - **Card & head edits (20 cards):**
+     - Rewrote `4|a|a|3`–`4|a|a|10` with clean `第 1 章`–`第 8 章` titles/facets (`emphasis: core`), `**直觉**` (>=20 chars), `**本章估计**`, `**承上启下**`, and explicit `依赖` anchors (`unanchored` 5 → 0).
+     - Added crisp `**直觉**` leads to `4|a|a|1` (`设计`) and `4|a|a|2` (`规格：基准`); cleared all 21 baseline `--skip-shared` faults (`R2`/`R3` on `4|a|a` and `4|a|a|1`, `R13` on `4|a|a|1` and `4|a|a|3`/`6`/`8`/`9`/`10`, `R22` `$Entrepreneur_i^{HighCap}$` on `4|a|a|2|i`, keeping separate `**变异来源**` and `**比较**` headings for `EM4`).
+     - Anchored all 7 loose limitation/external-validity cards (`4|a|a|3|a`, `4|a|a|6|a`, `4|a|a|8|b`, `4|a|a|9|a`, `4|a|a|9|b`, `4|a|a|10|b`, `4|a|b`; `loose` 7 → 0).
+     - Rebuilt 2-level `**结构**` and added `**分部**` (4 parts covering 8 chapters) on head `4|a`.
+2. **`gottlieb2022career/7|c` (empirical, 31 parts, 0 moves, 3 cards edited):**
+   - Added `**直觉**` leads to `7|c|a|1` (`设计`) and `7|c|a|2` (`规格：基准`); anchored `7|c|b` (`见设计 [[gottlieb2022career/7|c|a|1]]。`, `loose` 1 → 0).
+3. **`gottlieb2022career/8|b` (empirical, 39 parts, 0 moves, 5 cards edited):**
+   - Added `**直觉**` leads to `8|b|a` (`数据`), `8|b|a|1` (`假说`), `8|b|a|2` (`设计`), `8|b|a|3` (`规格：基准`); anchored `8|b|b` (`见设计 [[gottlieb2022career/8|b|a|2]]。`, `loose` 1 → 0).
+4. **`gottlieb2022career/8|d` (empirical, 31 parts, 0 moves, 5 cards edited):**
+   - Added `**直觉**` leads to `8|d|a` (`数据`), `8|d|a|1` (`假说`), `8|d|a|2` (`设计`), `8|d|a|3` (`规格：基准`); anchored `8|d|b` (`见设计 [[gottlieb2022career/8|d|a|2]]。`, `loose` 1 → 0).
+
+### Stage 3 Gate verification (post term-relink)
+
+- **Term relink (`zt-digest term-link -Step relink -CitationKey gottlieb2022career`):** `ok: true, complete: true, cards_changed: 9, links_added: 19, links_repaired: 0, cards_refused: 0`; final `-PlanOnly` confirmed `cards_changed: 0, links_added: 0`.
+- **`list_broken_links` (`agent`):** `[]` (0 broken links total, 0 in `gottlieb2022career/`). Tree card count: **471 → 463** (−8 dissolved inner chapter wrappers).
+
+| Model | Members (main/side/off) | Loose | `--stage restructure` | `--network` | `--settings` | `--skip-shared` | `--premises` |
+| --- | --- | ---: | --- | --- | --- | --- | --- |
+| `gottlieb2022career/4\|a` | 138 (11/126/1) | 0 | pass (`rc=0`, `self_sufficient true`, `evidence_bound true`) | `network: clean` (12 blocks, 4 layers, 4 parts, `rc=0`) | clean (`rc=0`) | `faults: 0` (`rc=0`, advisory R20 only) | 10 pointers/SE hits (0 hidden uses) |
+| `gottlieb2022career/7\|c` | 31 (6/24/1) | 0 | pass (`rc=0`, `self_sufficient true`, `evidence_bound true`) | `network: clean` (7 blocks, 6 layers, `rc=0`) | clean (`rc=0`) | `faults: 0` (`rc=0`, advisory R20 only) | none (`rc=0`) |
+| `gottlieb2022career/8\|b` | 39 (7/31/1) | 0 | pass (`rc=0`, `self_sufficient true`, `evidence_bound true`) | `network: clean` (8 blocks, 7 layers, `rc=0`) | clean (`rc=0`) | `faults: 0` (`rc=0`, advisory R20 only) | none (`rc=0`) |
+| `gottlieb2022career/8\|d` | 31 (7/23/1) | 0 | pass (`rc=0`, `self_sufficient true`, `evidence_bound true`) | `network: clean` (8 blocks, 6 layers, `rc=0`) | clean (`rc=0`) | `faults: 0` (`rc=0`, advisory R20 only) | none (`rc=0`) |
+
+- **`4|a` `--premises` audit (10 hits, 0 hidden forward uses):** `4|a|a|a` (`变量表`, 2 rows naming `(1)` and `(4)`), `4|a|a|1|c` & `4|a|a|1|d` (`怎样进入模型` pointers to Eqs. `(2)`–`(3)`), `4|a|a|1|o` (Table 9 Col. `(1)` + pointer to Eq. `(3)`), `4|a|a|2` & `4|a|a|2|a` (nested-equation pointers `(1) → (2) → (3)` across Side variants), and `4|a|a|5|a` (Table 3 Panel A SE `(32.30)` matching `4|a|a|5|d` title).
+- **Handoff:** Ready for Stage 4 (`zt-model-import` + `zt-evidence-dialogue`) on all surviving models.
