@@ -1482,6 +1482,8 @@ fn initialize_database(root: &Path) -> Result<()> {
     let conn = Connection::open(db_path(root))
         .with_context(|| format!("failed to open {}", db_path(root).display()))?;
     tree_lock::register_sql_functions(&conn)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    coord::check_generation(&conn)?;
     let integrity: String = conn
         .query_row("PRAGMA quick_check", [], |row| row.get(0))
         .context("failed to run SQLite integrity check")?;
@@ -1533,6 +1535,16 @@ fn initialize_database(root: &Path) -> Result<()> {
             bail!("unsupported cards schema; database was not modified");
         }
     }
+    // Check declared generations before changing the schema or journal mode. A fresh archive
+    // has no metadata table for the Tree Lock generation query yet.
+    let metadata_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metadata')",
+        [],
+        |r| r.get(0),
+    )?;
+    if metadata_exists {
+        tree_lock::check_generation(&conn)?;
+    }
     conn.execute_batch(&format!(
         "
         {}
@@ -1547,9 +1559,6 @@ fn initialize_database(root: &Path) -> Result<()> {
         cards_table("IF NOT EXISTS cards")
     ))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    // R303 (S07-AC02/AC04): the generation this archive declares is validated before anything is
-    // repaired or migrated, so an unsupported version or a damaged lock table changes nothing.
-    tree_lock::check_generation(&conn)?;
     // R051/R304 (S07-AC05): remember which canonical protection exists now, so the triggers a Card
     // rebuild below drops with the table are re-created instead of being reported as tampering.
     let protection = tree_lock::canonical_protection(&conn)?;
@@ -1626,9 +1635,7 @@ fn initialize_database(root: &Path) -> Result<()> {
         }
     }
     {
-        // Multi-tree coordinates: identity, handles, Connection trees, placements and tree
-        // connections, plus the writer fence over every table. Installed after every Card-table
-        // rebuild and after the Lock tables exist, so the fence covers them too.
+        // Install fresh coordinate storage after the Lock tables and fence all writer tables.
         let _lock = acquire_edit_lock(root, "coordinate storage")?;
         coord::ensure_schema(&conn, root)?;
     }
@@ -2736,7 +2743,7 @@ fn validate_card_text(
     if authored_changed && card::body_starts_with_title(&parsed.title, &parsed.body) {
         bail!("duplicate leading title in Card body; keep the title only in its Card heading");
     }
-    link_index::validate(
+    gate::validate_authored_links(
         conn,
         &parsed.body,
         old.as_ref().map(|card| card.body.as_str()),
@@ -2852,6 +2859,10 @@ fn topic_id(location: &str) -> Result<&str> {
 }
 
 fn location_exists(conn: &Connection, location: &str) -> Result<bool> {
+    Ok(stored_location_exists(conn, location)? || coord::secondary_coordinate_at(conn, location)?.is_some())
+}
+
+fn stored_location_exists(conn: &Connection, location: &str) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM cards WHERE location = ?1)",
         [location],
@@ -2872,7 +2883,7 @@ fn target_exists(conn: &Connection, target: &str) -> Result<bool> {
         return Ok(coord::canonical(conn, target)?.is_some());
     }
     if is_valid_location(target) {
-        location_exists(conn, target)
+        stored_location_exists(conn, target)
     } else if literature::validate_citation_key(target).is_ok() {
         citation_key_exists(conn, target)
     } else {
@@ -2925,6 +2936,9 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
         bail!(
             "`{target}` is a coordinate (a station of a tree), not a Card address; read it with get_card, or act on the Card at its home address"
         );
+    }
+    if let Some((canonical, coord_id)) = coord::secondary_coordinate_at(conn, target)? {
+        bail!("{}", coord::secondary_coordinate_link_hint(target, &canonical, &coord_id));
     }
     bail!("card `{target}` does not exist")
 }
@@ -3053,7 +3067,11 @@ fn next_side_successor(
     excluding: &BTreeSet<String>,
 ) -> Result<String> {
     let mut max_label = 0;
-    for address in addresses(conn)? {
+    let mut occupied = coord::occupied_paths_in_tree(conn, tree_id(parent))?;
+    if occupied.is_empty() {
+        occupied = addresses(conn)?;
+    }
+    for address in occupied {
         if excluding.contains(&address) {
             continue;
         }
@@ -3066,6 +3084,17 @@ fn next_side_successor(
 
 fn descendant_locations(conn: &Connection, root: &str) -> Result<BTreeSet<String>> {
     let locations = addresses(conn)?;
+    if !root.starts_with('~')
+        && let Some(tree) = coord::tree_by_public_key(conn, tree_id(root))?
+    {
+        let shape = coord::load_tree_shape(conn, &tree)?;
+        if let Some(id) = shape.by_coord.get(root) {
+            return Ok(shape.subtree(id).into_iter().filter_map(|id| {
+                let path = &shape.coord[&id];
+                locations.contains(path).then(|| path.clone())
+            }).collect());
+        }
+    }
     let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for location in &locations {
         if let Some(parent) = parent_location(location)
@@ -3223,7 +3252,7 @@ fn insert_literature_card(
     bibtex: &str,
     text: &str,
 ) -> Result<gate::Accepted> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let accepted = insert_literature_card_tx(&tx, citation_key, workspace, bibtex, text)?;
     link_index::source_changed(&tx, citation_key)?;
     tx.commit()?;
@@ -3265,6 +3294,10 @@ fn insert_literature_card_tx(
             workspace.id(),
             CardType::Idea.id()
         ],
+    )?;
+    coord::register_root_card_tx(
+        conn, conn.last_insert_rowid(), coord::TreeRole::Literature, citation_key,
+        None, workspace, &parsed.title, None,
     )?;
     Ok(accepted)
 }
@@ -4015,7 +4048,7 @@ pub(crate) fn insert_card_with_term(
     term_name: Option<&str>,
     text: &str,
 ) -> Result<gate::Accepted> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let accepted = insert_card_tx_with_term(
         &tx,
         location,
@@ -4109,7 +4142,14 @@ pub(crate) fn insert_card_tx_with_term(
         ],
     )?;
     if is_topic {
+        let key = tree_id(location);
+        coord::register_root_card_tx(
+            conn, conn.last_insert_rowid(), coord::TreeRole::Topic, key,
+            Some(key.parse()?), workspace, &parsed.title, None,
+        )?;
         bump_next_topic_id(conn, location)?;
+    } else {
+        coord::register_regular_card_tx(conn, conn.last_insert_rowid(), location, workspace, &parsed.title)?;
     }
     Ok(accepted)
 }
@@ -4218,8 +4258,10 @@ fn shell_delete(command: DeleteCommand) -> Result<()> {
     tree_lock::ensure_unlocked(&conn, plan.gate())?;
     coord_lock::ensure_delete_allowed(&conn, &plan.delete_set)?;
     print_delete_verification(&plan);
-    for line in coord::delete_impact_lines(&conn, &plan.delete_set, plan.kept_root().map(|(root, _)| root))? {
-        println!("{line}");
+    if plan.surviving_root_impact().is_empty() {
+        for line in coord::delete_impact_lines(&conn, &plan.delete_set, plan.kept_root().map(|(root, _)| root))? {
+            println!("{line}");
+        }
     }
     read_confirmation(&mut input, &plan.confirmation)?;
     let result = apply_delete_plan(&mut conn, plan)?;
@@ -4263,8 +4305,8 @@ struct DeleteResult {
 enum DeleteScope {
     /// The Card and its successors.
     Subtree,
-    /// Every Card of the tree, its root included.
-    Tree,
+    /// The whole Tree, including its root Coordinate.
+    Tree { surviving_root_impact: Vec<String> },
     /// Every Card of the tree except its root, which keeps its address and authored identity.
     KeepRoot { root: String, workspace: Workspace },
     /// Every Card of the archive, with the Topic allocation the delete resets (R264–R275).
@@ -4291,7 +4333,7 @@ impl DeletePlan {
     fn gate(&self) -> tree_lock::Change<'_> {
         match self.scope {
             DeleteScope::All { .. } => tree_lock::Change::DeleteAll,
-            DeleteScope::Subtree | DeleteScope::Tree | DeleteScope::KeepRoot { .. } => {
+            DeleteScope::Subtree | DeleteScope::Tree { .. } | DeleteScope::KeepRoot { .. } => {
                 tree_lock::Change::Delete(self)
             }
         }
@@ -4301,7 +4343,14 @@ impl DeletePlan {
     fn kept_root(&self) -> Option<(&str, Workspace)> {
         match &self.scope {
             DeleteScope::KeepRoot { root, workspace } => Some((root.as_str(), *workspace)),
-            DeleteScope::Subtree | DeleteScope::Tree | DeleteScope::All { .. } => None,
+            DeleteScope::Subtree | DeleteScope::Tree { .. } | DeleteScope::All { .. } => None,
+        }
+    }
+
+    fn surviving_root_impact(&self) -> &[String] {
+        match &self.scope {
+            DeleteScope::Tree { surviving_root_impact } => surviving_root_impact,
+            _ => &[],
         }
     }
 
@@ -4427,30 +4476,34 @@ fn plan_delete(conn: &Connection, at: &str, keep_root: bool) -> Result<DeletePla
         bail!("keep root takes a Tree root (a Topic like 3/0 or a Citation key); `{at}` is a Regular Card");
     }
     let tree = tree_id(&card.address);
-    let members = |conn: &Connection| -> Result<Vec<String>> {
-        Ok(addresses(conn)?
-            .into_iter()
-            .filter(|member| is_tree_member(member, tree))
-            .collect())
-    };
-    let (scope, delete_set) = if keep_root {
-        (
-            DeleteScope::KeepRoot {
-                root: card.address.clone(),
-                workspace: card.workspace,
-            },
-            members(conn)?
+    let delete_set = if is_tree_root {
+        if coord::installed(conn) {
+            coord::tree_delete_classification(conn, tree, keep_root)?.0
+        } else {
+            addresses(conn)?
                 .into_iter()
-                .filter(|address| *address != card.address)
-                .collect::<BTreeSet<_>>(),
-        )
-    } else if is_tree_root {
-        (DeleteScope::Tree, members(conn)?.into_iter().collect())
+                .filter(|member| is_tree_member(member, tree))
+                .filter(|member| !keep_root || member != &card.address)
+                .collect()
+        }
     } else {
-        (
-            DeleteScope::Subtree,
-            descendant_locations(conn, &card.address)?,
-        )
+        descendant_locations(conn, &card.address)?
+    };
+    let scope = if keep_root {
+        DeleteScope::KeepRoot {
+            root: card.address.clone(),
+            workspace: card.workspace,
+        }
+    } else if is_tree_root {
+        let surviving_root_impact = if delete_set.contains(&card.address) {
+            Vec::new()
+        } else {
+            // With the root Card surviving, the delete set alone cannot identify the Tree.
+            coord::delete_tree_impact_lines(conn, &delete_set, &card.address)?
+        };
+        DeleteScope::Tree { surviving_root_impact }
+    } else {
+        DeleteScope::Subtree
     };
     let confirmation = if is_tree_root {
         card.address.clone()
@@ -4506,10 +4559,13 @@ fn delete_verification_lines(plan: &DeletePlan) -> Vec<String> {
     for location in &plan.delete_set {
         lines.push(format!("delete {location}"));
     }
-    lines.push(format!(
-        "successors: {}",
+    let successors = if plan.surviving_root_impact().is_empty() {
         plan.delete_set.len().saturating_sub(1)
-    ));
+    } else {
+        plan.delete_set.len()
+    };
+    lines.push(format!("successors: {successors}"));
+    lines.extend_from_slice(plan.surviving_root_impact());
     if !plan.inbound.is_empty() {
         match &plan.into {
             Some(into) => {
@@ -4589,7 +4645,7 @@ fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteRe
     let repoint = plan.repoint_mapping();
     let host_work = match plan.kept_root() {
         Some((root, _)) => coord::keep_root_has_host_work(conn, root)?,
-        None => false,
+        None => matches!(plan.scope, DeleteScope::Tree { .. }),
     };
     if plan.delete_set.is_empty() && repoint.is_empty() && compaction.is_empty() && !host_work {
         // An already empty unlocked Tree: the owner still confirmed the plan, and nothing is
@@ -4602,7 +4658,7 @@ fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteRe
             next_topic_reset: false,
         });
     }
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tree_lock::ensure_unlocked(&tx, plan.gate())?;
     let mut changes = link_index::Changes::default();
     apply_delete_plan_into(&tx, &plan, &mut changes)?;
@@ -4654,8 +4710,12 @@ fn apply_delete_plan_into(
         }
     }
     changes.drop_sources(tx, &plan.delete_set)?;
-    // The host data the deleted Cards own; stations elsewhere become Missing mounts.
-    coord::delete_hosts(tx, &plan.delete_set, plan.kept_root().map(|(root, _)| root))?;
+    // Coordinate retirement and the Card trigger's filing-pointer clear share this transaction.
+    if matches!(plan.scope, DeleteScope::Tree { .. }) {
+        coord::delete_tree_hosts(tx, &plan.delete_set, &plan.confirmation)?;
+    } else {
+        coord::delete_hosts(tx, &plan.delete_set, plan.kept_root().map(|(root, _)| root))?;
+    }
     for address in &plan.delete_set {
         tx.execute(
             "DELETE FROM cards WHERE location = ?1 OR citation_key = ?1",
@@ -4685,7 +4745,7 @@ fn apply_delete_all_plan(
             next_topic_reset: true,
         });
     }
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tree_lock::ensure_unlocked(&tx, tree_lock::Change::DeleteAll)?;
     coord::delete_all_hosts(&tx)?;
     let deleted_count = tx.execute("DELETE FROM cards", [])?;
@@ -4733,24 +4793,25 @@ fn side_compaction_mapping(
     };
     let deleted_rank = side_label_to_number(last);
     let cards = addresses(conn)?;
-    let mut labels = BTreeSet::new();
-    for address in &cards {
-        if delete_set.contains(address) {
-            continue;
-        }
-        if let Some(label) = immediate_side_label(address, &parent)
-            && side_label_to_number(&label) > deleted_rank
+    let mut occupied = coord::occupied_paths_in_tree(conn, tree_id(&parent))?;
+    occupied.extend(cards.iter().filter(|address| tree_id(address) == tree_id(&parent)).cloned());
+    let mut siblings = BTreeMap::new();
+    for path in occupied {
+        if parent_location(&path).as_deref() == Some(parent.as_str())
+            && let Some(label) = immediate_side_label(&path, &parent)
         {
-            labels.insert(label);
+            siblings.insert(side_label_to_number(&label), path);
         }
     }
+    // Keep an existing gap and leave Secondary siblings at their own slots.
+    if siblings.keys().copied().ne(1..=siblings.len() as u64)
+        || siblings.range((deleted_rank + 1)..).any(|(_, path)| !cards.contains(path))
+    {
+        return Ok(BTreeMap::new());
+    }
     let mut prefix_map = BTreeMap::new();
-    for label in labels {
-        let rank = side_label_to_number(&label);
-        prefix_map.insert(
-            format!("{parent}|{label}"),
-            format!("{parent}|{}", number_to_side_label(rank - 1)),
-        );
+    for (rank, path) in siblings.range((deleted_rank + 1)..) {
+        prefix_map.insert(path.clone(), format!("{parent}|{}", number_to_side_label(rank - 1)));
     }
     let mut mapping = BTreeMap::new();
     for address in cards {
@@ -4776,6 +4837,15 @@ fn apply_location_mapping_tx(
     mapping: &BTreeMap<String, String>,
     changes: &mut link_index::Changes,
 ) -> Result<()> {
+    apply_location_mapping_with_insert_tx(conn, mapping, changes, None)
+}
+
+fn apply_location_mapping_with_insert_tx(
+    conn: &Connection,
+    mapping: &BTreeMap<String, String>,
+    changes: &mut link_index::Changes,
+    pending: Option<(&str, &str)>,
+) -> Result<()> {
     if mapping.is_empty() {
         return Ok(());
     }
@@ -4786,27 +4856,30 @@ fn apply_location_mapping_tx(
             "`{native}` lives in a Connection tree: move its station with move_placement, or move its home into a Topic with promote_card"
         );
     }
-    // Every re-keying write passes here: a Literature-scoped connection rewrites no Connection-tree
-    // Card, whichever tool planned the mapping.
-    scope::ensure_no_connection_rewrite(conn, mapping)?;
-    // A Card a locked Connection tree or Topic mounts keeps its address (`pinned-move`).
-    if !mapping.keys().all(|address| address.starts_with("__")) {
-        coord_lock::ensure_moves_allowed(conn, mapping.keys().filter(|a| !a.starts_with("__")))?;
-    }
+    // Legacy layout plans can include Secondary paths. Only canonical filing addresses
+    // have Card rows, authored Links, or Spread metadata to rewrite.
+    let authored = filing_link_mapping(conn, mapping)?;
+    scope::ensure_no_connection_rewrite(conn, &authored)?;
+    coord_lock::ensure_moves_allowed(conn, authored.keys().filter(|a| !a.starts_with("__")))?;
     tree_lock::ensure_unlocked(conn, tree_lock::Change::Mapping(mapping))?;
     let indexed = link_index::ready(conn);
     let sources = if indexed {
-        link_index::rewrite_sources(conn, mapping.keys())?
+        link_index::rewrite_sources(conn, authored.keys())?
     } else {
         BTreeSet::new()
     };
-    for old in mapping.keys() {
+    if pending.is_some() {
+        coord::sync_filing_moves_with_insert_tx(conn, mapping, pending)?;
+    } else {
+        coord::sync_filing_moves_tx(conn, mapping)?;
+    }
+    for old in authored.keys() {
         conn.execute(
             "UPDATE cards SET location = ?1 WHERE location = ?2",
             params![format!("__moving__{old}"), old],
         )?;
     }
-    for (old, new) in mapping {
+    for (old, new) in &authored {
         conn.execute(
             "UPDATE cards SET location = ?1 WHERE location = ?2",
             params![new, format!("__moving__{old}")],
@@ -4815,15 +4888,15 @@ fn apply_location_mapping_tx(
     let cards = if indexed {
         sources
             .iter()
-            .map(|source| load_card(conn, mapping.get(source).unwrap_or(source)))
+            .map(|source| load_card(conn, authored.get(source).unwrap_or(source)))
             .collect::<Result<Vec<_>>>()?
     } else {
         load_cards(conn)?
     };
     // The rewritten bodies name exactly the re-keyed targets, so their rows need no re-read.
-    changes.renamed(conn, mapping)?;
+    changes.renamed(conn, &authored)?;
     for card in cards {
-        let text = replace_link_locations(&card.text, mapping)?;
+        let text = replace_link_locations(&card.text, &authored)?;
         if text != card.text {
             conn.execute(
                 "UPDATE cards SET text = ?1 WHERE row_id = ?2",
@@ -4834,9 +4907,24 @@ fn apply_location_mapping_tx(
             changes.rewrote(&card.address);
         }
     }
-    // Topic-side mounts follow their anchors by identity (proposal §7.3, Phase 4).
-    coord::follow_anchor_moves(conn, mapping)?;
-    spread::follow(conn, mapping, &BTreeSet::new())
+    spread::follow(conn, &authored, &BTreeSet::new())
+}
+
+fn filing_link_mapping(
+    conn: &Connection,
+    mapping: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>> {
+    let mut authored = BTreeMap::new();
+    for (old, new) in mapping {
+        // The Literature metadata editor has already stored the root's new Citation key.
+        if stored_location_exists(conn, old)?
+            || (is_literature_tree_id(old)
+                && (citation_key_exists(conn, old)? || citation_key_exists(conn, new)?))
+        {
+            authored.insert(old.clone(), new.clone());
+        }
+    }
+    Ok(authored)
 }
 
 fn shell_move(at: &str, target: &place::Target, alone: bool) -> Result<()> {
@@ -5002,10 +5090,16 @@ fn move_mapping(
     new_root: &str,
     moved: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, String>> {
-    let locations = addresses(conn)?;
+    let mut occupied = addresses(conn)?;
+    let old_tree = tree_id(old_root);
+    let new_tree = tree_id(new_root);
+    occupied.extend(coord::occupied_paths_in_tree(conn, old_tree)?);
+    if new_tree != old_tree {
+        occupied.extend(coord::occupied_paths_in_tree(conn, new_tree)?);
+    }
     let mut mapping = BTreeMap::new();
     for location in moved {
-        let edges = path_edges(old_root, location, &locations)?;
+        let edges = path_edges(old_root, location, &occupied)?;
         let mut target = new_root.to_string();
         for edge in edges {
             target = match edge {
@@ -5047,6 +5141,7 @@ fn path_edges(root: &str, location: &str, existing: &BTreeSet<String>) -> Result
 }
 
 fn count_rewritten_links(conn: &Connection, mapping: &BTreeMap<String, String>) -> Result<usize> {
+    let mapping = filing_link_mapping(conn, mapping)?;
     if link_index::ready(conn) {
         // One index row per authored macro, Term uses included (S2, #230).
         return link_index::occurrences_of(conn, mapping.keys());
@@ -5055,7 +5150,7 @@ fn count_rewritten_links(conn: &Connection, mapping: &BTreeMap<String, String>) 
     for card in load_cards(conn)? {
         let parsed = parse_card_text(&card.text)?;
         count += link::LinkBody::parse(&parsed.body)?
-            .rewrite_targets(mapping)
+            .rewrite_targets(&mapping)
             .count;
     }
     Ok(count)
@@ -5285,7 +5380,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp dir");
         initialize_database(temp.path()).expect("initialize database");
         let mut conn = open_db(temp.path()).expect("open database");
-        conn.execute(
+        let tx = conn.transaction().expect("seed Literature fixtures");
+        tx.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
              (NULL, 'KeepMe', 0, 1, '@book{KeepMe, title={Keep Me}}',\
               '# Keep Me\n\nbody\n\n<!-- zt:reverse-links -->\n'),\
@@ -5293,6 +5389,8 @@ mod tests {
             [],
         )
         .expect("insert the Literature tree");
+        coord::sync_raw_seeded_cards_for_test(&tx).expect("register the seeded filings");
+        tx.commit().expect("commit Literature fixtures");
         let before = load_card(&conn, "KeepMe").expect("root");
         let fingerprint = card::authored_fingerprint(&before).expect("fingerprint");
 

@@ -228,24 +228,6 @@ pub(crate) fn source_changed(conn: &Connection, at: &str) -> Result<()> {
     Ok(())
 }
 
-/// A Card took a new address while its authored Links stay as written (a promoted native Card
-/// `~7#4` → `3/6`): its rows are re-keyed as a **source** only. Targets spelled `~7#4` keep that
-/// spelling and still reach the Card through its handle. The Cards it links list its new address,
-/// and its own generated section lists every source citing either spelling.
-pub(crate) fn source_rekeyed(conn: &Connection, old: &str, new: &str) -> Result<()> {
-    if !ready(conn) {
-        return crate::regenerate_reverse_links_tx(conn);
-    }
-    conn.execute("UPDATE links SET source=?2 WHERE source=?1", params![old, new])?;
-    if charts_ready(conn) {
-        conn.execute("UPDATE chart_links SET source=?2 WHERE source=?1", params![old, new])?;
-    }
-    let mut affected: BTreeSet<String> = source_rows(conn, new)?.into_iter().map(|row| row.2).collect();
-    affected.insert(new.to_string());
-    let changed = refresh_reverse(conn, &affected)?;
-    write_stats(conn, 1, affected.len(), changed)
-}
-
 /// A batch/edit owns the revision boundary and calls this before its commit.
 pub(crate) fn sync_source(conn: &Connection, at: &str) -> Result<()> {
     sync_sources(conn, &BTreeSet::from([at.to_string()]))

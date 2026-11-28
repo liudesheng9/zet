@@ -13,7 +13,7 @@
   'use strict';
 
   const FORMAT = 'zt-portable-export';
-  const VERSION = 2;
+  const VERSIONS = [2, 3, 4];
   const INBOUND_HEAD = 50;
   const SEARCH_LIMIT = 80;
   const SNIPPET = 40;
@@ -48,7 +48,9 @@
   /** Why a parsed file is no export this reader opens, or `null` when it is one. */
   function refusal(data) {
     if (!data || data.format !== FORMAT) return 'This file is not a ZET export.';
-    if (data.version !== VERSION && !(data.version === 3 && data.connection_tree)) return `This export has version ${data.version}; this page reads version ${VERSION}.`;
+    if (!VERSIONS.includes(data.version) || (data.version === 3 && !data.connection_tree)) {
+      return `This export has version ${data.version}; this page reads versions 2, 3, and 4.`;
+    }
     if (!Array.isArray(data.cards) || !data.cards.length) return 'This export holds no Cards.';
     return null;
   }
@@ -86,7 +88,7 @@
     const inboundCount = (address) => new Set([...(refers.get(address) || []), ...(uses.get(address) || [])]).size;
     const summaries = data.cards.map((card) => {
       const { text, html, bibtex, hubs, broken, models, model, ...summary } = card;
-      // A mounted Card of a Connection-tree export names its own Workspace in every answer.
+      // A Card can keep its own Workspace when it appears in another tree.
       return { ...summary, tree: data.tree.id, workspace: card.workspace || data.tree.workspace, inbound: inboundCount(card.address), lock: null, pinned_by: [] };
     });
     const search = data.cards.map((card) => {
@@ -105,7 +107,8 @@
   function outbound(ix, card) {
     const terms = new Set(card.term_use_targets || []);
     const live = (card.links || []).map((address) => {
-      const row = { address, title: reference(ix, address).title, workspace: ix.byAddress.has(address) ? ix.data.tree.workspace : null, broken: false };
+      const { title, workspace } = reference(ix, address);
+      const row = { address, title, workspace, broken: false };
       if (terms.has(address)) {
         row.kind = 'term';
         row.label = ix.byAddress.get(address)?.term ?? row.title;
@@ -153,7 +156,6 @@
     const answer = {
       address,
       tree: ix.data.tree.id,
-      // A mounted Card of a Connection-tree export names its own Workspace; the others share the tree's.
       workspace: card.workspace || ix.data.tree.workspace,
       kind: card.kind,
       type: card.type,
@@ -291,54 +293,77 @@
   }
 
   /**
-   * The Connection tree of a version-3 export (docs/multi-tree-coordinates-proposal.md §8.4): its
-   * stations by package-local ID, its connections by local endpoints, read-only. Every answer has
-   * the shape the service gives, so the page's station view works offline.
+   * The read-only Coordinate view of a v4 tree or v3 Connection tree. Each occurrence has a
+   * package-local Coordinate ID, while all occurrences of a live Card share its Card data.
    */
   function connectionTree(ix) {
     const ct = ix.data.connection_tree;
-    if (!ct) return null;
+    const stations = ix.data.coordinates ?? ct?.stations;
+    if (!stations) return null;
     if (ix.connection) return ix.connection;
-    const role = (address) => /^~/.test(address || '') ? 'connection' : /^\d/.test(address || '') ? 'topic' : 'literature';
+    const meta = ix.data.tree;
+    const handle = ct?.handle ?? meta.id;
+    const role = (address) => /^~/.test(address || '') ? 'connection' : /^\d+(?:\/|$)/.test(address || '') ? 'topic' : 'literature';
     const ordinals = new Map();
-    const placements = (ct.stations || []).map((s) => {
+    const coordinates = stations.map((s) => {
+      const id = s.coord_id ?? s.station ?? s.placement_id;
+      const parent = s.parent ?? s.parent_coord_id ?? s.parent_id ?? null;
       let ordinal = null;
       if (s.edge === 'side') {
-        const n = (ordinals.get(s.parent) || 0) + 1;
-        ordinals.set(s.parent, n);
+        const n = (ordinals.get(parent) || 0) + 1;
+        ordinals.set(parent, n);
         ordinal = n;
       }
       const missing = s.state === 'missing';
+      const slot = s.slot ?? ordinal;
+      const home = missing ? null : ix.byAddress.get(s.address);
+      const workspace = s.home_workspace === undefined ? (home?.workspace ?? meta.workspace) : s.home_workspace;
       return {
-        // A Missing mount and a live Card at a reused address are different Cards.
-        placement_id: s.station, coord: s.coord, card_id: missing ? `missing:${s.station}` : s.address, edge: s.edge, parent_id: s.parent || null, ordinal,
-        gloss: s.gloss || null, host: ct.handle, host_workspace: ix.data.tree.workspace,
-        status: missing ? 'missing' : 'live', home_address: s.address, home_role: role(s.address),
-        home_workspace: (ix.byAddress.get(s.address) || {}).workspace || ix.data.tree.workspace, title: s.title, origin: s.origin || 'mount',
-        can_edit_card: false, can_edit_placement: false, citation: `[[${s.address}]]`,
-        bookmark: `place:${s.station}`, offline_state: missing ? (s.detail || 'Missing mount (deleted in archive)') : 'in-package',
+        station: id, coord_id: id, placement_id: id, coord: s.coord,
+        card_id: s.card_id ?? (missing ? `missing:${id}` : s.address),
+        edge: s.edge, parent, parent_coord_id: parent, parent_id: parent, slot, ordinal: slot,
+        is_filing: s.is_filing ?? (s.edge === 'root' || s.origin === 'native'),
+        gloss: s.gloss ?? null, host: handle, tree: handle, tree_id: handle, tree_role: meta.kind, host_workspace: meta.workspace,
+        address: s.address, title: s.title, state: s.state, status: missing ? 'missing' : 'live',
+        home_address: s.address, home_role: role(s.address),
+        home_workspace: workspace, origin: s.origin || 'mount',
+        can_edit_card: false, can_edit_coordinate: false, can_edit_placement: false, citation: `[[${s.address}]]`,
+        bookmark: `place:${id}`, offline_state: missing ? (s.detail || 'Missing mount (deleted in archive)') : 'in-package',
       };
     });
-    const byId = new Map(placements.map((p) => [p.placement_id, p]));
+    const byId = new Map(coordinates.map((p) => [p.coord_id, p]));
+    ix.byCoordId = byId;
+    ix.byCoordPath = new Map(coordinates.map((p) => [p.coord, p]));
+    const occurrences = new Map();
+    for (const p of coordinates) occurrences.set(p.card_id, (occurrences.get(p.card_id) || 0) + 1);
+    for (const p of coordinates) {
+      p.places = occurrences.get(p.card_id);
+      p.repeat_count = p.places;
+    }
     const end = (id) => {
       const p = byId.get(id) || {};
-      return { placement_id: id, coord: p.coord, card_id: p.card_id, title: p.title, status: p.status };
+      return { coord_id: id, placement_id: id, coord: p.coord, card_id: p.card_id, title: p.title, status: p.status };
     };
-    const connections = (ct.connections || []).map((c, i) => {
+    const connections = (ix.data.connections ?? ct?.connections ?? []).map((c, i) => {
       const from = end(c.from);
       const to = end(c.to);
       const predicate = c.relation_label || c.relation_kind || (c.direction === 'directed' ? 'connects to' : '');
       const sentence = c.direction === 'directed' ? `${from.title} ${predicate} ${to.title}` : (predicate ? `${from.title} — ${predicate} — ${to.title}` : `${from.title} — ${to.title}`);
       return { connection_id: `c${i + 1}`, direction: c.direction, from, to, relation_label: c.relation_label || null, relation_kind: c.relation_kind || null, note: c.note || null, provenance: c.provenance, sentence, state: c.state };
     });
-    const native = placements.filter((p) => p.origin === 'native' && p.edge !== 'root').length;
+    const rootId = coordinates.find((p) => p.edge === 'root')?.coord_id ?? null;
+    const native = coordinates.filter((p) => p.is_filing && p.edge !== 'root').length;
+    const mounted = coordinates.filter((p) => !p.is_filing && p.edge !== 'root').length;
+    const untitled = meta.kind === 'connection' && meta.title === handle;
     const tree = {
       // An untitled root (its title is its own handle) reads as untitled offline too (D2).
-      tree: ct.handle, tree_id: ct.handle, title: ix.data.tree.title === ct.handle ? '' : ix.data.tree.title, untitled: ix.data.tree.title === ct.handle,
-      workspace: ix.data.tree.workspace, purpose: ct.purpose || null,
-      root_placement_id: placements.length ? placements[0].placement_id : null, placements, total_placements: placements.length,
-      connections, mounted: placements.length - 1 - native, native, missing: placements.filter((p) => p.status === 'missing').length,
-      locked: false, can_edit_tree: false, counts: `${placements.length - 1 - native} mounted · ${native} native · ${connections.length} connections`,
+      tree: handle, tree_id: handle, tree_role: meta.kind, title: untitled ? '' : meta.title, untitled,
+      workspace: meta.workspace, purpose: ct?.purpose ?? null,
+      root_coord_id: rootId, root_placement_id: rootId, coordinates, placements: coordinates,
+      total_coordinates: coordinates.length, total_placements: coordinates.length,
+      archive_revision: ix.data.exported?.archive_revision ?? 0,
+      connections, mounted, native, missing: coordinates.filter((p) => p.status === 'missing').length,
+      locked: false, can_edit_tree: false, counts: `${mounted} mounted · ${native} native · ${connections.length} connections`,
     };
     ix.connection = tree;
     return tree;
@@ -350,34 +375,44 @@
     const args = (request && request.args) || {};
     const ok = (value) => ({ status: 200, body: value });
     if (tool === 'list_side_mounts') {
-      // A Topic export carries the mounts beside its Cards, read-only.
-      const mounts = (ix.data.side_mounts || []).filter((m) => m.anchor === args.at).map((m) => ({ ...m, can_edit_placement: false, can_edit_card: false }));
-      return ok({ at: args.at, mounts });
+      return ok({ at: args.at, mounts: [], retired: true });
     }
-    if (tool === 'list_connection_trees' && !ix.data.connection_tree) return ok({ trees: [] });
-    if (tool === 'list_placements' && !ix.data.connection_tree) return ok({ placements: [], home: ix.byAddress.has(args.at) ? args.at : null });
+    const isConnection = Boolean(ix.data.connection_tree) || ix.data.tree.kind === 'connection';
+    if (tool === 'list_connection_trees' && !isConnection) return ok({ trees: [] });
     const tree = connectionTree(ix);
-    if (!tree) return { status: 400, body: { error: 'This export holds no Connection tree.' } };
+    if (tool === 'list_coordinates' || tool === 'list_placements') {
+      const at = String(args.card_id ?? (args.target_coord_id ? `place:${args.target_coord_id}` : args.at) ?? '');
+      const bookmark = at.startsWith('place:');
+      const resolvedCardId = bookmark
+        ? ix.byCoordId?.get(at.slice(6))?.card_id
+        : ix.byCoordPath?.get(at)?.card_id ?? at;
+      const coordinates = (tree?.coordinates || []).filter((p) =>
+        p.card_id === resolvedCardId || (!bookmark && p.status === 'live' && p.home_address === at));
+      const [first] = coordinates;
+      const home = first ? (first.status === 'live' ? first.home_address : null) : (ix.byAddress.has(at) ? at : null);
+      if (tool === 'list_placements' && !first) return ok({ placements: [], home });
+      return ok({
+        card_id: first?.card_id, home, placements: coordinates, coordinates, places: coordinates.length,
+        filing_coord_id: coordinates.find((p) => p.is_filing)?.coord_id ?? null,
+        archive_revision: tree?.archive_revision ?? ix.data.exported?.archive_revision ?? 0,
+      });
+    }
+    if (!tree || (tool === 'get_connection_tree' && !isConnection)) {
+      return { status: 400, body: { error: tool === 'get_tree_coordinates' ? 'This export holds no Coordinate data.' : 'This export holds no Connection tree.' } };
+    }
     switch (tool) {
-      case 'list_connection_trees':
-        return ok({ trees: [{ ...tree, placements: undefined, connections: tree.connections.length }].map(({ placements, ...t }) => ({ ...t, connections: tree.connections.length })) });
-      case 'get_connection_tree':
-        return ok(tree);
-      case 'list_placements': {
-        const at = String(args.at || '');
-        const station = at.startsWith('place:')
-          ? tree.placements.find((p) => p.placement_id === at.slice(6))
-          : tree.placements.find((p) => p.status === 'live' && (p.home_address === at || p.card_id === args.card_id));
-        if (!station) return ok({ placements: [], home: ix.byAddress.has(at) ? at : null });
-        return ok({ card_id: station.card_id, home: station.status === 'live' ? station.home_address : null, placements: [station] });
+      case 'list_connection_trees': {
+        const { coordinates, placements, connections, ...summary } = tree;
+        return ok({ trees: [{ ...summary, connections: connections.length }] });
       }
+      case 'get_connection_tree':
+      case 'get_tree_coordinates':
+        return ok(tree);
       case 'list_connections': {
-        const focus = args.placement_id;
-        const mine = tree.connections.filter((c) => !focus || c.from.placement_id === focus || c.to.placement_id === focus);
+        const focus = args.coord_id ?? args.placement_id;
+        const mine = tree.connections.filter((c) => !focus || c.from.coord_id === focus || c.to.coord_id === focus);
         return ok({ tree: tree.tree, connections: mine });
       }
-      case 'list_side_mounts':
-        return ok({ at: args.at, mounts: [] });
       default:
         return { status: 409, body: { error: notice('This function'), portable: true } };
     }
@@ -403,7 +438,12 @@
         case 'tree': {
           const { tree } = ix.data;
           if (query.get('id') !== tree.id) return { status: 400, body: { error: elsewhere(query.get('id')) } };
-          return ok({ tree: tree.id, root: tree.root, workspace: tree.workspace, kind: tree.kind, title: tree.title, cards: ix.summaries });
+          const answer = { tree: tree.id, root: tree.root, workspace: tree.workspace, kind: tree.kind, title: tree.title, cards: ix.summaries };
+          if (ix.data.version === 4) {
+            const view = connectionTree(ix);
+            if (view) Object.assign(answer, { coordinates: view.coordinates, connections: view.connections, archive_revision: view.archive_revision });
+          }
+          return ok(answer);
         }
         case 'card': return cardAnswer(ix, query.get('at'), query);
         case 'search': return ok(search(ix, query));

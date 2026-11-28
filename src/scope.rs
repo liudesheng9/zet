@@ -72,6 +72,35 @@ pub(crate) fn ensure_no_connection_rewrite(conn: &Connection, mapping: &BTreeMap
     Ok(())
 }
 
+/// A Literature-scoped delete cannot remove owned occurrences inside a Topic or Connection tree.
+pub(crate) fn ensure_literature_host_allowed(
+    role: crate::coord::TreeRole,
+    public_key: &str,
+) -> Result<()> {
+    let Some(tool) = LITERATURE_TOOL.with(|tool| tool.borrow().clone()) else {
+        return Ok(());
+    };
+    if role == crate::coord::TreeRole::Literature {
+        return Ok(());
+    }
+    let reason = if role == crate::coord::TreeRole::Connection {
+        "connection_tree"
+    } else {
+        "topic_tree"
+    };
+    Err(anyhow::Error::new(Refusal {
+        tool,
+        at: public_key.to_string(),
+        scope: Kind::Literature.id(),
+        reason,
+        message: format!(
+            "this connection writes only Literature trees: deleting this Card would also modify {} tree `{public_key}`",
+            role.id()
+        ),
+        item: None,
+    }))
+}
+
 /// The metadata row that holds the Topic title rule's similarity threshold.
 pub(crate) const SIMILARITY_KEY: &str = "scope.topic_similarity";
 /// The threshold when the archive declares none: 1.0, the same title key only. A lower threshold also
@@ -168,8 +197,10 @@ impl WriteScope {
         args: &Value,
         made_here: &BTreeSet<String>,
     ) -> Result<()> {
-        if crate::connection::is_write_tool(tool) {
-            let at = ["host", "tree", "placement_id", "connection_id", "source_tree", "at", "anchor_at"]
+        if crate::connection::is_write_tool(tool)
+            && (tool != "delete_card" || args.get("card_id").is_some_and(|id| !id.is_null()))
+        {
+            let at = ["at", "coord_id", "placement_id", "card_id", "host", "tree", "connection_id", "source_tree", "anchor_at"]
                 .iter()
                 .find_map(|field| args.get(*field).and_then(Value::as_str))
                 .unwrap_or_default();
@@ -178,7 +209,7 @@ impl WriteScope {
                     tool,
                     at,
                     "connection_tree",
-                    "this connection writes only Literature trees: it makes or changes no Connection tree, Topic-side mount or tree connection".to_string(),
+                    "this connection writes only through Literature Card tools; free-coordinate writes require an open connection".to_string(),
                 ));
             }
             if self.allow.is_some() {
@@ -190,35 +221,52 @@ impl WriteScope {
                 ));
             }
         }
+        let mut normalized = None;
         if self.kind == Kind::Literature {
-            // A Card named by a handle, or a promoted Card named by its handle, is checked at its
-            // resolved home: a Literature-scoped writer changes Literature-tree Cards only.
-            for field in ["at", "before", "into", "from", "through", "after", "side_of", "parent"] {
+            let mut targets = args.clone();
+            for field in ["at", "before", "into", "from", "through", "after", "side_of", "parent",
+                "to", "coord_id", "placement_id", "target_coord_id", "to_coord_id"] {
                 let Some(named) = args.get(field).and_then(Value::as_str) else { continue };
-                let resolved = crate::coord::canonical(conn, named)?.unwrap_or_else(|| named.to_string());
-                if named.starts_with('~') || resolved.starts_with('~') {
-                    return Err(self.refuse(
-                        tool,
-                        named,
-                        "connection_tree",
-                        format!("this connection writes only Literature trees: `{named}` is a Connection-tree Card"),
-                    ));
-                }
-                if resolved != named && crate::coord::TreeRole::of_address(&resolved) == crate::coord::TreeRole::Topic {
-                    return Err(self.refuse(
-                        tool,
-                        named,
-                        "topic_tree",
-                        format!("this connection writes only Literature trees: `{named}` is the Topic-tree Card `{resolved}`"),
-                    ));
+                targets[field] = json!(self.literature_target(conn, tool, named)?);
+            }
+            for field in ["side", "sources", "direct"] {
+                let Some(items) = targets.get_mut(field).and_then(Value::as_array_mut) else { continue };
+                for item in items {
+                    match item {
+                        Value::String(at) => *at = self.literature_target(conn, tool, at)?,
+                        Value::Array(pair) => {
+                            for at in pair.iter_mut().filter_map(|value| match value {
+                                Value::String(at) => Some(at),
+                                _ => None,
+                            }) {
+                                *at = self.literature_target(conn, tool, at)?;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
-            self.check_literature(conn, tool, args)?;
+            self.check_literature(conn, tool, &targets)?;
+            normalized = Some(targets);
         }
         if let Some(allowed) = &self.allow {
-            self.check_allowed(tool, args, allowed, made_here)?;
+            self.check_allowed(tool, normalized.as_ref().unwrap_or(args), allowed, made_here)?;
         }
         Ok(())
+    }
+
+    fn literature_target(&self, conn: &Connection, tool: &str, named: &str) -> Result<String> {
+        let (address, _) = crate::read::read_address(conn, named)?;
+        if crate::coord::is_handle(named) || address.starts_with('~') {
+            return Err(self.refuse(tool, named, "connection_tree",
+                format!("this connection writes only Literature trees: `{named}` is a Connection-tree Card")));
+        }
+        if address != named && crate::coord::TreeRole::of_address(&address) == crate::coord::TreeRole::Topic {
+            return Err(self.refuse(tool, named, "topic_tree", format!(
+                "this connection writes only Literature trees: `{named}` is the Topic-tree Card `{address}`",
+            )));
+        }
+        Ok(address)
     }
 
     /// Check the Link rewrites of `tool` against this scope until the guard drops.

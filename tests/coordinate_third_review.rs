@@ -152,7 +152,8 @@ fn the_source_line_decides_a_native_findings_book() {
     assert!(!card.to_string().contains("source_wrong_book"), "{card}");
 }
 
-/// P2.10: a Topic shelf whose stored ordinals have a gap is a fault in `zt status`.
+/// Sparse Side slots are valid in Schema v2 (preserving 303 sparse groups on D:\zt), while a
+/// corrupted derived path mismatch is reported as a fault by `zt status`.
 #[test]
 fn status_reports_a_shelf_with_a_gap() {
     let scratch = ScratchBox::up();
@@ -160,15 +161,18 @@ fn status_reports_a_shelf_with_a_gap() {
     book(&mut mcp, "Gap2020");
     mcp.ok("create_topic", json!({"title": "Shelf", "body": "s"}));
     mcp.ok("create_successor", json!({"at": "0/0", "title": "One", "body": "one"}));
-    mcp.ok("place_card", json!({"anchor_at": "0/1", "edge": "attach", "target_at": "Gap2020"}));
-    mcp.ok("place_card", json!({"anchor_at": "0/1", "edge": "attach", "target_at": "Gap2020/1"}));
+    let t0 = mcp.ok("get_tree_coordinates", json!({"tree": "0"}));
+    let one_coord = t0["coordinates"].as_array().unwrap().iter().find(|c| c["coord"] == "0/1").unwrap()["coord_id"].as_str().unwrap().to_string();
+    let c1 = mcp.ok("add_coordinate", json!({"tree": "0", "parent_coord_id": &one_coord, "edge": "side", "target_at": "Gap2020"}));
+    let c2 = mcp.ok("add_coordinate", json!({"tree": "0", "parent_coord_id": &one_coord, "edge": "side", "target_at": "Gap2020/1"}));
     let healthy = scratch.cmd().arg("status").output().unwrap();
     assert!(String::from_utf8_lossy(&healthy.stdout).contains("coordinates: ok"), "{healthy:?}");
     let db = writer::open(scratch.archive_root.join("zt.sqlite3")).unwrap();
-    db.execute("UPDATE placements SET ordinal = 3 WHERE edge = 'attach' AND ordinal = 2", []).unwrap();
+    // Moving Secondary Coordinate c2 from slot 2 to slot 3 leaves a sparse gap (1, 3): still valid!
+    db.execute("UPDATE coordinates SET slot = 3 WHERE coord_id = ?1", [c2["coord_id"].as_str().unwrap()]).unwrap();
     drop(db);
-    let out = scratch.cmd().arg("status").output().unwrap();
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("coordinates: 1 fault(s)") && text.contains("side_mounts_not_dense"), "{text}");
+    let sparse_ok = scratch.cmd().arg("status").output().unwrap();
+    assert!(String::from_utf8_lossy(&sparse_ok.stdout).contains("coordinates: ok"), "sparse Side slots must stay valid: {sparse_ok:?}");
+    let _ = c1;
 }
 

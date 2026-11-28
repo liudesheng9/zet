@@ -39,8 +39,9 @@ fn archive_with_term_list(heads: usize) -> tempfile::TempDir {
     let temp = tempfile::tempdir().expect("tempdir");
     crate::initialize_database(temp.path()).expect("initialize");
     let conn = crate::open_db(temp.path()).unwrap();
+    let tx = conn.unchecked_transaction().expect("seed term fixtures");
     let insert = |location: Option<&str>, key: Option<&str>, lit: bool, text: &str, card_type: &str, name: Option<&str>| {
-        conn.execute(
+        tx.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, term_name)
              VALUES(?1, ?2, 0, ?3, ?4, ?5, 'agent', ?6, ?7)",
             rusqlite::params![location, key, lit, lit.then_some("@book{bk, title={B}}"), text, card_type, name],
@@ -58,6 +59,8 @@ fn archive_with_term_list(heads: usize) -> tempfile::TempDir {
         insert(Some(&format!("bk/1|{}", label(n))), None, false, &format!("# {name}\n\n{name}的定义。\n"), "term", Some(&name));
     }
     insert(Some("bk/2"), None, false, "# 一张卡\n\n这里用到[[术语5@bk/1|e]]。\n", "idea", None);
+    crate::coord::sync_raw_seeded_cards_for_test(&tx).expect("register the seeded filings");
+    tx.commit().expect("commit term fixtures");
     temp
 }
 
@@ -336,15 +339,18 @@ fn load_pointer_applies_only_its_latest_answer() {
 fn archive_with_many_inbound() -> tempfile::TempDir {
     let temp = archive_with_term_list(3);
     let conn = crate::open_db(temp.path()).unwrap();
+    let tx = conn.unchecked_transaction().expect("seed inbound fixtures");
     for n in 0..60 {
         let tail = if n < 55 { "这里用到[[术语1@bk/1|a]]。" } else { "" };
         let near = if n < 3 { " 见[[bk/1|b]]。" } else { "" };
-        conn.execute(
+        tx.execute(
             "INSERT INTO cards(location, is_topic, is_lit, text, workspace, card_type) VALUES(?1, 0, 0, ?2, 'agent', 'idea')",
             rusqlite::params![format!("bk/{}", 3 + n), format!("# 卡{n}\n\n参见[[bk/2]]。{tail}{near}\n")],
         )
         .unwrap();
     }
+    crate::coord::sync_raw_seeded_cards_for_test(&tx).expect("register the seeded filings");
+    tx.commit().expect("commit inbound fixtures");
     temp
 }
 

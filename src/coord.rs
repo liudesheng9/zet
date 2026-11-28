@@ -1,37 +1,22 @@
-//! Multi-tree coordinates (docs/multi-tree-coordinates-proposal.md): one Card, one canonical Home,
-//! at most one coordinate per tree, and an identifiable author for every claimed relationship.
-//!
-//! This module owns the storage that sits beside `cards`:
-//!
-//! - `card_identity`: one immutable `card_id` per Card, kept in step with `cards` by SQL triggers,
-//!   retired (never deleted) when its Card is deleted;
-//! - `card_handles`: the permanent citation handles `~7` (a Connection root) and `~7#4` (a native
-//!   Card issued by Connection tree 7), never reused;
-//! - `connection_trees`, `placements` and `placement_edges`: the Connection trees, the occurrences of
-//!   Cards in Connection trees and beside Topic Cards, and the tree-local connections between two
-//!   occurrences of one Connection tree;
-//! - `retired_placements`: the occurrence IDs a write removed, so a `place:<uuid>` bookmark can say
-//!   "removed" rather than "unknown".
-//!
-//! The address grammar is a partition: a Topic Location starts with a digit, a Literature address
-//! with an ASCII letter, and a Connection handle or coordinate with `~`. `/` always means tree
-//! traversal and `#` always means an immutable handle. Coordinates (`~7/2|a`, `3/2+1`) are
-//! navigation only and are refused inside `[[…]]`.
+//! Stable Card identities and handles, plus coordinate topology shared by all three Tree roles.
+//! Each live Card's filing pointer is enforced by a deferred foreign key. Secondary Coordinates
+//! can recur in the same Tree and keep their own paths, children, glosses, and connections.
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use crate::Workspace;
 
 /// The coordinate storage generation this binary installs and understands.
-pub(crate) const SCHEMA_VERSION: &str = "1";
+pub(crate) const SCHEMA_VERSION: &str = "2";
 const SCHEMA_KEY: &str = "coordinates_schema_version";
 /// The writer capability an upgraded archive requires of every writing connection. A connection
 /// of an older `zt` lacks the SQL function, so every guarded write it attempts fails.
-const WRITER_EPOCH: i64 = 1;
+pub(crate) const WRITER_EPOCH: i64 = 2;
+pub(crate) const DUMP_VERSION: u64 = 2;
 
 /// The longest positional gloss, placement note and connection label, in Unicode scalar values.
 pub(crate) const GLOSS_MAX: usize = 240;
@@ -55,8 +40,7 @@ pub(crate) const RELATION_KINDS: [&str; 8] = [
 // Tree roles and the address grammar
 // ---------------------------------------------------------------------------------------------
 
-/// The three structural tree roles. A Card's Home role follows from its stored address, which is a
-/// partition of the address grammar, so no column stores it.
+/// Structural roles shared by Trees and the Cards filed in them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) enum TreeRole {
     Topic,
@@ -65,6 +49,15 @@ pub(crate) enum TreeRole {
 }
 
 impl TreeRole {
+    pub(crate) fn from_stored(role: &str) -> TreeRole {
+        match role {
+            "topic" => Self::Topic,
+            "literature" => Self::Literature,
+            "connection" => Self::Connection,
+            _ => unreachable!("invalid stored Tree role {role}"),
+        }
+    }
+
     pub(crate) fn id(self) -> &'static str {
         match self {
             TreeRole::Topic => "topic",
@@ -86,6 +79,7 @@ impl TreeRole {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn of(card: &crate::Card) -> TreeRole {
         TreeRole::of_address(&card.address)
     }
@@ -141,49 +135,46 @@ pub(crate) fn is_card_address(text: &str) -> bool {
         || is_handle(text)
 }
 
-/// A navigation coordinate: a station of a Connection tree or a Topic-side mount. Never a Card
-/// address: it changes when the tree is reorganized.
+/// A Connection tree's navigation path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Coordinate {
-    /// `~n/0` (the root) or `~n/<path>` with the legacy Direct/Side arithmetic.
+    /// `~n/0` (the root) or `~n/<path>` with Direct and Side segments.
     Connection { tree: u64, path: String },
-    /// `<topic home location>+k`.
-    TopicMount { anchor: String, ordinal: u64 },
 }
 
 impl Coordinate {
     pub(crate) fn parse(text: &str) -> Option<Coordinate> {
-        if let Some(rest) = text.strip_prefix('~') {
-            let (tree, path) = rest.split_once('/')?;
-            let tree = positive(tree)?;
-            if path == "0" || crate::is_valid_regular_location(&format!("0/{path}")) {
-                return Some(Coordinate::Connection {
-                    tree,
-                    path: path.to_string(),
-                });
+        let (tree, path) = text.strip_prefix('~')?.split_once('/')?;
+        let tree = positive(tree)?;
+        (path == "0" || crate::is_valid_regular_location(&format!("0/{path}"))).then(|| {
+            Coordinate::Connection {
+                tree,
+                path: path.to_string(),
             }
-            return None;
-        }
-        let (anchor, ordinal) = text.rsplit_once('+')?;
-        let ordinal = positive(ordinal)?;
-        let topic = crate::tree_id(anchor);
-        if !crate::valid_topic_id(topic) || !crate::is_valid_location(anchor) {
-            return None;
-        }
-        Some(Coordinate::TopicMount {
-            anchor: anchor.to_string(),
-            ordinal,
         })
     }
+}
 
+fn is_retired_topic_mount(text: &str) -> bool {
+    text.rsplit_once('+').is_some_and(|(anchor, suffix)| {
+        crate::valid_topic_id(crate::tree_id(anchor))
+            && crate::is_valid_location(anchor)
+            && positive(suffix).is_some()
+    })
 }
 
 pub(crate) fn is_coordinate(text: &str) -> bool {
-    Coordinate::parse(text).is_some()
+    // Route retired spellings through the same refusal paths as navigation targets.
+    Coordinate::parse(text).is_some() || is_retired_topic_mount(text)
 }
 
 /// The hint a refused `[[coordinate]]` carries: cite the Card, or bookmark the station.
 pub(crate) fn coordinate_link_hint(target: &str) -> String {
+    if is_retired_topic_mount(target) {
+        return format!(
+            "`{target}` uses retired Topic navigation coordinate syntax (`+k`). Use a current Coordinate path or a `place:<coord_id>` bookmark for navigation. Cite the Card by its canonical address or handle."
+        );
+    }
     format!(
         "`{target}` is a navigation coordinate, which changes when its tree is reorganized; cite the Card's canonical address or handle instead (for example `[[~7#4]]` or `[[Hart1995]]`), or bookmark the station with a Markdown link `[label](place:<placement id>)`"
     )
@@ -239,7 +230,8 @@ fn stored_title(text: &str) -> String {
 pub(crate) fn register_sql_functions(conn: &Connection) -> Result<()> {
     use rusqlite::functions::FunctionFlags;
     conn.create_scalar_function("zt_uuid_v4", 0, FunctionFlags::SQLITE_UTF8, |_| {
-        new_uuid().map_err(|error| rusqlite::Error::UserFunctionError(Box::from(format!("{error:#}"))))
+        new_uuid()
+            .map_err(|error| rusqlite::Error::UserFunctionError(Box::from(format!("{error:#}"))))
     })
     .context("failed to register zt_uuid_v4")?;
     conn.create_scalar_function(
@@ -263,139 +255,137 @@ pub(crate) fn register_sql_functions(conn: &Connection) -> Result<()> {
 }
 
 const TABLES_SQL: &str = "
-CREATE TABLE IF NOT EXISTS card_identity (
-    card_id         TEXT NOT NULL PRIMARY KEY,
-    card_row        INTEGER UNIQUE REFERENCES cards(row_id),
-    status          TEXT NOT NULL CHECK(status IN ('live', 'retired')),
-    last_address    TEXT NOT NULL,
-    last_title      TEXT NOT NULL,
-    retired_at_rev  INTEGER,
-    CHECK(
-        (status = 'live'    AND card_row IS NOT NULL AND retired_at_rev IS NULL)
-        OR
-        (status = 'retired' AND card_row IS NULL     AND retired_at_rev IS NOT NULL)
-    )
+CREATE TABLE trees (
+    tree_id TEXT NOT NULL PRIMARY KEY,
+    role TEXT NOT NULL CHECK(role IN ('literature', 'topic', 'connection')),
+    workspace TEXT NOT NULL CHECK(workspace IN ('human', 'agent')),
+    public_key TEXT NOT NULL UNIQUE,
+    display_num INTEGER,
+    root_card_id TEXT NOT NULL UNIQUE REFERENCES card_identity(card_id)
+        DEFERRABLE INITIALLY DEFERRED,
+    purpose TEXT CHECK(purpose IS NULL OR (length(purpose) BETWEEN 1 AND 32
+        AND instr(purpose, char(10)) = 0 AND instr(purpose, char(13)) = 0)),
+    next_local_seq INTEGER NOT NULL DEFAULT 1 CHECK(next_local_seq >= 1),
+    created_at TEXT NOT NULL,
+    UNIQUE(tree_id, workspace),
+    CHECK((role = 'literature' AND display_num IS NULL)
+       OR (role IN ('topic', 'connection') AND display_num IS NOT NULL AND display_num >= 0))
 );
-CREATE INDEX IF NOT EXISTS card_identity_live_address
-    ON card_identity(last_address) WHERE status = 'live';
-CREATE TABLE IF NOT EXISTS card_handles (
-    handle          TEXT NOT NULL PRIMARY KEY,
-    card_id         TEXT NOT NULL UNIQUE REFERENCES card_identity(card_id),
-    origin_tree_id  TEXT NOT NULL,
-    local_seq       INTEGER NOT NULL CHECK(local_seq >= 0),
+CREATE TABLE card_identity (
+    card_id TEXT NOT NULL PRIMARY KEY,
+    card_row INTEGER UNIQUE REFERENCES cards(row_id),
+    owner_workspace TEXT CHECK(owner_workspace IS NULL OR owner_workspace IN ('human', 'agent')),
+    status TEXT NOT NULL CHECK(status IN ('live', 'retired')),
+    filing_coord_id TEXT,
+    last_address TEXT NOT NULL,
+    last_title TEXT NOT NULL,
+    retired_at_rev INTEGER,
+    CHECK((status = 'live' AND owner_workspace IS NOT NULL AND owner_workspace IN ('human', 'agent')
+           AND card_row IS NOT NULL AND filing_coord_id IS NOT NULL AND retired_at_rev IS NULL)
+       OR (status = 'retired' AND card_row IS NULL AND filing_coord_id IS NULL AND retired_at_rev IS NOT NULL)),
+    FOREIGN KEY (filing_coord_id, card_id, owner_workspace)
+        REFERENCES coordinates(coord_id, card_id, host_workspace) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TABLE card_handles (
+    handle TEXT NOT NULL PRIMARY KEY,
+    card_id TEXT NOT NULL UNIQUE REFERENCES card_identity(card_id) DEFERRABLE INITIALLY DEFERRED,
+    origin_tree_id TEXT NOT NULL,
+    local_seq INTEGER NOT NULL CHECK(local_seq >= 0),
     UNIQUE(origin_tree_id, local_seq)
 );
-CREATE TABLE IF NOT EXISTS connection_trees (
-    tree_id         TEXT NOT NULL PRIMARY KEY,
-    display_num     INTEGER NOT NULL UNIQUE CHECK(display_num >= 1),
-    workspace       TEXT NOT NULL CHECK(workspace IN ('human', 'agent')),
-    root_card_id    TEXT NOT NULL UNIQUE REFERENCES card_identity(card_id),
-    purpose         TEXT CHECK(purpose IS NULL OR (length(purpose) BETWEEN 1 AND 32
-                        AND instr(purpose, char(10)) = 0 AND instr(purpose, char(13)) = 0)),
-    next_local_seq  INTEGER NOT NULL DEFAULT 1 CHECK(next_local_seq >= 1),
-    created_at      TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS placements (
-    placement_id    TEXT NOT NULL PRIMARY KEY,
-    host_kind       TEXT NOT NULL CHECK(host_kind IN ('connection', 'topic')),
-    host_tree_key   TEXT NOT NULL,
-    card_id         TEXT NOT NULL REFERENCES card_identity(card_id),
-    parent_id       TEXT,
-    anchor_card_id  TEXT REFERENCES card_identity(card_id),
-    edge            TEXT NOT NULL CHECK(edge IN ('root', 'direct', 'side', 'attach')),
-    ordinal         INTEGER,
-    gloss           TEXT CHECK(gloss IS NULL OR (length(gloss) BETWEEN 1 AND 240
-                        AND instr(gloss, char(10)) = 0 AND instr(gloss, char(13)) = 0)),
-    FOREIGN KEY (host_tree_key, parent_id) REFERENCES placements(host_tree_key, placement_id)
+CREATE TABLE coordinates (
+    coord_id TEXT NOT NULL PRIMARY KEY,
+    tree_id TEXT NOT NULL,
+    host_workspace TEXT NOT NULL CHECK(host_workspace IN ('human', 'agent')),
+    card_id TEXT NOT NULL REFERENCES card_identity(card_id) DEFERRABLE INITIALLY DEFERRED,
+    parent_coord_id TEXT,
+    edge TEXT NOT NULL CHECK(edge IN ('root', 'direct', 'side')),
+    slot INTEGER,
+    gloss TEXT CHECK(gloss IS NULL OR (length(gloss) BETWEEN 1 AND 240
+        AND instr(gloss, char(10)) = 0 AND instr(gloss, char(13)) = 0)),
+    FOREIGN KEY (tree_id, host_workspace) REFERENCES trees(tree_id, workspace)
         DEFERRABLE INITIALLY DEFERRED,
-    UNIQUE (host_tree_key, placement_id),
-    UNIQUE (host_tree_key, card_id),
-    CHECK(
-        (host_kind = 'connection' AND anchor_card_id IS NULL AND (
-            (edge = 'root'   AND parent_id IS NULL     AND ordinal IS NULL)
-         OR (edge = 'direct' AND parent_id IS NOT NULL AND ordinal IS NULL)
-         OR (edge = 'side'   AND parent_id IS NOT NULL AND ordinal IS NOT NULL AND ordinal >= 1)
-        ))
-        OR
-        (host_kind = 'topic' AND parent_id IS NULL AND anchor_card_id IS NOT NULL
-         AND edge = 'attach' AND ordinal IS NOT NULL AND ordinal >= 1)
-    )
-);
-CREATE UNIQUE INDEX IF NOT EXISTS placements_one_root   ON placements(host_tree_key) WHERE edge = 'root';
-CREATE UNIQUE INDEX IF NOT EXISTS placements_one_direct ON placements(host_tree_key, parent_id) WHERE edge = 'direct';
-CREATE UNIQUE INDEX IF NOT EXISTS placements_side_ord   ON placements(host_tree_key, parent_id, ordinal) WHERE edge = 'side';
-CREATE UNIQUE INDEX IF NOT EXISTS placements_attach_ord ON placements(host_tree_key, anchor_card_id, ordinal) WHERE edge = 'attach';
-CREATE INDEX IF NOT EXISTS placements_by_card           ON placements(card_id);
-CREATE INDEX IF NOT EXISTS placements_by_parent         ON placements(host_tree_key, parent_id);
-CREATE INDEX IF NOT EXISTS placements_by_anchor         ON placements(anchor_card_id) WHERE host_kind = 'topic';
-CREATE TABLE IF NOT EXISTS placement_edges (
-    connection_id      TEXT NOT NULL PRIMARY KEY,
-    tree_id            TEXT NOT NULL REFERENCES connection_trees(tree_id),
-    from_placement_id  TEXT NOT NULL,
-    to_placement_id    TEXT NOT NULL,
-    direction          TEXT NOT NULL CHECK(direction IN ('neutral', 'directed')),
-    relation_label     TEXT CHECK(relation_label IS NULL OR (
-                           length(relation_label) BETWEEN 1 AND 32
-                           AND instr(relation_label, char(10)) = 0 AND instr(relation_label, char(13)) = 0
-                       )),
-    relation_kind      TEXT CHECK(relation_kind IS NULL OR relation_kind IN (
-                           'rests-on','illustrates','contrasts','relaxes',
-                           'corresponds','objects','specializes','refers'
-                       )),
-    note               TEXT CHECK(note IS NULL OR length(note) BETWEEN 1 AND 400),
-    created_by         TEXT NOT NULL CHECK(created_by IN ('owner', 'agent')),
-    created_at_rev     INTEGER NOT NULL,
-    updated_by         TEXT NOT NULL CHECK(updated_by IN ('owner', 'agent')),
-    updated_at_rev     INTEGER NOT NULL,
-    FOREIGN KEY (tree_id, from_placement_id) REFERENCES placements(host_tree_key, placement_id)
+    FOREIGN KEY (tree_id, parent_coord_id) REFERENCES coordinates(tree_id, coord_id)
         DEFERRABLE INITIALLY DEFERRED,
-    FOREIGN KEY (tree_id, to_placement_id)   REFERENCES placements(host_tree_key, placement_id)
-        DEFERRABLE INITIALLY DEFERRED,
-    CHECK(from_placement_id <> to_placement_id),
-    CHECK(direction = 'directed' OR from_placement_id < to_placement_id),
-    CHECK(
-        relation_kind IS NULL
-        OR relation_kind IN ('contrasts', 'corresponds', 'refers')
-        OR direction = 'directed'
-    )
+    UNIQUE(tree_id, coord_id),
+    UNIQUE(coord_id, card_id, host_workspace),
+    CHECK((edge = 'root' AND parent_coord_id IS NULL AND slot IS NULL)
+       OR (edge = 'direct' AND parent_coord_id IS NOT NULL AND slot IS NULL)
+       OR (edge = 'side' AND parent_coord_id IS NOT NULL AND slot IS NOT NULL AND slot >= 1))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS placement_edges_blank_pair
-    ON placement_edges(tree_id, from_placement_id, to_placement_id)
-    WHERE direction = 'neutral' AND relation_label IS NULL AND relation_kind IS NULL AND note IS NULL;
-CREATE INDEX IF NOT EXISTS placement_edges_by_from ON placement_edges(tree_id, from_placement_id);
-CREATE INDEX IF NOT EXISTS placement_edges_by_to   ON placement_edges(tree_id, to_placement_id);
-CREATE TABLE IF NOT EXISTS retired_placements (
-    placement_id   TEXT NOT NULL PRIMARY KEY,
-    host_tree_key  TEXT NOT NULL,
-    card_id        TEXT NOT NULL REFERENCES card_identity(card_id),
+CREATE TABLE coordinate_edges (
+    connection_id TEXT NOT NULL PRIMARY KEY,
+    tree_id TEXT NOT NULL REFERENCES trees(tree_id) DEFERRABLE INITIALLY DEFERRED,
+    from_coord_id TEXT NOT NULL,
+    to_coord_id TEXT NOT NULL,
+    direction TEXT NOT NULL CHECK(direction IN ('neutral', 'directed')),
+    relation_label TEXT CHECK(relation_label IS NULL OR (length(relation_label) BETWEEN 1 AND 32
+        AND instr(relation_label, char(10)) = 0 AND instr(relation_label, char(13)) = 0)),
+    relation_kind TEXT CHECK(relation_kind IS NULL OR relation_kind IN (
+        'rests-on','illustrates','contrasts','relaxes','corresponds','objects','specializes','refers')),
+    note TEXT CHECK(note IS NULL OR length(note) BETWEEN 1 AND 400),
+    created_by TEXT NOT NULL CHECK(created_by IN ('owner', 'agent')),
+    created_at_rev INTEGER NOT NULL,
+    updated_by TEXT NOT NULL CHECK(updated_by IN ('owner', 'agent')),
+    updated_at_rev INTEGER NOT NULL,
+    FOREIGN KEY (tree_id, from_coord_id) REFERENCES coordinates(tree_id, coord_id)
+        DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (tree_id, to_coord_id) REFERENCES coordinates(tree_id, coord_id)
+        DEFERRABLE INITIALLY DEFERRED,
+    CHECK(from_coord_id <> to_coord_id),
+    CHECK(direction = 'directed' OR from_coord_id < to_coord_id),
+    CHECK(relation_kind IS NULL OR relation_kind IN ('contrasts', 'corresponds', 'refers')
+        OR direction = 'directed')
+);
+CREATE TABLE retired_coordinates (
+    coord_id TEXT NOT NULL PRIMARY KEY,
+    tree_id TEXT NOT NULL,
+    card_id TEXT NOT NULL REFERENCES card_identity(card_id),
     retired_at_rev INTEGER NOT NULL
 );
 ";
 
-/// The identity lifecycle triggers. They keep one live identity per Card through every SQL path
-/// that writes `cards` (create, edit, move, rename, insert, compaction, delete), and retire the
-/// identity of a deleted Card instead of deleting it.
+// Install child-side foreign-key indexes before backfill starts resolving deferred references.
+const INDEXES_SQL: &str = "
+CREATE INDEX IF NOT EXISTS coordinates_by_card ON coordinates(card_id);
+CREATE INDEX IF NOT EXISTS coordinates_by_parent ON coordinates(tree_id, parent_coord_id);
+CREATE INDEX IF NOT EXISTS card_identity_by_filing
+    ON card_identity(filing_coord_id, card_id, owner_workspace) WHERE filing_coord_id IS NOT NULL;
+";
+
+const POST_BACKFILL_INDEXES_SQL: &str = "
+CREATE UNIQUE INDEX IF NOT EXISTS trees_role_num
+    ON trees(role, display_num) WHERE display_num IS NOT NULL;
+CREATE INDEX IF NOT EXISTS card_identity_live_address
+    ON card_identity(last_address) WHERE status = 'live';
+CREATE UNIQUE INDEX IF NOT EXISTS coordinates_one_root
+    ON coordinates(tree_id) WHERE edge = 'root';
+CREATE UNIQUE INDEX IF NOT EXISTS coordinates_one_direct
+    ON coordinates(tree_id, parent_coord_id) WHERE edge = 'direct';
+CREATE UNIQUE INDEX IF NOT EXISTS coordinates_side_slot
+    ON coordinates(tree_id, parent_coord_id, slot) WHERE edge = 'side';
+CREATE INDEX IF NOT EXISTS coordinates_by_tree_card ON coordinates(tree_id, card_id);
+CREATE UNIQUE INDEX IF NOT EXISTS coordinate_edges_blank_pair
+    ON coordinate_edges(tree_id, from_coord_id, to_coord_id)
+    WHERE direction = 'neutral' AND relation_label IS NULL AND relation_kind IS NULL AND note IS NULL;
+CREATE INDEX IF NOT EXISTS coordinate_edges_by_from ON coordinate_edges(tree_id, from_coord_id);
+CREATE INDEX IF NOT EXISTS coordinate_edges_by_to ON coordinate_edges(tree_id, to_coord_id);
+";
+
 const IDENTITY_TRIGGERS_SQL: &str = "
-CREATE TRIGGER IF NOT EXISTS identity_after_insert AFTER INSERT ON cards
-BEGIN
-    INSERT INTO card_identity(card_id, card_row, status, last_address, last_title, retired_at_rev)
-    VALUES (zt_uuid_v4(), NEW.row_id, 'live', coalesce(NEW.location, NEW.citation_key),
-            zt_card_title(NEW.text), NULL);
-END;
 CREATE TRIGGER IF NOT EXISTS identity_after_update
 AFTER UPDATE OF location, citation_key, text ON cards
 WHEN coalesce(NEW.location, NEW.citation_key) IS NOT coalesce(OLD.location, OLD.citation_key)
   OR zt_card_title(NEW.text) IS NOT zt_card_title(OLD.text)
 BEGIN
     UPDATE card_identity
-       SET last_address = coalesce(NEW.location, NEW.citation_key),
-           last_title = zt_card_title(NEW.text)
+       SET last_address = coalesce(NEW.location, NEW.citation_key), last_title = zt_card_title(NEW.text)
      WHERE card_row = OLD.row_id AND status = 'live';
 END;
 CREATE TRIGGER IF NOT EXISTS identity_before_delete BEFORE DELETE ON cards
 BEGIN
     UPDATE card_identity
-       SET status = 'retired', card_row = NULL,
+       SET status = 'retired', card_row = NULL, filing_coord_id = NULL,
            last_address = coalesce(OLD.location, OLD.citation_key),
            last_title = zt_card_title(OLD.text),
            retired_at_rev = 1 + coalesce(
@@ -406,8 +396,9 @@ CREATE TRIGGER IF NOT EXISTS cards_row_id_immutable BEFORE UPDATE OF row_id ON c
 WHEN NEW.row_id IS NOT OLD.row_id
 BEGIN SELECT RAISE(ABORT, 'zt: a Card row id never changes'); END;
 CREATE TRIGGER IF NOT EXISTS card_identity_id_immutable BEFORE UPDATE ON card_identity
-WHEN NEW.card_id IS NOT OLD.card_id OR (OLD.status = 'retired' AND NEW.status = 'live')
-BEGIN SELECT RAISE(ABORT, 'zt: a Card identity is immutable and never revived'); END;
+WHEN NEW.card_id IS NOT OLD.card_id OR NEW.owner_workspace IS NOT OLD.owner_workspace
+    OR (OLD.status = 'retired' AND NEW.status = 'live')
+BEGIN SELECT RAISE(ABORT, 'zt: a Card identity and its owner Workspace are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS card_identity_never_deleted BEFORE DELETE ON card_identity
 BEGIN SELECT RAISE(ABORT, 'zt: a Card identity is retired, never deleted'); END;
 CREATE TRIGGER IF NOT EXISTS card_handles_permanent_update BEFORE UPDATE ON card_handles
@@ -416,41 +407,63 @@ CREATE TRIGGER IF NOT EXISTS card_handles_permanent_delete BEFORE DELETE ON card
 BEGIN SELECT RAISE(ABORT, 'zt: an issued handle is permanent'); END;
 ";
 
-/// The coordinate tables.
 const COORDINATE_TABLES: [&str; 6] = [
+    "trees",
     "card_identity",
     "card_handles",
-    "connection_trees",
-    "placements",
-    "placement_edges",
-    "retired_placements",
+    "coordinates",
+    "coordinate_edges",
+    "retired_coordinates",
 ];
-
-/// The batch receipt table, precreated here so that it is fenced like every other table.
 const APPLIED_OPS_SQL: &str = "CREATE TABLE IF NOT EXISTS applied_ops(op_key TEXT NOT NULL PRIMARY KEY, request_hash TEXT NOT NULL, result_json TEXT NOT NULL, committed_at TEXT NOT NULL)";
 
-/// One INSERT, UPDATE and DELETE guard per persistent application table: a writer connection of an
-/// older `zt` lacks `zt_writer_epoch`, so every write it attempts on an upgraded archive fails and
-/// changes nothing (§10.1.2). A table created later is fenced at the next startup.
-fn writer_fence_sql(conn: &Connection) -> Result<String> {
-    let mut stmt = conn.prepare(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-    )?;
-    let tables = stmt
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+fn sql_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn drop_triggers_sql(conn: &Connection, filter: &str) -> Result<String> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND ({filter}) ORDER BY name"
+    ))?;
+    let names = stmt.query_map([], |r| r.get::<_, String>(0))?;
     let mut sql = String::new();
+    for name in names {
+        sql.push_str(&format!(
+            "DROP TRIGGER IF EXISTS {};\n",
+            sql_identifier(&name?)
+        ));
+    }
+    Ok(sql)
+}
+
+const WRITER_TRIGGERS: &str = "name GLOB 'writer_epoch_*'";
+#[cfg(test)]
+const COORD_TRIGGERS: &str = "
+    name GLOB 'writer_epoch_*' OR name GLOB 'identity_*'
+    OR name GLOB 'coord_lock_*' OR name GLOB 'coord_pin_*'
+    OR name GLOB 'lock_source_reviews_*'
+    OR name IN ('cards_row_id_immutable', 'card_identity_id_immutable',
+                'card_identity_never_deleted', 'card_handles_permanent_update',
+                'card_handles_permanent_delete')";
+
+fn writer_fence_sql(conn: &Connection) -> Result<String> {
+    let mut sql = drop_triggers_sql(conn, WRITER_TRIGGERS)?;
+    let mut stmt = conn.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' ORDER BY name",
+    )?;
+    let tables = stmt.query_map([], |r| r.get::<_, String>(0))?;
     for table in tables {
-        if !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            continue;
-        }
+        let table = table?;
         for event in ["INSERT", "UPDATE", "DELETE"] {
-            sql.push_str(&format!(
-                "CREATE TRIGGER IF NOT EXISTS writer_epoch_{table}_{} BEFORE {event} ON {table}
-WHEN zt_writer_epoch() IS NOT {WRITER_EPOCH}
-BEGIN SELECT RAISE(ABORT, 'zt: this archive needs a newer zt writer'); END;
-",
+            let trigger = sql_identifier(&format!(
+                "writer_epoch_{table}_{}",
                 event.to_ascii_lowercase()
+            ));
+            let table = sql_identifier(&table);
+            sql.push_str(&format!(
+                "CREATE TRIGGER {trigger} BEFORE {event} ON {table}
+                 WHEN zt_writer_epoch() IS NOT {WRITER_EPOCH}
+                 BEGIN SELECT RAISE(ABORT, 'zt: this archive needs a newer zt writer'); END;\n"
             ));
         }
     }
@@ -458,218 +471,391 @@ BEGIN SELECT RAISE(ABORT, 'zt: this archive needs a newer zt writer'); END;
 }
 
 pub(crate) fn installed(conn: &Connection) -> bool {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'card_identity')",
-        [],
-        |row| row.get::<_, bool>(0),
-    )
-    .unwrap_or(false)
+    (table_exists(conn, "trees").unwrap_or(false)
+        && table_exists(conn, "coordinates").unwrap_or(false))
+        || table_exists(conn, "card_identity").unwrap_or(false)
 }
 
-/// Install the coordinate storage once, or verify it is current. The first installation backs up a
-/// non-empty archive, then in one transaction creates the tables, gives every existing Card one live
-/// identity (no placement, no handle), installs the lifecycle triggers and the writer fence, and
-/// records the generation and the never-reused Connection-tree allocator. A reopened archive issues
-/// no new identity.
-pub(crate) fn ensure_schema(conn: &Connection, root: &Path) -> Result<()> {
-    if installed(conn) {
-        match conn
-            .query_row("SELECT value FROM metadata WHERE key = ?1", [SCHEMA_KEY], |r| {
-                r.get::<_, String>(0)
-            })
-            .optional()?
-            .as_deref()
-        {
-            Some(SCHEMA_VERSION) => {}
-            Some(other) => bail!(
-                "unsupported coordinate storage generation `{other}`; this zt understands `{SCHEMA_VERSION}`; database was not modified"
-            ),
-            None => bail!("coordinate storage is incomplete (no generation recorded); database was not modified"),
-        }
-        // A Card-table rebuild by an earlier migration drops the triggers that belong to `cards`;
-        // reinstalling them is idempotent.
-        conn.execute_batch(IDENTITY_TRIGGERS_SQL)?;
-        crate::coord_lock::ensure_schema(conn)?;
-        conn.execute_batch(APPLIED_OPS_SQL)?;
-        conn.execute_batch(&writer_fence_sql(conn)?)?;
-        return Ok(());
+pub(crate) fn schema_version(conn: &Connection) -> Result<Option<String>> {
+    if !table_exists(conn, "metadata")? {
+        return Ok(None);
     }
-    let cards: i64 = conn.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?;
-    if cards > 0 {
-        let backup = root.join(format!(
-            "zt.sqlite3.pre-coordinates-{}.bak",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        ));
-        conn.execute("VACUUM INTO ?1", [backup.to_string_lossy()])
-            .with_context(|| format!("failed to back up the archive to {}", backup.display()))?;
-    }
-    conn.execute_batch("BEGIN IMMEDIATE;")?;
-    let result = (|| -> Result<()> {
-        conn.execute_batch(TABLES_SQL)?;
-        conn.execute(
-            "INSERT INTO card_identity(card_id, card_row, status, last_address, last_title, retired_at_rev)
-             SELECT zt_uuid_v4(), row_id, 'live', coalesce(location, citation_key), zt_card_title(text), NULL
-             FROM cards ORDER BY row_id",
-            [],
-        )?;
-        conn.execute_batch(IDENTITY_TRIGGERS_SQL)?;
-        // The coordinate Lock tables are part of the same installation, so the writer fence below
-        // covers them from the first start.
-        crate::coord_lock::ensure_schema(conn)?;
-        conn.execute_batch(APPLIED_OPS_SQL)?;
-        conn.execute_batch(&writer_fence_sql(conn)?)?;
-        conn.execute(
-            "INSERT INTO metadata(key, value) VALUES(?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![SCHEMA_KEY, SCHEMA_VERSION],
-        )?;
-        conn.execute(
-            "INSERT OR IGNORE INTO metadata(key, value) VALUES('next_connection_id', '1')",
-            [],
-        )?;
-        let live: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM card_identity WHERE status = 'live'",
-            [],
-            |row| row.get(0),
-        )?;
-        if live != cards {
-            bail!("identity backfill gave {live} identities for {cards} Cards");
-        }
-        Ok(())
-    })();
-    match result {
-        Ok(()) => {
-            conn.execute_batch("COMMIT;")?;
-            crate::log_event(
-                root,
-                &format!("installed multi-tree coordinates; {cards} Card(s) received an identity"),
-            )
-            .ok();
-            Ok(())
-        }
-        Err(error) => {
-            let _ = conn.execute_batch("ROLLBACK;");
-            Err(error.context("failed to install multi-tree coordinates; database was not modified"))
-        }
-    }
-}
-
-/// Remove the coordinate storage from a test archive, so a fixture can rebuild it into the exact
-/// shape of a release that predates multi-tree coordinates. The next startup installs it again.
-#[cfg(test)]
-pub(crate) fn strip_for_legacy_fixture(conn: &Connection) {
-    let mut stmt = conn
-        .prepare(
-            "SELECT name FROM sqlite_master WHERE type = 'trigger'
-             AND (name LIKE 'writer_epoch_%' OR name LIKE 'identity_%'
-                  OR name LIKE 'coord_lock_%' OR name LIKE 'coord_pin_%'
-                  OR name LIKE 'lock_source_reviews_%'
-                  OR name IN ('cards_row_id_immutable', 'card_identity_id_immutable',
-                              'card_identity_never_deleted', 'card_handles_permanent_update',
-                              'card_handles_permanent_delete'))",
+    Ok(conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = ?1",
+            [SCHEMA_KEY],
+            |r| r.get(0),
         )
-        .expect("trigger list");
-    let triggers = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .expect("triggers")
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .expect("trigger names");
-    drop(stmt);
-    for trigger in triggers {
-        conn.execute_batch(&format!("DROP TRIGGER {trigger};"))
-            .expect("drop trigger");
-    }
-    for table in [
-        "lock_source_reviews",
-        "lock_placement_pins",
-        "lock_connections",
-        "lock_placements",
-        "lock_coordinate_seals",
-    ]
-    .iter()
-    .chain(COORDINATE_TABLES.iter().rev())
-    {
-        conn.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))
-            .expect("drop table");
-    }
-    conn.execute(
-        "DELETE FROM metadata WHERE key IN (?1, 'next_connection_id')",
-        [SCHEMA_KEY],
-    )
-    .expect("forget the generation");
+        .optional()?)
 }
 
-/// The coordinate storage's own integrity: one live identity per Card and back, referential facts,
-/// tree shape, and the rule that every live native Card has its home station.
+pub(crate) fn check_generation(conn: &Connection) -> Result<()> {
+    match schema_version(conn)?.as_deref() {
+        None | Some(SCHEMA_VERSION) => Ok(()),
+        Some(other) => {
+            bail!(
+                "unsupported coordinate storage generation {other}; this binary supports generation 2 only; database was not modified"
+            )
+        }
+    }
+}
+
+fn backup_archive(conn: &Connection, root: &Path) -> Result<()> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let backup = root.join(format!("zt.sqlite3.pre-coordinates-v2-{stamp}.bak"));
+    conn.execute("VACUUM INTO ?1", [backup.to_string_lossy()])
+        .with_context(|| format!("failed to back up the archive to {}", backup.display()))?;
+    let verified =
+        Connection::open_with_flags(&backup, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    // SQLite may prepare expressions from the archive's schema while checking it.
+    crate::tree_lock::register_sql_functions(&verified)?;
+    let result: String = verified.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+    if result != "ok" {
+        bail!(
+            "archive backup {} failed quick_check: {result}",
+            backup.display()
+        );
+    }
+    Ok(())
+}
+
+fn immediate(conn: &Connection, work: impl FnOnce() -> Result<()>) -> Result<()> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    work()?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn install_protection(conn: &Connection) -> Result<()> {
+    conn.execute_batch(IDENTITY_TRIGGERS_SQL)?;
+    crate::coord_lock::ensure_schema(conn)?;
+    conn.execute_batch(APPLIED_OPS_SQL)?;
+    conn.execute_batch(&writer_fence_sql(conn)?)?;
+    Ok(())
+}
+
+fn finish_install(conn: &Connection) -> Result<()> {
+    conn.execute_batch(POST_BACKFILL_INDEXES_SQL)?;
+    install_protection(conn)?;
+    conn.execute(
+        "INSERT INTO metadata(key, value) VALUES(?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![SCHEMA_KEY, SCHEMA_VERSION],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO metadata(key, value) VALUES('next_connection_id', '1')",
+        [],
+    )?;
+    let bad_fk: Option<(String, String)> = conn
+        .query_row("PRAGMA foreign_key_check", [], |r| {
+            Ok((r.get(0)?, r.get(2)?))
+        })
+        .optional()?;
+    if let Some((table, parent)) = bad_fk {
+        bail!("coordinate backfill left a foreign-key violation in {table} referencing {parent}");
+    }
+    let (cards, live): (i64, i64) = conn.query_row(
+        "SELECT (SELECT COUNT(*) FROM cards), (SELECT COUNT(*) FROM card_identity WHERE status = 'live')",
+        [], |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if live != cards {
+        bail!("coordinate backfill gave {live} live identities for {cards} Cards");
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_schema(conn: &Connection, root: &Path) -> Result<()> {
+    check_generation(conn)?;
+    match schema_version(conn)?.as_deref() {
+        Some(SCHEMA_VERSION) => immediate(conn, || {
+            conn.execute_batch(INDEXES_SQL)?;
+            conn.execute_batch(POST_BACKFILL_INDEXES_SQL)?;
+            install_protection(conn)
+        }),
+        _ => {
+            if installed(conn) {
+                bail!("coordinate storage is incomplete; no generation was recorded");
+            }
+            let cards: bool =
+                conn.query_row("SELECT EXISTS(SELECT 1 FROM cards)", [], |r| r.get(0))?;
+            if cards {
+                backup_archive(conn, root)?;
+            }
+            immediate(conn, || {
+                conn.execute_batch(TABLES_SQL)?;
+                conn.execute_batch(INDEXES_SQL)?;
+                materialize_filing_coordinates(conn)?;
+                finish_install(conn)?;
+                if table_exists(conn, "locks")? {
+                    let active: Vec<(i64, String)> = {
+                        let mut stmt = conn.prepare(
+                            "SELECT l.lock_id, l.root_address FROM locks l
+                             LEFT JOIN lock_coordinate_seals s ON s.lock_id = l.lock_id
+                             WHERE l.unlocked_at IS NULL AND s.lock_id IS NULL ORDER BY l.lock_id",
+                        )?;
+                        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                            .collect::<rusqlite::Result<_>>()?
+                    };
+                    for (lock_id, root_address) in active {
+                        if tree_by_public_key(conn, crate::tree_id(&root_address))?.is_some()
+                            && let Ok(root_card) = crate::load_card(conn, &root_address)
+                        {
+                            let snap = crate::coord_lock::snapshot(conn, &root_card)?;
+                            crate::coord_lock::capture(conn, lock_id, &snap)?;
+                        }
+                    }
+                }
+                Ok(())
+            })
+        }
+    }
+}
+
+struct FilingCard {
+    row_id: i64,
+    address: String,
+    workspace: String,
+    topic_root: bool,
+    literature_root: bool,
+    card_id: String,
+    last_title: String,
+}
+
+fn materialize_filing_coordinates(conn: &Connection) -> Result<()> {
+    let cards = read_filing_cards(
+        conn,
+        "SELECT row_id, coalesce(location, citation_key), workspace, is_topic, is_lit,
+                zt_uuid_v4(), zt_card_title(text)
+         FROM cards",
+    )?;
+    let by_path = HashMap::with_capacity(cards.len());
+    insert_filing_cards(conn, cards, by_path, HashMap::new())
+}
+
+fn read_filing_cards(conn: &Connection, sql: &str) -> Result<Vec<FilingCard>> {
+    Ok(conn
+        .prepare(sql)?
+        .query_map([], |r| {
+            Ok(FilingCard {
+                row_id: r.get(0)?,
+                address: r.get(1)?,
+                workspace: r.get(2)?,
+                topic_root: r.get(3)?,
+                literature_root: r.get(4)?,
+                card_id: r.get(5)?,
+                last_title: r.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn insert_filing_cards(
+    conn: &Connection,
+    mut cards: Vec<FilingCard>,
+    mut by_path: HashMap<String, String>,
+    mut tree_ids: HashMap<String, String>,
+) -> Result<()> {
+    // A Side step adds a segment. A Direct step increases the final number within that segment.
+    cards.sort_by_cached_key(|c| path_order(&c.address));
+    let mut insert_identity = conn.prepare(INSERT_IDENTITY_SQL)?;
+    let mut insert_coord = conn.prepare(INSERT_COORDINATE_SQL)?;
+    let mut insert_tree = conn.prepare(INSERT_TREE_SQL)?;
+    for card in cards {
+        let coord_id = new_uuid()?;
+        let public_key = crate::tree_id(&card.address);
+        let (tree_id, parent, edge, slot) = if card.topic_root || card.literature_root {
+            let role = if card.topic_root {
+                TreeRole::Topic
+            } else {
+                TreeRole::Literature
+            };
+            let display_num = if card.topic_root {
+                Some(public_key.parse::<u64>()?)
+            } else {
+                None
+            };
+            let tree_id = new_uuid()?;
+            insert_tree.execute(params![
+                tree_id,
+                role.id(),
+                card.workspace,
+                public_key,
+                display_num,
+                card.card_id,
+                Option::<&str>::None
+            ])?;
+            tree_ids.insert(public_key.to_string(), tree_id.clone());
+            (tree_id, None, EdgeKind::Root, None)
+        } else {
+            let tree_id = tree_ids
+                .get(public_key)
+                .with_context(|| format!("no tree root for {}", card.address))?;
+            let (parent, edge, slot) = filing_attachment(&card.address)?;
+            let parent = by_path
+                .get(&parent)
+                .with_context(|| format!("missing filing parent {parent} of {}", card.address))?;
+            (tree_id.clone(), Some(parent.as_str()), edge, slot)
+        };
+        insert_coord.execute(params![
+            coord_id,
+            tree_id,
+            card.workspace,
+            card.card_id,
+            parent,
+            edge.id(),
+            slot,
+            Option::<&str>::None
+        ])?;
+        insert_identity.execute(params![
+            card.card_id,
+            card.row_id,
+            card.workspace,
+            coord_id,
+            card.address,
+            card.last_title
+        ])?;
+        by_path.insert(card.address, coord_id);
+    }
+    Ok(())
+}
+
+/// Backfill filings for raw fixture inserts in one pass over the new Cards.
+#[cfg(test)]
+pub(crate) fn sync_raw_seeded_cards_for_test(conn: &Connection) -> Result<()> {
+    registration(conn, || {
+        let cards = read_filing_cards(
+            conn,
+            "SELECT c.row_id, coalesce(c.location, c.citation_key), c.workspace, c.is_topic, c.is_lit,
+                    zt_uuid_v4(), zt_card_title(c.text)
+             FROM cards c
+             WHERE NOT EXISTS (SELECT 1 FROM card_identity i WHERE i.card_row = c.row_id AND i.status = 'live')",
+        )?;
+        if cards.is_empty() {
+            return Ok(());
+        }
+        let by_path = conn
+            .prepare(
+                "SELECT coalesce(c.location, c.citation_key), i.filing_coord_id
+                 FROM cards c JOIN card_identity i ON i.card_row = c.row_id WHERE i.status = 'live'",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+        let tree_ids = conn
+            .prepare("SELECT public_key, tree_id FROM trees")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+        insert_filing_cards(conn, cards, by_path, tree_ids)
+    })
+}
+
 pub(crate) fn check(conn: &Connection) -> Result<Value> {
-    let mut faults = Vec::new();
     if !installed(conn) {
         return Ok(json!({"ok": true, "installed": false, "faults": []}));
     }
-    let orphans: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM cards c LEFT JOIN card_identity i ON i.card_row = c.row_id AND i.status='live'
-         WHERE i.card_id IS NULL",
-        [],
-        |r| r.get(0),
-    )?;
-    if orphans > 0 {
-        faults.push(json!({"kind": "card_without_identity", "count": orphans}));
+    let mut faults = Vec::new();
+    for (kind, sql) in [
+        (
+            "card_without_identity",
+            "SELECT count(*) FROM cards c LEFT JOIN card_identity i ON i.card_row = c.row_id
+          WHERE i.card_id IS NULL",
+        ),
+        (
+            "identity_without_card",
+            "SELECT count(*) FROM card_identity i LEFT JOIN cards c ON c.row_id = i.card_row
+          WHERE i.status = 'live' AND c.row_id IS NULL",
+        ),
+        (
+            "filing_coord_mismatch",
+            "SELECT count(*) FROM card_identity i
+          LEFT JOIN cards c ON c.row_id = i.card_row
+          LEFT JOIN coordinates f ON f.coord_id = i.filing_coord_id
+          WHERE i.status = 'live' AND (i.owner_workspace IS NULL OR f.card_id IS NOT i.card_id
+            OR f.host_workspace IS NOT i.owner_workspace OR c.workspace IS NOT i.owner_workspace)",
+        ),
+    ] {
+        let count: i64 = conn.query_row(sql, [], |r| r.get(0))?;
+        if count > 0 {
+            faults.push(json!({"kind": kind, "count": count}));
+        }
     }
-    let dangling: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM card_identity i LEFT JOIN cards c ON c.row_id = i.card_row
-         WHERE i.status='live' AND c.row_id IS NULL",
-        [],
-        |r| r.get(0),
-    )?;
-    if dangling > 0 {
-        faults.push(json!({"kind": "identity_without_card", "count": dangling}));
-    }
-    let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
-    let fk: Vec<(String, String)> = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(2)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (table, parent) in fk {
+    let mut fk = conn.prepare("PRAGMA foreign_key_check")?;
+    for row in fk.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(2)?)))? {
+        let (table, parent) = row?;
         if COORDINATE_TABLES.contains(&table.as_str()) {
             faults.push(json!({"kind": "foreign_key", "table": table, "parent": parent}));
         }
     }
-    for tree in trees(conn)? {
-        match load_tree_shape(conn, &tree) {
-            Ok(_) => {}
-            Err(error) => faults.push(json!({"kind": "tree_shape", "tree": format!("~{}", tree.display_num), "detail": format!("{error:#}")})),
-        }
-        let native_missing: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM card_identity i JOIN cards c ON c.row_id = i.card_row
-             WHERE i.status='live' AND (c.location = ?1 OR c.location LIKE ?2)
-               AND NOT EXISTS (SELECT 1 FROM placements p WHERE p.host_tree_key = ?3 AND p.card_id = i.card_id)",
-            params![Handle::root(tree.display_num), format!("~{}#%", tree.display_num), tree.tree_id],
-            |r| r.get(0),
-        )?;
-        if native_missing > 0 {
-            faults.push(json!({"kind": "native_without_home_station", "tree": format!("~{}", tree.display_num), "count": native_missing}));
-        }
-    }
-    // The mounts beside one Topic Card are numbered 1..N: `+k` is the k-th mount, so a gap would
-    // make a shown coordinate differ from the stored one.
-    let anchors: Vec<String> = conn
-        .prepare("SELECT DISTINCT anchor_card_id FROM placements WHERE host_kind = 'topic' AND anchor_card_id IS NOT NULL")?
-        .query_map([], |r| r.get(0))?
+    let filings: HashMap<String, String> = conn
+        .prepare(
+            "SELECT i.filing_coord_id, coalesce(c.location, c.citation_key)
+         FROM card_identity i JOIN cards c ON c.row_id = i.card_row
+         WHERE i.status = 'live' AND i.filing_coord_id IS NOT NULL",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    for anchor in anchors {
-        if !attachments_dense(conn, &anchor)? {
-            let at = address_of_card_id(conn, &anchor)?.unwrap_or_else(|| anchor.clone());
-            faults.push(json!({"kind": "side_mounts_not_dense", "anchor": at}));
+    for tree in all_trees(conn)? {
+        let shape = match load_tree_shape(conn, &tree) {
+            Ok(shape) => shape,
+            Err(error) => {
+                faults.push(json!({"kind": "tree_shape", "tree": tree.public_key, "detail": format!("{error:#}")}));
+                continue;
+            }
+        };
+        if filings.get(&shape.root) != Some(&tree.root_address()) {
+            faults.push(json!({"kind": "filing_coord_mismatch", "tree": tree.public_key, "coord_id": shape.root}));
+        }
+        for (id, path) in &shape.coord {
+            let Some(address) = filings.get(id) else {
+                continue;
+            };
+            let matches = if tree.role == TreeRole::Connection {
+                Handle::parse(address).is_some()
+            } else {
+                address == path
+            };
+            if !matches {
+                faults.push(json!({"kind": "derived_path_mismatch", "coord_id": id, "path": path, "address": address}));
+            }
         }
     }
     Ok(json!({"ok": faults.is_empty(), "installed": true, "faults": faults}))
 }
 
-// ---------------------------------------------------------------------------------------------
-// Identity and resolution
-// ---------------------------------------------------------------------------------------------
+#[cfg(test)]
+pub(crate) fn strip_for_legacy_fixture(conn: &Connection) {
+    let fk: bool = conn
+        .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+        .expect("read foreign keys");
+    if fk {
+        conn.pragma_update(None, "foreign_keys", "OFF")
+            .expect("disable foreign keys");
+    }
+    conn.execute_batch(&drop_triggers_sql(conn, COORD_TRIGGERS).expect("trigger list"))
+        .expect("drop coordinate triggers");
+    conn.execute_batch(
+        "
+        DROP TABLE IF EXISTS lock_source_reviews;
+        DROP TABLE IF EXISTS lock_placement_pins;
+        DROP TABLE IF EXISTS lock_connections;
+        DROP TABLE IF EXISTS lock_placements;
+        DROP TABLE IF EXISTS lock_coordinate_seals;
+        DROP TABLE IF EXISTS retired_coordinates;
+        DROP TABLE IF EXISTS coordinate_edges;
+        DROP TABLE IF EXISTS coordinates;
+        DROP TABLE IF EXISTS trees;
+        DROP TABLE IF EXISTS card_handles;
+        DROP TABLE IF EXISTS card_identity;
+        DELETE FROM metadata WHERE key IN ('coordinates_schema_version', 'next_connection_id');
+    ",
+    )
+    .expect("strip coordinate schema");
+    if fk {
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .expect("restore foreign keys");
+    }
+}
 
 /// The live identity of a Card row.
 pub(crate) fn card_id_of_row(conn: &Connection, row: i64) -> Result<String> {
@@ -690,23 +876,42 @@ pub(crate) fn card_id_of(conn: &Connection, address: &str) -> Result<String> {
 /// One identity's registry facts.
 #[derive(Clone, Debug)]
 pub(crate) struct Identity {
+    pub(crate) card_id: String,
     pub(crate) card_row: Option<i64>,
+    pub(crate) owner_workspace: Option<Workspace>,
     pub(crate) live: bool,
+    pub(crate) filing_coord_id: Option<String>,
     pub(crate) last_address: String,
     pub(crate) last_title: String,
+    #[allow(dead_code)]
+    pub(crate) retired_at_rev: Option<i64>,
+}
+
+impl Identity {
+    pub(crate) fn live_owner_workspace(&self) -> Result<Workspace> {
+        self.owner_workspace
+            .context("live Card identity missing owner_workspace")
+    }
 }
 
 pub(crate) fn identity(conn: &Connection, card_id: &str) -> Result<Option<Identity>> {
     Ok(conn
         .query_row(
-            "SELECT card_id, card_row, status, last_address, last_title FROM card_identity WHERE card_id = ?1",
+            "SELECT card_id, card_row, owner_workspace, status, filing_coord_id,
+                    last_address, last_title, retired_at_rev FROM card_identity WHERE card_id = ?1",
             [card_id],
             |r| {
                 Ok(Identity {
+                    card_id: r.get(0)?,
                     card_row: r.get(1)?,
-                    live: r.get::<_, String>(2)? == "live",
-                    last_address: r.get(3)?,
-                    last_title: r.get(4)?,
+                    owner_workspace: r
+                        .get::<_, Option<String>>(2)?
+                        .map(|s| Workspace::from_stored(&s)),
+                    live: r.get::<_, String>(3)? == "live",
+                    filing_coord_id: r.get(4)?,
+                    last_address: r.get(5)?,
+                    last_title: r.get(6)?,
+                    retired_at_rev: r.get(7)?,
                 })
             },
         )
@@ -799,101 +1004,161 @@ pub(crate) fn next_revision(conn: &Connection) -> Result<i64> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Connection trees, placements and coordinates
+// Trees and Coordinates
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
-pub(crate) struct ConnTree {
+pub(crate) struct TreeRecord {
     pub(crate) tree_id: String,
-    pub(crate) display_num: u64,
+    pub(crate) role: TreeRole,
     pub(crate) workspace: Workspace,
+    pub(crate) public_key: String,
+    pub(crate) display_num: Option<u64>,
     pub(crate) root_card_id: String,
     pub(crate) purpose: Option<String>,
     pub(crate) next_local_seq: u64,
     pub(crate) created_at: String,
 }
 
-impl ConnTree {
+impl TreeRecord {
     pub(crate) fn handle(&self) -> String {
-        Handle::root(self.display_num)
+        self.public_key.clone()
+    }
+
+    pub(crate) fn root_address(&self) -> String {
+        match self.role {
+            TreeRole::Topic => format!("{}/0", self.public_key),
+            TreeRole::Literature | TreeRole::Connection => self.public_key.clone(),
+        }
+    }
+
+    fn root_path(&self) -> String {
+        match self.role {
+            TreeRole::Topic | TreeRole::Connection => format!("{}/0", self.public_key),
+            TreeRole::Literature => self.public_key.clone(),
+        }
     }
 }
 
-fn tree_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ConnTree> {
-    Ok(ConnTree {
+pub(crate) type ConnTree = TreeRecord;
+
+fn tree_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TreeRecord> {
+    Ok(TreeRecord {
         tree_id: r.get(0)?,
-        display_num: r.get::<_, i64>(1)? as u64,
+        role: TreeRole::from_stored(&r.get::<_, String>(1)?),
         workspace: Workspace::from_stored(&r.get::<_, String>(2)?),
-        root_card_id: r.get(3)?,
-        purpose: r.get(4)?,
-        next_local_seq: r.get::<_, i64>(5)? as u64,
-        created_at: r.get(6)?,
+        public_key: r.get(3)?,
+        display_num: r.get(4)?,
+        root_card_id: r.get(5)?,
+        purpose: r.get(6)?,
+        next_local_seq: r.get(7)?,
+        created_at: r.get(8)?,
     })
 }
 
-const TREE_COLUMNS: &str =
-    "tree_id, display_num, workspace, root_card_id, purpose, next_local_seq, created_at";
+const TREE_COLUMNS: &str = "tree_id, role, workspace, public_key, display_num, root_card_id, purpose, next_local_seq, created_at";
 
-pub(crate) fn trees(conn: &Connection) -> Result<Vec<ConnTree>> {
-    if !installed(conn) {
+pub(crate) fn all_trees(conn: &Connection) -> Result<Vec<TreeRecord>> {
+    if !table_exists(conn, "trees")? {
         return Ok(Vec::new());
     }
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT {TREE_COLUMNS} FROM connection_trees ORDER BY display_num"
+        "SELECT {TREE_COLUMNS} FROM trees ORDER BY role, display_num, public_key"
     ))?;
-    let rows = stmt
+    Ok(stmt
         .query_map([], tree_from_row)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+        .collect::<rusqlite::Result<_>>()?)
 }
 
-pub(crate) fn tree_by_num(conn: &Connection, num: u64) -> Result<Option<ConnTree>> {
-    if !installed(conn) {
+pub(crate) fn trees(conn: &Connection) -> Result<Vec<TreeRecord>> {
+    if !table_exists(conn, "trees")? {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {TREE_COLUMNS} FROM trees WHERE role = 'connection' ORDER BY display_num"
+    ))?;
+    Ok(stmt
+        .query_map([], tree_from_row)?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+pub(crate) fn tree_by_num(conn: &Connection, num: u64) -> Result<Option<TreeRecord>> {
+    if !table_exists(conn, "trees")? {
         return Ok(None);
     }
     Ok(conn
-        .query_row(
-            &format!("SELECT {TREE_COLUMNS} FROM connection_trees WHERE display_num = ?1"),
-            [num as i64],
-            tree_from_row,
-        )
+        .prepare_cached(&format!(
+            "SELECT {TREE_COLUMNS} FROM trees WHERE role = 'connection' AND display_num = ?1"
+        ))?
+        .query_row([num], tree_from_row)
         .optional()?)
 }
 
-pub(crate) fn tree_by_id(conn: &Connection, tree_id: &str) -> Result<Option<ConnTree>> {
-    if !installed(conn) {
+pub(crate) fn tree_by_id(conn: &Connection, tree_id: &str) -> Result<Option<TreeRecord>> {
+    if !table_exists(conn, "trees")? {
         return Ok(None);
     }
     Ok(conn
-        .query_row(
-            &format!("SELECT {TREE_COLUMNS} FROM connection_trees WHERE tree_id = ?1"),
-            [tree_id],
-            tree_from_row,
-        )
+        .prepare_cached(&format!(
+            "SELECT {TREE_COLUMNS} FROM trees WHERE tree_id = ?1"
+        ))?
+        .query_row([tree_id], tree_from_row)
         .optional()?)
 }
 
-/// A Connection tree named by `~n`, `~n/…`, `n`, or its UUID.
-pub(crate) fn resolve_tree(conn: &Connection, name: &str) -> Result<ConnTree> {
-    let name = name.trim();
-    let found = if let Some(handle) = Handle::parse(name).filter(|h| h.local.is_none()) {
-        tree_by_num(conn, handle.tree)?
-    } else if let Some(Coordinate::Connection { tree, .. }) = Coordinate::parse(name) {
-        tree_by_num(conn, tree)?
-    } else if let Some(num) = positive(name) {
-        tree_by_num(conn, num)?
-    } else if is_uuid(name) {
+pub(crate) fn tree_by_public_key(conn: &Connection, key: &str) -> Result<Option<TreeRecord>> {
+    if !table_exists(conn, "trees")? {
+        return Ok(None);
+    }
+    Ok(conn
+        .prepare_cached(&format!(
+            "SELECT {TREE_COLUMNS} FROM trees WHERE public_key = ?1"
+        ))?
+        .query_row([key], tree_from_row)
+        .optional()?)
+}
+
+pub(crate) fn resolve_tree(conn: &Connection, name: &str) -> Result<TreeRecord> {
+    let tree = if is_uuid(name) {
         tree_by_id(conn, name)?
+    } else if let Some(num) = positive(crate::tree_id(name).trim_start_matches('~')) {
+        tree_by_num(conn, num)?
     } else {
         None
     };
-    found.with_context(|| format!("Connection tree `{name}` does not exist"))
+    tree.filter(|tree| tree.role == TreeRole::Connection)
+        .with_context(|| format!("Connection tree {name} does not exist"))
 }
 
-/// The Connection tree a Connection-homed address belongs to (`~7` and `~7#4` → tree 7), if live.
-pub(crate) fn home_tree_of_address(conn: &Connection, address: &str) -> Result<Option<ConnTree>> {
-    match Handle::parse(address) {
-        Some(handle) => tree_by_num(conn, handle.tree),
+pub(crate) fn resolve_any_tree(conn: &Connection, name: &str) -> Result<TreeRecord> {
+    if is_uuid(name)
+        && let Some(tree) = tree_by_id(conn, name)?
+    {
+        return Ok(tree);
+    }
+    tree_by_public_key(conn, crate::tree_id(name))?
+        .with_context(|| format!("Tree {name} does not exist"))
+}
+
+#[allow(dead_code)]
+pub(crate) fn home_tree_of_address(conn: &Connection, address: &str) -> Result<Option<TreeRecord>> {
+    let Some(address) = canonical(conn, address)? else {
+        return Ok(None);
+    };
+    if !table_exists(conn, "trees")? {
+        return Ok(None);
+    }
+    let tree_id: Option<String> = conn
+        .query_row(
+            "SELECT f.tree_id FROM cards c JOIN card_identity i ON i.card_row = c.row_id
+         JOIN coordinates f ON f.coord_id = i.filing_coord_id
+         WHERE c.location = ?1 OR c.citation_key = ?1",
+            [&address],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match tree_id {
+        Some(id) => tree_by_id(conn, &id),
         None => Ok(None),
     }
 }
@@ -903,231 +1168,222 @@ pub(crate) enum EdgeKind {
     Root,
     Direct,
     Side,
-    Attach,
 }
 
 impl EdgeKind {
     pub(crate) fn id(self) -> &'static str {
         match self {
-            EdgeKind::Root => "root",
-            EdgeKind::Direct => "direct",
-            EdgeKind::Side => "side",
-            EdgeKind::Attach => "attach",
+            Self::Root => "root",
+            Self::Direct => "direct",
+            Self::Side => "side",
         }
     }
 
-    fn from_stored(value: &str) -> EdgeKind {
-        match value {
-            "root" => EdgeKind::Root,
-            "direct" => EdgeKind::Direct,
-            "side" => EdgeKind::Side,
-            _ => EdgeKind::Attach,
+    pub(crate) fn from_stored(text: &str) -> EdgeKind {
+        match text {
+            "root" => Self::Root,
+            "direct" => Self::Direct,
+            "side" => Self::Side,
+            _ => unreachable!("invalid stored coordinate edge {text}"),
         }
     }
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Placement {
-    pub(crate) placement_id: String,
-    pub(crate) host_kind: String,
-    pub(crate) host_tree_key: String,
+pub(crate) struct CoordinateRow {
+    pub(crate) coord_id: String,
+    pub(crate) tree_id: String,
+    pub(crate) host_workspace: Workspace,
     pub(crate) card_id: String,
-    pub(crate) parent_id: Option<String>,
-    pub(crate) anchor_card_id: Option<String>,
+    pub(crate) parent_coord_id: Option<String>,
     pub(crate) edge: EdgeKind,
-    pub(crate) ordinal: Option<u64>,
+    pub(crate) slot: Option<u64>,
     pub(crate) gloss: Option<String>,
 }
 
-const PLACEMENT_COLUMNS: &str =
-    "placement_id, host_kind, host_tree_key, card_id, parent_id, anchor_card_id, edge, ordinal, gloss";
+pub(crate) type Placement = CoordinateRow;
 
-fn placement_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Placement> {
-    Ok(Placement {
-        placement_id: r.get(0)?,
-        host_kind: r.get(1)?,
-        host_tree_key: r.get(2)?,
+const COORDINATE_COLUMNS: &str =
+    "coord_id, tree_id, host_workspace, card_id, parent_coord_id, edge, slot, gloss";
+
+fn coordinate_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<CoordinateRow> {
+    Ok(CoordinateRow {
+        coord_id: r.get(0)?,
+        tree_id: r.get(1)?,
+        host_workspace: Workspace::from_stored(&r.get::<_, String>(2)?),
         card_id: r.get(3)?,
-        parent_id: r.get(4)?,
-        anchor_card_id: r.get(5)?,
-        edge: EdgeKind::from_stored(&r.get::<_, String>(6)?),
-        ordinal: r.get::<_, Option<i64>>(7)?.map(|v| v as u64),
-        gloss: r.get(8)?,
+        parent_coord_id: r.get(4)?,
+        edge: EdgeKind::from_stored(&r.get::<_, String>(5)?),
+        slot: r.get(6)?,
+        gloss: r.get(7)?,
     })
 }
 
-pub(crate) fn placement(conn: &Connection, placement_id: &str) -> Result<Option<Placement>> {
-    if !installed(conn) {
-        return Ok(None);
-    }
+pub(crate) fn coordinate(conn: &Connection, coord_id: &str) -> Result<Option<CoordinateRow>> {
     Ok(conn
-        .query_row(
-            &format!("SELECT {PLACEMENT_COLUMNS} FROM placements WHERE placement_id = ?1"),
-            [placement_id],
-            placement_from_row,
-        )
+        .prepare_cached(&format!(
+            "SELECT {COORDINATE_COLUMNS} FROM coordinates WHERE coord_id = ?1"
+        ))?
+        .query_row([coord_id], coordinate_from_row)
         .optional()?)
 }
 
-pub(crate) fn placements_of_host(conn: &Connection, host_tree_key: &str) -> Result<Vec<Placement>> {
+pub(crate) fn coordinates_of_tree(conn: &Connection, tree_id: &str) -> Result<Vec<CoordinateRow>> {
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT {PLACEMENT_COLUMNS} FROM placements WHERE host_tree_key = ?1"
+        "SELECT {COORDINATE_COLUMNS} FROM coordinates WHERE tree_id = ?1 ORDER BY coord_id"
     ))?;
-    let rows = stmt
-        .query_map([host_tree_key], placement_from_row)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+    Ok(stmt
+        .query_map([tree_id], coordinate_from_row)?
+        .collect::<rusqlite::Result<_>>()?)
 }
 
-pub(crate) fn placements_of_card(conn: &Connection, card_id: &str) -> Result<Vec<Placement>> {
-    if !installed(conn) {
-        return Ok(Vec::new());
-    }
+pub(crate) fn coordinates_of_card(conn: &Connection, card_id: &str) -> Result<Vec<CoordinateRow>> {
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT {PLACEMENT_COLUMNS} FROM placements WHERE card_id = ?1 ORDER BY host_kind, host_tree_key"
+        "SELECT {COORDINATE_COLUMNS} FROM coordinates WHERE card_id = ?1 ORDER BY tree_id, coord_id"
     ))?;
-    let rows = stmt
-        .query_map([card_id], placement_from_row)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+    Ok(stmt
+        .query_map([card_id], coordinate_from_row)?
+        .collect::<rusqlite::Result<_>>()?)
 }
 
-/// The shape of one Connection tree: its placements by ID, children, and derived coordinates.
 #[derive(Clone, Debug)]
 pub(crate) struct TreeShape {
-    pub(crate) tree: ConnTree,
-    pub(crate) by_id: BTreeMap<String, Placement>,
+    pub(crate) tree: TreeRecord,
+    pub(crate) by_id: BTreeMap<String, CoordinateRow>,
     pub(crate) root: String,
-    /// `parent → direct child`.
     pub(crate) direct: BTreeMap<String, String>,
-    /// `parent → side children in ordinal order`.
     pub(crate) side: BTreeMap<String, Vec<String>>,
-    /// `placement → coordinate`, and back.
     pub(crate) coord: BTreeMap<String, String>,
     pub(crate) by_coord: BTreeMap<String, String>,
-    /// Placements in outline (depth-first, Direct chain as peers) order.
     pub(crate) order: Vec<String>,
 }
 
 impl TreeShape {
-    /// Every placement under `placement_id` (itself included), in outline order.
-    pub(crate) fn subtree(&self, placement_id: &str) -> Vec<String> {
+    pub(crate) fn subtree(&self, coord_id: &str) -> Vec<String> {
         let mut out = Vec::new();
-        let mut stack = vec![placement_id.to_string()];
+        let mut stack = vec![coord_id];
         while let Some(id) = stack.pop() {
-            out.push(id.clone());
-            if let Some(next) = self.direct.get(&id) {
-                stack.push(next.clone());
+            out.push(id.to_string());
+            if let Some(next) = self.direct.get(id) {
+                stack.push(next);
             }
-            if let Some(sides) = self.side.get(&id) {
-                for side in sides.iter().rev() {
-                    stack.push(side.clone());
-                }
+            if let Some(sides) = self.side.get(id) {
+                stack.extend(sides.iter().rev().map(String::as_str));
             }
         }
         out
     }
 
-    pub(crate) fn placement_of_card(&self, card_id: &str) -> Option<&Placement> {
-        self.by_id.values().find(|p| p.card_id == card_id)
+    pub(crate) fn coords_of_card(&self, card_id: &str) -> Vec<&CoordinateRow> {
+        self.order
+            .iter()
+            .map(|id| &self.by_id[id])
+            .filter(|row| row.card_id == card_id)
+            .collect()
     }
 }
 
-fn side_label(ordinal: u64) -> String {
-    crate::number_to_side_label(ordinal)
-}
-
-fn direct_coord(coord: &str) -> String {
-    // `~7/0` → `~7/1`; `~7/2` → `~7/3`; `~7/2|a` → `~7/2|a|1`; `~7/2|a|1` → `~7/2|a|2`.
-    let (prefix, path) = coord.split_once('/').expect("coordinate has a slash");
-    if path == "0" {
-        return format!("{prefix}/1");
+fn direct_path(path: &str) -> Result<String> {
+    if let Some(root) = path.strip_suffix("/0") {
+        return Ok(format!("{root}/1"));
     }
-    let last = crate::last_segment(path);
-    if crate::valid_positive_number(last) {
-        let next = last.parse::<u64>().unwrap_or(0) + 1;
-        format!("{prefix}/{}", crate::replace_last_segment(path, &next.to_string()))
+    if !path.contains('/') {
+        return Ok(format!("{path}/1"));
+    }
+    let tail = crate::last_segment(path);
+    if crate::valid_positive_number(tail) {
+        let next = tail
+            .parse::<u64>()?
+            .checked_add(1)
+            .context("Direct Coordinate path overflow")?;
+        Ok(crate::replace_last_segment(path, &next.to_string()))
     } else {
-        format!("{coord}|1")
+        Ok(format!("{path}|1"))
     }
 }
 
-/// Load one Connection tree's placements and derive their coordinates, checking the structural
-/// invariants: one root holding the root Card, one structural parent per station inside this tree,
-/// no Side on the root, every station reachable, no cycle.
-pub(crate) fn load_tree_shape(conn: &Connection, tree: &ConnTree) -> Result<TreeShape> {
-    let placements = placements_of_host(conn, &tree.tree_id)?;
+pub(crate) fn load_tree_shape(conn: &Connection, tree: &TreeRecord) -> Result<TreeShape> {
+    shape_from_rows(tree, coordinates_of_tree(conn, &tree.tree_id)?, false)
+}
+
+fn shape_from_rows(
+    tree: &TreeRecord,
+    rows: Vec<CoordinateRow>,
+    allow_unreachable: bool,
+) -> Result<TreeShape> {
     let mut by_id = BTreeMap::new();
     let mut root = None;
     let mut direct = BTreeMap::new();
-    let mut side: BTreeMap<String, Vec<(u64, String)>> = BTreeMap::new();
-    for p in placements {
-        match p.edge {
+    let mut side: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in rows {
+        let id = row.coord_id.clone();
+        if row.host_workspace != tree.workspace {
+            bail!("Coordinate {id} differs from its Tree Workspace");
+        }
+        match row.edge {
             EdgeKind::Root => {
-                if root.replace(p.placement_id.clone()).is_some() {
-                    bail!("two root stations");
-                }
-                if p.card_id != tree.root_card_id {
-                    bail!("the root station does not hold the root Card");
+                if row.card_id != tree.root_card_id || root.replace(id.clone()).is_some() {
+                    bail!("invalid root Coordinate in Tree {}", tree.public_key);
                 }
             }
             EdgeKind::Direct => {
-                let parent = p.parent_id.clone().context("a Direct station without a parent")?;
-                if direct.insert(parent, p.placement_id.clone()).is_some() {
-                    bail!("two Direct successors of one station");
+                let parent = row
+                    .parent_coord_id
+                    .clone()
+                    .context("Direct Coordinate missing its parent")?;
+                if direct.insert(parent, id.clone()).is_some() {
+                    bail!("two Direct Coordinates have the same parent");
                 }
             }
             EdgeKind::Side => {
-                let parent = p.parent_id.clone().context("a Side station without a parent")?;
-                side.entry(parent)
-                    .or_default()
-                    .push((p.ordinal.unwrap_or(0), p.placement_id.clone()));
+                let parent = row
+                    .parent_coord_id
+                    .clone()
+                    .context("Side Coordinate missing its parent")?;
+                if row.slot.is_none_or(|slot| slot == 0) {
+                    bail!("invalid Side slot for Coordinate {id}");
+                }
+                side.entry(parent).or_default().push(id.clone());
             }
-            EdgeKind::Attach => bail!("a Topic attachment inside a Connection tree"),
         }
-        by_id.insert(p.placement_id.clone(), p);
+        by_id.insert(id, row);
     }
-    let root = root.context("no root station")?;
-    if side.contains_key(&root) {
+    let root = root.context("Tree has no root Coordinate")?;
+    // Stored Side Coordinates can also appear under Topic roots.
+    if tree.role != TreeRole::Topic && side.contains_key(&root) {
         bail!("a Side branch starts at the root");
     }
-    let mut dense = BTreeMap::new();
-    for (parent, mut kids) in side {
-        kids.sort();
-        for (index, (ordinal, _)) in kids.iter().enumerate() {
-            if *ordinal != index as u64 + 1 {
-                bail!("the Side ordinals of one station are not 1..{} in order", kids.len());
-            }
-        }
-        dense.insert(parent, kids.into_iter().map(|(_, id)| id).collect::<Vec<_>>());
-    }
-    let side: BTreeMap<String, Vec<String>> = dense;
-    for parent in direct.keys().chain(side.keys()) {
-        if !by_id.contains_key(parent) {
-            bail!("a station's parent is outside this tree");
-        }
+    for children in side.values_mut() {
+        children.sort_by_key(|child| by_id[child].slot);
     }
     let mut coord = BTreeMap::new();
+    let mut by_coord = BTreeMap::new();
     let mut order = Vec::new();
-    let mut stack = vec![(root.clone(), format!("~{}/0", tree.display_num))];
-    while let Some((id, here)) = stack.pop() {
-        if coord.insert(id.clone(), here.clone()).is_some() {
-            bail!("a cycle in the station graph");
+    let mut stack = vec![(root.clone(), tree.root_path())];
+    while let Some((id, path)) = stack.pop() {
+        if coord.insert(id.clone(), path.clone()).is_some()
+            || by_coord.insert(path.clone(), id.clone()).is_some()
+        {
+            bail!("Coordinate cycle or duplicate path {path}");
         }
-        order.push(id.clone());
         if let Some(next) = direct.get(&id) {
-            stack.push((next.clone(), direct_coord(&here)));
+            stack.push((next.clone(), direct_path(&path)?));
         }
-        if let Some(kids) = side.get(&id) {
-            for (index, kid) in kids.iter().enumerate().rev() {
-                stack.push((kid.clone(), format!("{here}|{}", side_label(index as u64 + 1))));
+        if let Some(children) = side.get(&id) {
+            for child in children.iter().rev() {
+                let label =
+                    crate::number_to_side_label(by_id[child].slot.expect("checked Side slot"));
+                stack.push((child.clone(), format!("{path}|{label}")));
             }
         }
+        order.push(id);
     }
-    if coord.len() != by_id.len() {
-        bail!("{} station(s) cannot be reached from the root", by_id.len() - coord.len());
+    if !allow_unreachable && coord.len() != by_id.len() {
+        bail!(
+            "{} Coordinate(s) cannot be reached from the root",
+            by_id.len() - coord.len()
+        );
     }
-    let by_coord = coord.iter().map(|(id, c)| (c.clone(), id.clone())).collect();
     Ok(TreeShape {
         tree: tree.clone(),
         by_id,
@@ -1140,427 +1396,1308 @@ pub(crate) fn load_tree_shape(conn: &Connection, tree: &ConnTree) -> Result<Tree
     })
 }
 
-/// The ordered Topic-side mounts beside one Topic home Card.
-pub(crate) fn attachments_of_anchor(conn: &Connection, anchor_card_id: &str) -> Result<Vec<Placement>> {
-    if !installed(conn) {
-        return Ok(Vec::new());
+pub(crate) fn coordinate_path(conn: &Connection, row: &CoordinateRow) -> Result<String> {
+    let tree = tree_by_id(conn, &row.tree_id)?.context("Coordinate's Tree is missing")?;
+    let mut chain = Vec::new();
+    let mut visited = BTreeSet::new();
+    let mut current = row.clone();
+    while let Some(parent) = &current.parent_coord_id {
+        if !visited.insert(current.coord_id.clone()) {
+            bail!("cycle at Coordinate {}", current.coord_id);
+        }
+        chain.push((current.edge, current.slot));
+        current = coordinate(conn, parent)?.context("Coordinate's parent is missing")?;
+        if current.tree_id != row.tree_id {
+            bail!("Coordinate's parent is in a different Tree");
+        }
     }
-    let mut stmt = conn.prepare_cached(&format!(
-        "SELECT {PLACEMENT_COLUMNS} FROM placements WHERE host_kind = 'topic' AND anchor_card_id = ?1 ORDER BY ordinal"
+    if current.edge != EdgeKind::Root || current.card_id != tree.root_card_id {
+        bail!("Coordinate does not lead to its Tree root");
+    }
+    let mut path = tree.root_path();
+    for (edge, slot) in chain.into_iter().rev() {
+        path = match edge {
+            EdgeKind::Direct => direct_path(&path)?,
+            EdgeKind::Side => format!(
+                "{path}|{}",
+                crate::number_to_side_label(slot.context("missing Side slot")?)
+            ),
+            EdgeKind::Root => bail!("root Coordinate has a parent"),
+        };
+    }
+    Ok(path)
+}
+
+/// Resolve a path using the structural indexes. The numeric runs in a path stand for a chain
+/// of Direct edges, so a failed lookup stops at the first missing edge.
+fn coordinate_at(
+    conn: &Connection,
+    tree: &TreeRecord,
+    path: &str,
+) -> Result<Option<CoordinateRow>> {
+    let mut root_lookup = conn.prepare_cached(&format!(
+        "SELECT {COORDINATE_COLUMNS} FROM coordinates WHERE tree_id = ?1 AND edge = 'root'"
     ))?;
-    let rows = stmt
-        .query_map([anchor_card_id], placement_from_row)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
-}
-
-/// Whether the mounts beside one anchor are numbered 1..N in order.
-pub(crate) fn attachments_dense(conn: &Connection, anchor_card_id: &str) -> Result<bool> {
-    Ok(attachments_of_anchor(conn, anchor_card_id)?
-        .iter()
-        .enumerate()
-        .all(|(i, p)| p.ordinal == Some(i as u64 + 1)))
-}
-
-/// The current coordinate of any placement.
-pub(crate) fn coordinate_of(conn: &Connection, placement: &Placement) -> Result<String> {
-    match placement.edge {
-        EdgeKind::Attach => {
-            let anchor = placement.anchor_card_id.as_deref().context("attachment without anchor")?;
-            let address = address_of_card_id(conn, anchor)?.context("attachment anchor is not live")?;
-            let siblings = attachments_of_anchor(conn, anchor)?;
-            let position = siblings
-                .iter()
-                .position(|p| p.placement_id == placement.placement_id)
-                .context("attachment missing from its anchor")?;
-            Ok(format!("{address}+{}", position + 1))
+    let mut current = root_lookup
+        .query_row([&tree.tree_id], coordinate_from_row)
+        .optional()?;
+    if path == tree.root_path() {
+        return Ok(current);
+    }
+    let tail = path
+        .strip_prefix(&tree.public_key)
+        .and_then(|tail| tail.strip_prefix('/'));
+    let Some(tail) = tail else { return Ok(None) };
+    let mut direct = conn.prepare_cached(&format!(
+        "SELECT {COORDINATE_COLUMNS} FROM coordinates
+         WHERE tree_id = ?1 AND parent_coord_id = ?2 AND edge = 'direct'"
+    ))?;
+    let mut side = conn.prepare_cached(&format!(
+        "SELECT {COORDINATE_COLUMNS} FROM coordinates
+         WHERE tree_id = ?1 AND parent_coord_id = ?2 AND edge = 'side' AND slot = ?3"
+    ))?;
+    for (i, segment) in tail.split('|').enumerate() {
+        if i == 0 && segment == "0" && tree.role != TreeRole::Literature {
+            continue;
         }
-        _ => {
-            let tree = tree_by_id(conn, &placement.host_tree_key)?.context("station of a deleted tree")?;
-            let shape = load_tree_shape(conn, &tree)?;
-            shape
-                .coord
-                .get(&placement.placement_id)
-                .cloned()
-                .context("station has no coordinate")
+        if let Some(steps) = positive(segment) {
+            for _ in 0..steps {
+                let Some(row) = current else { return Ok(None) };
+                current = direct
+                    .query_row(params![tree.tree_id, row.coord_id], coordinate_from_row)
+                    .optional()?;
+            }
+        } else if i > 0 && crate::valid_side_label(segment) {
+            let Some(row) = current else { return Ok(None) };
+            let slot = side_slot(segment)?;
+            current = side
+                .query_row(
+                    params![tree.tree_id, row.coord_id, slot],
+                    coordinate_from_row,
+                )
+                .optional()?;
+        } else {
+            return Ok(None);
         }
     }
-}
-
-/// Resolve a navigation coordinate to its placement.
-pub(crate) fn resolve_coordinate(conn: &Connection, text: &str) -> Result<Placement> {
-    match Coordinate::parse(text).with_context(|| format!("`{text}` is not a coordinate"))? {
-        Coordinate::Connection { tree, .. } => {
-            let tree = tree_by_num(conn, tree)?
-                .with_context(|| format!("Connection tree `~{tree}` does not exist"))?;
-            let shape = load_tree_shape(conn, &tree)?;
-            let id = shape
-                .by_coord
-                .get(text)
-                .with_context(|| format!("no station at `{text}`"))?;
-            Ok(shape.by_id[id].clone())
-        }
-        Coordinate::TopicMount { anchor, ordinal } => {
-            let anchor_id = card_id_of(conn, &anchor)?;
-            let attached = attachments_of_anchor(conn, &anchor_id)?;
-            attached
-                .into_iter()
-                .nth(ordinal as usize - 1)
-                .with_context(|| format!("no Topic-side mount at `{text}`"))
-        }
+    // The grammar can parse a run of numbers as consecutive Direct steps, but only the derived
+    // spelling names the occurrence (for example a path cannot use /1|1 in place of /2).
+    if let Some(row) = current
+        && coordinate_path(conn, &row)? == path
+    {
+        return Ok(Some(row));
     }
+    Ok(None)
 }
 
-/// A station named by a coordinate, `place:<uuid>`, or a bare placement UUID.
-pub(crate) fn resolve_station(conn: &Connection, text: &str) -> Result<Placement> {
-    let id = place_bookmark(text).unwrap_or(text);
-    if is_uuid(id) {
-        if let Some(p) = placement(conn, id)? {
-            return Ok(p);
-        }
-        let retired: Option<String> = conn
-            .query_row(
-                "SELECT card_id FROM retired_placements WHERE placement_id = ?1",
-                [id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if retired.is_some() {
-            bail!("placement removed: station `{id}` was detached or its tree deleted");
-        }
-        bail!("placement `{id}` does not exist");
-    }
-    resolve_coordinate(conn, text)
+pub(crate) fn resolve_coordinate_path(conn: &Connection, text: &str) -> Result<CoordinateRow> {
+    let tree = resolve_any_tree(conn, text)?;
+    coordinate_at(conn, &tree, text)?.with_context(|| format!("Coordinate {text} does not exist"))
 }
 
-// ---------------------------------------------------------------------------------------------
-// Deletes: the host data a home delete owns
-// ---------------------------------------------------------------------------------------------
-
-/// Remove placements by ID (connections first), recording each ID as retired.
-fn remove_placements(conn: &Connection, ids: &[String], revision: i64) -> Result<()> {
-    for id in ids {
-        conn.execute(
-            "DELETE FROM placement_edges WHERE from_placement_id = ?1 OR to_placement_id = ?1",
+pub(crate) fn resolve_coord(conn: &Connection, text: &str) -> Result<CoordinateRow> {
+    let bookmark = place_bookmark(text);
+    let id = bookmark.unwrap_or(text);
+    if bookmark.is_some() || is_uuid(id) {
+        if let Some(row) = coordinate(conn, id)? {
+            return Ok(row);
+        }
+        let retired: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM retired_coordinates WHERE coord_id = ?1)",
             [id],
+            |r| r.get(0),
         )?;
-        conn.execute(
-            "INSERT OR IGNORE INTO retired_placements(placement_id, host_tree_key, card_id, retired_at_rev)
-             SELECT placement_id, host_tree_key, card_id, ?2 FROM placements WHERE placement_id = ?1",
-            params![id, revision],
+        let name = if bookmark.is_some() {
+            "placement"
+        } else {
+            "coordinate"
+        };
+        if retired {
+            bail!("{name} removed: {id}");
+        }
+        if bookmark.is_none()
+            && let Some(tree) = tree_by_public_key(conn, text)?
+            && tree.role == TreeRole::Literature
+            && let Some(row) = coordinate_at(conn, &tree, text)?
+        {
+            return Ok(row);
+        }
+        bail!("{name} does not exist: {id}");
+    }
+    if is_retired_topic_mount(text) {
+        bail!("{}", coordinate_link_hint(text));
+    }
+    resolve_coordinate_path(conn, text)
+}
+
+const INSERT_IDENTITY_SQL: &str =
+    "INSERT INTO card_identity(card_id, card_row, owner_workspace, status, filing_coord_id,
+                               last_address, last_title) VALUES(?1, ?2, ?3, 'live', ?4, ?5, ?6)";
+const INSERT_TREE_SQL: &str =
+    "INSERT INTO trees(tree_id, role, workspace, public_key, display_num, root_card_id, purpose, created_at)
+     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))";
+const INSERT_COORDINATE_SQL: &str =
+    "INSERT INTO coordinates(coord_id, tree_id, host_workspace, card_id, parent_coord_id, edge, slot, gloss)
+     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)";
+
+/// Roll back the whole group if an insert or the outermost RELEASE fails.
+fn registration<T>(conn: &Connection, work: impl FnOnce() -> Result<T>) -> Result<T> {
+    conn.execute_batch("SAVEPOINT register_card_coordinate")?;
+    let result = work().and_then(|value| {
+        conn.execute_batch("RELEASE register_card_coordinate")?;
+        Ok(value)
+    });
+    if result.is_err() {
+        conn.execute_batch(
+            "ROLLBACK TO register_card_coordinate; RELEASE register_card_coordinate",
         )?;
     }
-    for id in ids {
-        conn.execute("DELETE FROM placements WHERE placement_id = ?1", [id])?;
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn register_root_card_tx(
+    conn: &Connection,
+    row_id: i64,
+    role: TreeRole,
+    public_key: &str,
+    display_num: Option<u64>,
+    workspace: Workspace,
+    title: &str,
+    purpose: Option<&str>,
+) -> Result<(String, String, String)> {
+    registration(conn, || {
+        let card_id = new_uuid()?;
+        let tree_id = new_uuid()?;
+        let root_coord_id = new_uuid()?;
+        let address = if role == TreeRole::Topic {
+            format!("{public_key}/0")
+        } else {
+            public_key.to_string()
+        };
+        conn.execute(
+            INSERT_IDENTITY_SQL,
+            params![
+                card_id,
+                row_id,
+                workspace.id(),
+                root_coord_id,
+                address,
+                title
+            ],
+        )?;
+        conn.execute(
+            INSERT_TREE_SQL,
+            params![
+                tree_id,
+                role.id(),
+                workspace.id(),
+                public_key,
+                display_num,
+                card_id,
+                purpose
+            ],
+        )?;
+        conn.execute(
+            INSERT_COORDINATE_SQL,
+            params![
+                root_coord_id,
+                tree_id,
+                workspace.id(),
+                card_id,
+                Option::<&str>::None,
+                "root",
+                Option::<u64>::None,
+                Option::<&str>::None
+            ],
+        )?;
+        if role == TreeRole::Connection {
+            conn.execute(
+                "INSERT INTO card_handles(handle, card_id, origin_tree_id, local_seq) VALUES(?1, ?2, ?3, 0)",
+                params![public_key, card_id, tree_id],
+            )?;
+        }
+        Ok((card_id, tree_id, root_coord_id))
+    })
+}
+
+fn path_order(path: &str) -> (bool, usize, u64) {
+    (
+        path.contains('/'),
+        path.bytes().filter(|&byte| byte == b'|').count(),
+        crate::last_segment(path).parse::<u64>().unwrap_or(0),
+    )
+}
+
+fn side_slot(label: &str) -> Result<u64> {
+    // SQLite INTEGER is signed, so reject labels whose slots exceed its range.
+    let mut slot = 0_u64;
+    for byte in label.bytes() {
+        slot = slot
+            .checked_mul(26)
+            .and_then(|n| n.checked_add(u64::from(byte - b'a' + 1)))
+            .filter(|&n| n <= i64::MAX as u64)
+            .context("Side slot exceeds SQLite INTEGER range")?;
+    }
+    Ok(slot)
+}
+
+fn filing_attachment(location: &str) -> Result<(String, EdgeKind, Option<u64>)> {
+    let parent = crate::parent_location(location)
+        .with_context(|| format!("{location} has no filing parent"))?;
+    let segment = crate::last_segment(location);
+    if crate::valid_side_label(segment) {
+        // Use the common converter after checking that its result is representable in SQLite.
+        side_slot(segment)?;
+        Ok((
+            parent,
+            EdgeKind::Side,
+            Some(crate::side_label_to_number(segment)),
+        ))
+    } else {
+        Ok((parent, EdgeKind::Direct, None))
+    }
+}
+
+pub(crate) fn register_regular_card_tx(
+    conn: &Connection,
+    row_id: i64,
+    location: &str,
+    workspace: Workspace,
+    title: &str,
+) -> Result<(String, String)> {
+    register_regular_card_at_tx(conn, row_id, location, workspace, title, &new_uuid()?)
+}
+
+/// An insertion can reserve the new Coordinate's ID before moving its future Direct successor.
+pub(crate) fn register_regular_card_at_tx(
+    conn: &Connection,
+    row_id: i64,
+    location: &str,
+    workspace: Workspace,
+    title: &str,
+    coord_id: &str,
+) -> Result<(String, String)> {
+    registration(conn, || {
+        let tree = tree_by_public_key(conn, crate::tree_id(location))?
+            .context("filing Tree does not exist")?;
+        let (parent, edge, slot) = filing_attachment(location)?;
+        let parent = coordinate_at(conn, &tree, &parent)?
+            .with_context(|| format!("filing parent {parent} does not exist"))?;
+        let card_id = new_uuid()?;
+        conn.execute(
+            INSERT_IDENTITY_SQL,
+            params![card_id, row_id, workspace.id(), coord_id, location, title],
+        )?;
+        conn.execute(
+            INSERT_COORDINATE_SQL,
+            params![
+                coord_id,
+                tree.tree_id,
+                workspace.id(),
+                card_id,
+                parent.coord_id,
+                edge.id(),
+                slot,
+                Option::<&str>::None
+            ],
+        )?;
+        Ok((card_id, coord_id.to_string()))
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn register_connection_native_tx(
+    conn: &Connection,
+    row_id: i64,
+    tree: &TreeRecord,
+    handle: &str,
+    local_seq: u64,
+    title: &str,
+    coord_id: &str,
+    parent_coord_id: &str,
+    edge: EdgeKind,
+    slot: Option<u64>,
+    gloss: Option<&str>,
+) -> Result<String> {
+    registration(conn, || {
+        let card_id = new_uuid()?;
+        conn.execute(
+            INSERT_IDENTITY_SQL,
+            params![
+                card_id,
+                row_id,
+                tree.workspace.id(),
+                coord_id,
+                handle,
+                title
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO card_handles(handle, card_id, origin_tree_id, local_seq) VALUES(?1, ?2, ?3, ?4)",
+            params![handle, card_id, tree.tree_id, local_seq],
+        )?;
+        conn.execute(
+            INSERT_COORDINATE_SQL,
+            params![
+                coord_id,
+                tree.tree_id,
+                tree.workspace.id(),
+                card_id,
+                parent_coord_id,
+                edge.id(),
+                slot,
+                gloss
+            ],
+        )?;
+        Ok(card_id)
+    })
+}
+
+pub(crate) fn occupied_paths_in_tree(
+    conn: &Connection,
+    tree_public_key: &str,
+) -> Result<BTreeSet<String>> {
+    let Some(tree) = tree_by_public_key(conn, tree_public_key)? else {
+        return Ok(BTreeSet::new());
+    };
+    Ok(load_tree_shape(conn, &tree)?.by_coord.into_keys().collect())
+}
+
+pub(crate) fn secondary_coordinate_at(
+    conn: &Connection,
+    path: &str,
+) -> Result<Option<(String, String)>> {
+    if !path.contains('/') || path.starts_with('~') || path.contains('+') {
+        return Ok(None);
+    }
+    // The great majority of authored targets identify a live filing Card. Avoid a topology
+    // traversal for those paths, but keep Missing secondary occurrences addressable by bookmark.
+    if canonical(conn, path)?.is_some() {
+        return Ok(None);
+    }
+    let Some(tree) = tree_by_public_key(conn, crate::tree_id(path))? else {
+        return Ok(None);
+    };
+    let Some(row) = coordinate_at(conn, &tree, path)? else {
+        return Ok(None);
+    };
+    let Some(card) = identity(conn, &row.card_id)? else {
+        return Ok(None);
+    };
+    if card.filing_coord_id.as_deref() == Some(&row.coord_id) {
+        return Ok(None);
+    }
+    Ok(Some((card.last_address, row.coord_id)))
+}
+
+pub(crate) fn secondary_coordinate_link_hint(
+    target: &str,
+    canonical: &str,
+    coord_id: &str,
+) -> String {
+    format!(
+        "Link target `{target}` is a Secondary Coordinate. Cite a live Card at its canonical address `[[{canonical}]]` or bookmark this occurrence with `[label](place:{coord_id})`."
+    )
+}
+
+pub(crate) fn check_model_term_splice_guard(
+    conn: &Connection,
+    tree: &TreeRecord,
+    parent_coord_id: &str,
+    edge: EdgeKind,
+) -> Result<()> {
+    if tree.role == TreeRole::Connection || edge != EdgeKind::Direct {
+        return Ok(());
+    }
+    let pair: Option<(String, String)> = conn.query_row(
+        "SELECT p.last_address, d.last_address
+         FROM coordinates parent JOIN card_identity p ON p.card_id = parent.card_id
+         JOIN coordinates c ON c.tree_id = parent.tree_id AND c.parent_coord_id = parent.coord_id
+         JOIN card_identity d ON d.card_id = c.card_id AND d.filing_coord_id = c.coord_id
+         WHERE parent.coord_id = ?1 AND p.filing_coord_id = ?1 AND c.tree_id = ?2 AND c.edge = 'direct'",
+        params![parent_coord_id, tree.tree_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).optional()?;
+    if let Some((parent, child)) = pair {
+        let parent = crate::load_card(conn, &parent)?;
+        let child = crate::load_card(conn, &child)?;
+        let model_part = parent.card_type == crate::CardType::Model
+            && child.card_type == crate::CardType::Model
+            && child.facet.is_some();
+        let term_part = parent.card_type == crate::CardType::Term
+            && child.card_type == crate::CardType::Term
+            && crate::term::role(
+                conn,
+                &child.address,
+                child.card_type,
+                child.term_name.as_deref(),
+            )?
+            .is_some_and(|(role, _)| role == crate::term::Role::Part);
+        if model_part || term_part {
+            bail!(
+                "cannot splice a Secondary Coordinate into the filing chain from {} to {}; place as a Side branch, or arrange freely in a Connection tree ~n",
+                parent.address,
+                child.address
+            );
+        }
     }
     Ok(())
 }
 
-/// Before a home delete removes the Cards at `delete_set`: remove the host data those Cards own.
-/// A deleted Connection root takes its whole tree (stations, connections, the tree record; its
-/// issued handles stay); a kept Connection root (`keep_root`) keeps only its root station; a deleted
-/// Topic Card takes the Topic-side mounts beside it. A station in another tree that mounts a deleted
-/// Card is never touched: it becomes a Missing mount.
+pub(crate) fn sync_filing_moves_tx(
+    conn: &Connection,
+    mapping: &BTreeMap<String, String>,
+) -> Result<()> {
+    sync_filing_moves_with_insert_tx(conn, mapping, None)
+}
+
+pub(crate) fn sync_filing_moves_with_insert_tx(
+    conn: &Connection,
+    mapping: &BTreeMap<String, String>,
+    pending: Option<(&str, &str)>,
+) -> Result<()> {
+    if mapping.is_empty() || !table_exists(conn, "trees")? {
+        return Ok(());
+    }
+    registration(conn, || {
+        let mut affected = BTreeMap::new();
+        let mut renamed_keys = BTreeMap::new();
+        let mut keys: BTreeSet<_> = mapping
+            .iter()
+            .flat_map(|(from, to)| [crate::tree_id(from), crate::tree_id(to)])
+            .collect();
+        for (from, to) in mapping {
+            if let Some(tree) = tree_by_public_key(conn, from)?
+                && tree.role == TreeRole::Literature
+            {
+                renamed_keys.insert(to.clone(), tree.clone());
+                keys.remove(to.as_str());
+            }
+        }
+        let mut old_paths = BTreeMap::new();
+        let mut rows = BTreeMap::new();
+        for key in keys {
+            let Some(tree) = tree_by_public_key(conn, key)? else {
+                continue;
+            };
+            if tree.role == TreeRole::Connection {
+                continue;
+            }
+            // A span delete can temporarily leave its surviving successor without a parent.
+            let shape = shape_from_rows(&tree, coordinates_of_tree(conn, &tree.tree_id)?, true)?;
+            old_paths.extend(shape.by_coord);
+            rows.extend(shape.by_id);
+            affected.insert(key.to_string(), tree);
+        }
+
+        let mut lookup_filing = conn.prepare_cached(
+            "SELECT i.filing_coord_id FROM cards c JOIN card_identity i ON i.card_row = c.row_id
+             WHERE c.location = ?1 OR c.citation_key = ?1",
+        )?;
+        let mut moved = BTreeMap::new();
+        let mut destinations = BTreeMap::new();
+        for (from, to) in mapping {
+            // Use the filing cache for survivors of an in-progress span delete. Secondary paths
+            // are found only in the coordinate outline.
+            let id = lookup_filing
+                .query_row([from], |r| r.get::<_, String>(0))
+                .optional()?
+                .or_else(|| old_paths.get(from).cloned());
+            let Some(id) = id else { continue };
+            if destinations.insert(to.clone(), id.clone()).is_some() {
+                bail!("two Coordinates move to {to}");
+            }
+            moved.insert(id, to);
+        }
+        if let Some((path, id)) = pending
+            && destinations
+                .insert(path.to_string(), id.to_string())
+                .is_some()
+        {
+            bail!("the inserted Card would share Coordinate path {path}");
+        }
+
+        let renamed_prefixes: BTreeMap<_, _> = renamed_keys
+            .iter()
+            .map(|(new, old)| (old.public_key.as_str(), new.as_str()))
+            .collect();
+        let mut filings = conn.prepare_cached(
+            "SELECT i.filing_coord_id, i.last_address FROM coordinates c
+             JOIN card_identity i ON i.card_id = c.card_id AND i.filing_coord_id = c.coord_id
+             WHERE c.tree_id = ?1 AND i.status = 'live'",
+        )?;
+        let mut unmoved_filings = BTreeMap::new();
+        for tree in affected.values() {
+            for filing in filings.query_map([&tree.tree_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })? {
+                let (id, previous) = filing?;
+                if moved.contains_key(&id) || rows[&id].edge == EdgeKind::Root {
+                    continue;
+                }
+                let target = match renamed_prefixes.get(tree.public_key.as_str()) {
+                    Some(key) => {
+                        let suffix = previous
+                            .strip_prefix(tree.public_key.as_str())
+                            .with_context(|| {
+                                format!("filing address {previous} is outside its Tree")
+                            })?;
+                        format!("{key}{suffix}")
+                    }
+                    None => previous,
+                };
+                unmoved_filings.insert(id, target);
+            }
+        }
+        let tree_at = |key: &str| renamed_keys.get(key).or_else(|| affected.get(key));
+        let mut children = BTreeMap::<&str, Vec<&CoordinateRow>>::new();
+        for row in rows.values() {
+            if let Some(parent) = &row.parent_coord_id {
+                children.entry(parent).or_default().push(row);
+            }
+        }
+        let mut next_trees = BTreeMap::new();
+        let mut projected = BTreeSet::new();
+        let mut queue: Vec<_> = moved
+            .iter()
+            .map(|(id, path)| (id.as_str(), path.to_string()))
+            .collect();
+        // Secondary children that keep their parent follow it to its new path. Project those
+        // paths before resolving the final parents of explicitly moved Filing Coordinates.
+        while let Some((id, path)) = queue.pop() {
+            let key = crate::tree_id(&path);
+            let tree =
+                tree_at(key).with_context(|| format!("destination Tree {key} does not exist"))?;
+            for child in children.get(id).into_iter().flatten() {
+                if moved.contains_key(&child.coord_id)
+                    || unmoved_filings.contains_key(&child.coord_id)
+                {
+                    continue;
+                }
+                let child_path = match child.edge {
+                    EdgeKind::Direct => direct_path(&path)?,
+                    EdgeKind::Side => {
+                        let slot = child.slot.context("Side Coordinate has no slot")?;
+                        format!("{path}|{}", crate::number_to_side_label(slot))
+                    }
+                    EdgeKind::Root => bail!("root Coordinate has a parent"),
+                };
+                if destinations
+                    .insert(child_path.clone(), child.coord_id.clone())
+                    .is_some()
+                {
+                    bail!("two Coordinates move to {child_path}");
+                }
+                projected.insert(child.coord_id.as_str());
+                if child.tree_id != tree.tree_id {
+                    next_trees.insert(child.coord_id.clone(), tree.tree_id.clone());
+                }
+                queue.push((child.coord_id.as_str(), child_path));
+            }
+        }
+        let parent_at = |key: &str, path: &str| {
+            destinations.get(path).or_else(|| {
+                // Unmoved Coordinates in a renamed Literature tree still have their old prefix
+                // in the pre-write outline.
+                let previous = renamed_keys
+                    .get(key)
+                    .map(|old| format!("{}{}", old.public_key, &path[key.len()..]));
+                old_paths
+                    .get(previous.as_deref().unwrap_or(path))
+                    .filter(|id| !moved.contains_key(*id) && !projected.contains(id.as_str()))
+            })
+        };
+
+        let mut changes = Vec::new();
+        // A filing path can stay the same while a different Coordinate takes its parent path.
+        let mapped_paths = moved.iter().map(|(id, to)| (id, to.as_str()));
+        let fixed_paths = unmoved_filings.iter().map(|(id, to)| (id, to.as_str()));
+        for (id, to) in mapped_paths.chain(fixed_paths) {
+            let row = rows
+                .get(id)
+                .with_context(|| format!("missing Coordinate {id} in move plan"))?;
+            if row.edge == EdgeKind::Root {
+                if !renamed_keys.contains_key(to) {
+                    bail!("a defining Tree root cannot move");
+                }
+                continue;
+            }
+            let key = crate::tree_id(to);
+            let tree =
+                tree_at(key).with_context(|| format!("destination Tree {key} does not exist"))?;
+            let (parent_path, edge, slot) = filing_attachment(to)?;
+            let parent = parent_at(key, &parent_path)
+                .with_context(|| format!("destination parent {parent_path} does not exist"))?;
+            if row.host_workspace != tree.workspace {
+                bail!("cannot move Coordinate {id} across Workspaces");
+            }
+            if row.tree_id != tree.tree_id {
+                next_trees.insert(id.clone(), tree.tree_id.clone());
+            }
+            if row.tree_id != tree.tree_id
+                || row.parent_coord_id.as_ref() != Some(parent)
+                || row.edge != edge
+                || row.slot != slot
+            {
+                changes.push((id, to, tree, parent, edge, slot));
+            }
+        }
+
+        // Park under each Coordinate's own ID at a temporary Side slot above every existing
+        // slot. Both Direct and Side children can stay in place while their parent is parked.
+        if !changes.is_empty() {
+            let max_slot: i64 =
+                conn.query_row("SELECT coalesce(max(slot), 0) FROM coordinates", [], |r| {
+                    r.get(0)
+                })?;
+            let base = max_slot
+                .checked_add(1_000_000)
+                .context("temporary Side slot overflow")?;
+            let mut park = conn.prepare_cached(
+                "UPDATE coordinates SET parent_coord_id = coord_id, edge = 'side', slot = ?2 WHERE coord_id = ?1",
+            )?;
+            for (i, (id, _, _, _, _, _)) in changes.iter().enumerate() {
+                let slot = base
+                    .checked_add(i as i64)
+                    .context("temporary Side slot overflow")?;
+                park.execute(params![id, slot])?;
+            }
+        }
+        changes.sort_by_cached_key(|(_, path, _, _, _, _)| path_order(path));
+        for (id, _, tree, parent, edge, slot) in changes {
+            conn.execute(
+                "UPDATE coordinates SET tree_id = ?2, host_workspace = ?3, parent_coord_id = ?4, edge = ?5, slot = ?6
+                 WHERE coord_id = ?1",
+                params![id, tree.tree_id, tree.workspace.id(), parent, edge.id(), slot],
+            )?;
+        }
+        for (id, tree) in &next_trees {
+            if !moved.contains_key(id) {
+                conn.execute(
+                    "UPDATE coordinates SET tree_id = ?2 WHERE coord_id = ?1",
+                    params![id, tree],
+                )?;
+            }
+        }
+        let mut edges = BTreeMap::new();
+        for id in next_trees.keys() {
+            let row = &rows[id];
+            let mut query = conn.prepare_cached(
+                "SELECT connection_id, from_coord_id, to_coord_id FROM coordinate_edges
+                 WHERE tree_id = ?2 AND (from_coord_id = ?1 OR to_coord_id = ?1)",
+            )?;
+            for edge in query.query_map(params![id, row.tree_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })? {
+                let (edge, from, to) = edge?;
+                let from_tree = next_trees.get(&from).unwrap_or(&rows[&from].tree_id);
+                let to_tree = next_trees.get(&to).unwrap_or(&rows[&to].tree_id);
+                if from_tree != to_tree {
+                    bail!(
+                        "moving these Coordinates would split Tree connection {edge}; resolve the connection before moving"
+                    );
+                }
+                edges.insert(edge, from_tree.clone());
+            }
+        }
+        for (id, tree) in edges {
+            conn.execute(
+                "UPDATE coordinate_edges SET tree_id = ?2 WHERE connection_id = ?1",
+                params![id, tree],
+            )?;
+        }
+        for (new_key, old_tree) in &renamed_keys {
+            conn.execute(
+                "UPDATE trees SET public_key = ?2 WHERE tree_id = ?1",
+                params![old_tree.tree_id, new_key],
+            )?;
+        }
+        for tree in affected.values() {
+            let tree = tree_by_id(conn, &tree.tree_id)?.context("moved Tree is missing")?;
+            let mut rows = coordinates_of_tree(conn, &tree.tree_id)?;
+            if let Some((path, id)) = pending
+                && crate::tree_id(path) == tree.public_key
+            {
+                let (parent, edge, slot) = filing_attachment(path)?;
+                let parent_coord_id = parent_at(&tree.public_key, &parent)
+                    .with_context(|| format!("inserted Card's parent {parent} does not exist"))?;
+                rows.push(CoordinateRow {
+                    coord_id: id.to_string(),
+                    tree_id: tree.tree_id.clone(),
+                    host_workspace: tree.workspace,
+                    card_id: String::new(),
+                    parent_coord_id: Some(parent_coord_id.clone()),
+                    edge,
+                    slot,
+                    gloss: None,
+                });
+            }
+            let shape = shape_from_rows(&tree, rows, false)?;
+            for filing in filings.query_map([&tree.tree_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })? {
+                let (id, previous) = filing?;
+                let expected = moved
+                    .get(&id)
+                    .map(|path| path.as_str())
+                    .or_else(|| unmoved_filings.get(&id).map(String::as_str))
+                    .unwrap_or(&previous);
+                if shape.coord[&id] != expected {
+                    bail!(
+                        "filing move would give {previous} the unintended path {}",
+                        shape.coord[&id]
+                    );
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+pub(crate) fn tree_delete_classification(
+    conn: &Connection,
+    tree_public_key: &str,
+    keep_root: bool,
+) -> Result<(BTreeSet<String>, Vec<(String, String, String)>)> {
+    if !installed(conn) {
+        return Ok((BTreeSet::new(), Vec::new()));
+    }
+    let tree = tree_by_public_key(conn, tree_public_key)?
+        .with_context(|| format!("Tree `{tree_public_key}` is missing"))?;
+    classify_tree_filings(conn, &tree, keep_root)
+}
+
+fn classify_tree_filings(
+    conn: &Connection,
+    tree: &TreeRecord,
+    keep_root: bool,
+) -> Result<(BTreeSet<String>, Vec<(String, String, String)>)> {
+    let mut filings = conn.prepare_cached(
+        "SELECT i.card_id, coalesce(c.location, c.citation_key), i.owner_workspace
+         FROM coordinates f
+         JOIN card_identity i ON i.card_id = f.card_id AND i.filing_coord_id = f.coord_id
+         JOIN cards c ON c.row_id = i.card_row
+         WHERE f.tree_id = ?1 AND i.status = 'live' AND (?2 = 0 OR i.card_id <> ?3)
+         ORDER BY i.card_id",
+    )?;
+    let rows = filings.query_map(params![tree.tree_id, keep_root, tree.root_card_id], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut lookup = conn.prepare_cached(
+        "SELECT c.coord_id, t.role, t.tree_id, t.public_key
+         FROM coordinates c JOIN trees t ON t.tree_id = c.tree_id
+         WHERE c.card_id = ?1 AND c.tree_id <> ?2 AND c.host_workspace = ?3
+         ORDER BY (t.role = 'connection') DESC, c.coord_id LIMIT 1",
+    )?;
+    let mut delete_set = BTreeSet::new();
+    let mut reanchor = Vec::new();
+    for row in rows {
+        let (card_id, address, workspace) = row?;
+        // Deleting a Topic/Literature tree deletes its filed Cards (turning external mounts into
+        // Missing coordinates); deleting a Connection tree always retires its own defining root.
+        if tree.role != TreeRole::Connection || card_id == tree.root_card_id {
+            delete_set.insert(address);
+            continue;
+        }
+        let survivor = lookup
+            .query_row(params![card_id, tree.tree_id, workspace], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .optional()?;
+        let Some((coord_id, role, tree_id, key)) = survivor else {
+            delete_set.insert(address);
+            continue;
+        };
+        if role != TreeRole::Connection.id() {
+            bail!(
+                "Card `{address}` survives in Tree `{key}`; use refile_card with place:{coord_id} before deleting Connection tree `{}`",
+                tree.public_key
+            );
+        }
+        crate::coord_lock::ensure_host_unlocked(conn, &tree_id, &key)?;
+        crate::coord_lock::ensure_card_not_pinned(conn, &card_id, "pinned-move")?;
+        reanchor.push((card_id, coord_id, address));
+    }
+    Ok((delete_set, reanchor))
+}
+
+#[derive(Default)]
+struct DeleteCoordinates {
+    removed: BTreeSet<String>,
+    non_connection_filings: BTreeSet<String>,
+    missing: BTreeSet<String>,
+    trees: BTreeMap<String, TreeRecord>,
+    reanchor: Vec<(String, String, String)>,
+}
+
+impl DeleteCoordinates {
+    fn include_tree(
+        &mut self,
+        conn: &Connection,
+        tree: TreeRecord,
+        keep_root: bool,
+        delete_set: &BTreeSet<String>,
+    ) -> Result<()> {
+        let (retiring, reanchor) = classify_tree_filings(conn, &tree, keep_root)?;
+        if !retiring.is_subset(delete_set)
+            || reanchor
+                .iter()
+                .any(|(_, _, address)| delete_set.contains(address))
+        {
+            bail!(
+                "stale plan: the Cards filed in Tree `{}` changed",
+                tree.public_key
+            );
+        }
+        self.reanchor.extend(reanchor);
+        self.removed.extend(
+            coordinates_of_tree(conn, &tree.tree_id)?
+                .into_iter()
+                .filter(|row| !keep_root || row.edge != EdgeKind::Root)
+                .map(|row| row.coord_id),
+        );
+        if !keep_root {
+            self.trees.insert(tree.tree_id.clone(), tree);
+        }
+        Ok(())
+    }
+}
+
+fn classify_delete(
+    conn: &Connection,
+    delete_set: &BTreeSet<String>,
+    keep_root: Option<&str>,
+    delete_root: Option<&str>,
+) -> Result<DeleteCoordinates> {
+    let mut result = DeleteCoordinates::default();
+    if !table_exists(conn, "coordinates")? {
+        return Ok(result);
+    }
+    let mut deleted_cards = BTreeSet::new();
+    let mut query = conn.prepare_cached(
+        "SELECT i.card_id, i.filing_coord_id FROM card_identity i JOIN cards c ON c.row_id = i.card_row
+         WHERE c.location = ?1 OR c.citation_key = ?1",
+    )?;
+    for address in delete_set {
+        let Some((id, filing_id)) = query
+            .query_row([address], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .optional()?
+        else {
+            continue;
+        };
+        deleted_cards.insert(id.clone());
+        if let Some(tree) = tree_by_public_key(conn, crate::tree_id(address))?
+            && tree.root_card_id == id
+        {
+            result.include_tree(conn, tree, false, delete_set)?;
+        }
+        let remove_filing = TreeRole::of_address(address) != TreeRole::Connection;
+        if remove_filing {
+            result.non_connection_filings.insert(filing_id.clone());
+        }
+        for row in coordinates_of_card(conn, &id)? {
+            if remove_filing && row.coord_id == filing_id {
+                result.removed.insert(row.coord_id);
+            } else {
+                result.missing.insert(row.coord_id);
+            }
+        }
+    }
+    if let Some(root) = keep_root
+        && let Some(tree) = tree_by_public_key(conn, crate::tree_id(root))?
+    {
+        result.include_tree(conn, tree, true, delete_set)?;
+    }
+    if let Some(root) = delete_root {
+        let tree = tree_by_public_key(conn, crate::tree_id(root))?
+            .with_context(|| format!("Tree rooted at `{root}` is missing"))?;
+        if !result.trees.contains_key(&tree.tree_id) {
+            result.include_tree(conn, tree, false, delete_set)?;
+        }
+    }
+    let mut children = conn.prepare_cached(
+        "SELECT c.coord_id, i.card_id FROM coordinates c
+         LEFT JOIN card_identity i ON i.card_id = c.card_id AND i.filing_coord_id = c.coord_id
+         WHERE c.tree_id = ?1 AND c.parent_coord_id = ?2",
+    )?;
+    let mut pending: Vec<_> = result.removed.iter().cloned().collect();
+    while let Some(id) = pending.pop() {
+        let row = coordinate(conn, &id)?.context("Coordinate scheduled for deletion is missing")?;
+        for child in children.query_map(params![row.tree_id, id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })? {
+            let (child, filing_card) = child?;
+            // A surviving Filing Coordinate (e.g. the successor after a deleted span) is
+            // relinked by the delete plan's filing mapping in the same transaction.
+            if filing_card.is_none_or(|card| deleted_cards.contains(&card))
+                && result.removed.insert(child.clone())
+            {
+                pending.push(child);
+            }
+        }
+    }
+    result.missing.retain(|id| !result.removed.contains(id));
+    Ok(result)
+}
+
+pub(crate) fn remove_coordinates_tx(
+    conn: &Connection,
+    ids: &[String],
+    revision: i64,
+) -> Result<()> {
+    let mut rows = BTreeMap::new();
+    let mut children = BTreeMap::<String, Vec<String>>::new();
+    for id in ids {
+        if let Some(row) = coordinate(conn, id)? {
+            if let Some(parent) = &row.parent_coord_id {
+                children.entry(parent.clone()).or_default().push(id.clone());
+            }
+            rows.insert(id.clone(), row);
+        }
+    }
+    let mut stack: Vec<_> = rows
+        .values()
+        .filter(|row| {
+            row.parent_coord_id
+                .as_ref()
+                .is_none_or(|parent| !rows.contains_key(parent))
+        })
+        .map(|row| (row.coord_id.clone(), false))
+        .collect();
+    let mut order = Vec::with_capacity(rows.len());
+    while let Some((id, visited)) = stack.pop() {
+        if visited {
+            order.push(id);
+            continue;
+        }
+        if let Some(kids) = children.get(&id) {
+            stack.push((id, true));
+            stack.extend(kids.iter().map(|kid| (kid.clone(), false)));
+        } else {
+            order.push(id);
+        }
+    }
+    if order.len() != rows.len() {
+        bail!("cannot remove Coordinates in a parent cycle");
+    }
+    let mut remove_edges = conn.prepare_cached(
+        "DELETE FROM coordinate_edges WHERE tree_id = ?2 AND (from_coord_id = ?1 OR to_coord_id = ?1)",
+    )?;
+    let mut retire = conn.prepare_cached(
+        "INSERT INTO retired_coordinates(coord_id, tree_id, card_id, retired_at_rev)
+         VALUES(?1, ?2, ?3, ?4)",
+    )?;
+    let mut remove = conn.prepare_cached("DELETE FROM coordinates WHERE coord_id = ?1")?;
+    for id in order {
+        let row = &rows[&id];
+        remove_edges.execute(params![id, row.tree_id])?;
+        retire.execute(params![id, row.tree_id, row.card_id, revision])?;
+        remove.execute([id])?;
+    }
+    Ok(())
+}
+
 pub(crate) fn delete_hosts(
     conn: &Connection,
     delete_set: &BTreeSet<String>,
     keep_root: Option<&str>,
 ) -> Result<()> {
-    if !installed(conn) {
+    apply_host_delete(conn, classify_delete(conn, delete_set, keep_root, None)?)
+}
+
+pub(crate) fn delete_tree_hosts(
+    conn: &Connection,
+    delete_set: &BTreeSet<String>,
+    root: &str,
+) -> Result<()> {
+    apply_host_delete(conn, classify_delete(conn, delete_set, None, Some(root))?)
+}
+
+fn apply_host_delete(conn: &Connection, plan: DeleteCoordinates) -> Result<()> {
+    if plan.removed.is_empty() && plan.trees.is_empty() {
         return Ok(());
     }
-    let revision = next_revision(conn)?;
-    for address in delete_set {
-        if let Some(handle) = Handle::parse(address).filter(|h| h.local.is_none())
-            && let Some(tree) = tree_by_num(conn, handle.tree)?
-        {
-            let ids: Vec<String> = placements_of_host(conn, &tree.tree_id)?
-                .into_iter()
-                .map(|p| p.placement_id)
-                .collect();
-            remove_placements(conn, &ids, revision)?;
-            conn.execute("DELETE FROM connection_trees WHERE tree_id = ?1", [&tree.tree_id])?;
-            continue;
-        }
-        if TreeRole::of_address(address) == TreeRole::Topic {
-            let Ok(card) = crate::load_card(conn, address) else { continue };
-            let card_id = card_id_of_row(conn, card.row_id)?;
-            let ids: Vec<String> = attachments_of_anchor(conn, &card_id)?
-                .into_iter()
-                .map(|p| p.placement_id)
-                .collect();
-            remove_placements(conn, &ids, revision)?;
-        }
+    for tree in plan.trees.values() {
+        crate::coord_lock::ensure_host_unlocked(conn, &tree.tree_id, &tree.public_key)?;
     }
-    if let Some(root) = keep_root
-        && let Some(handle) = Handle::parse(root).filter(|h| h.local.is_none())
-        && let Some(tree) = tree_by_num(conn, handle.tree)?
-    {
-        let ids: Vec<String> = placements_of_host(conn, &tree.tree_id)?
-            .into_iter()
-            .filter(|p| p.edge != EdgeKind::Root)
-            .map(|p| p.placement_id)
-            .collect();
-        remove_placements(conn, &ids, revision)?;
+    for (card_id, coord_id, _) in &plan.reanchor {
+        conn.execute(
+            "UPDATE card_identity SET filing_coord_id = ?2 WHERE card_id = ?1",
+            params![card_id, coord_id],
+        )?;
+    }
+    remove_coordinates_tx(
+        conn,
+        &plan.removed.into_iter().collect::<Vec<_>>(),
+        next_revision(conn)?,
+    )?;
+    for tree in plan.trees.keys() {
+        conn.execute("DELETE FROM trees WHERE tree_id = ?1", [tree])?;
     }
     Ok(())
 }
 
-/// The state a delete plan binds itself to beyond its lines (docs/connection-trees-free-proposal.md
-/// §6, Astra round 2): the text of every Card it deletes, every row of every Connection tree whose
-/// root it deletes (stations with their slots and glosses, connections with their last revision),
-/// the Topic-side mounts beside the Topic Cards it deletes, and the stations elsewhere that it turns
-/// into Missing mounts with their connections. A connection or gloss written between the preview
-/// and the confirmation changes this state, so the old confirmation is refused as stale.
-pub(crate) fn delete_state(conn: &Connection, delete_set: &BTreeSet<String>) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    for address in delete_set {
-        let Ok(card) = crate::load_card(conn, address) else { continue };
-        out.push(format!("card {address} {}", card.text));
-        if !installed(conn) {
-            continue;
-        }
-        let card_id = card_id_of_row(conn, card.row_id)?;
-        let mut hosts: Vec<String> = Vec::new();
-        if let Some(handle) = Handle::parse(address).filter(|h| h.local.is_none())
-            && let Some(tree) = tree_by_num(conn, handle.tree)?
-        {
-            hosts.push(tree.tree_id.clone());
-        }
-        let mut rows: Vec<Placement> = Vec::new();
-        for host in &hosts {
-            rows.extend(placements_of_host(conn, host)?);
-        }
-        rows.extend(placements_of_card(conn, &card_id)?);
-        rows.extend(attachments_of_anchor(conn, &card_id)?);
-        rows.sort_by(|a, b| a.placement_id.cmp(&b.placement_id));
-        rows.dedup_by(|a, b| a.placement_id == b.placement_id);
-        for p in &rows {
-            out.push(format!(
-                "placement {} {} {} {:?} {} {:?} {:?}",
-                p.placement_id, p.host_tree_key, p.card_id, p.parent_id, p.edge.id(), p.ordinal, p.gloss
-            ));
-            let mut edges: Vec<(String, i64)> = conn
-                .prepare_cached(
-                    "SELECT connection_id, updated_at_rev FROM placement_edges
-                     WHERE tree_id = ?2 AND (from_placement_id = ?1 OR to_placement_id = ?1)",
-                )?
-                .query_map([&p.placement_id, &p.host_tree_key], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
-            edges.sort();
-            for (id, rev) in edges {
-                out.push(format!("connection {id} {rev}"));
-            }
-        }
-    }
-    out.sort();
-    out.dedup();
-    Ok(out)
-}
-
-/// Whether a keep-root delete of `root` has host data to remove even when no Card goes.
-pub(crate) fn keep_root_has_host_work(conn: &Connection, root: &str) -> Result<bool> {
-    let Some(handle) = Handle::parse(root).filter(|h| h.local.is_none()) else {
-        return Ok(false);
-    };
-    let Some(tree) = tree_by_num(conn, handle.tree)? else {
-        return Ok(false);
-    };
-    Ok(placements_of_host(conn, &tree.tree_id)?.len() > 1)
-}
-
-/// The whole-archive delete: every station, connection and tree record goes (their IDs retired);
-/// identities, issued handles, retired history and the Connection-tree allocator stay.
 pub(crate) fn delete_all_hosts(conn: &Connection) -> Result<()> {
-    if !installed(conn) {
+    if !table_exists(conn, "coordinates")? {
         return Ok(());
     }
     let revision = next_revision(conn)?;
-    conn.execute("DELETE FROM placement_edges", [])?;
+    conn.execute("DELETE FROM coordinate_edges", [])?;
     conn.execute(
-        "INSERT OR IGNORE INTO retired_placements(placement_id, host_tree_key, card_id, retired_at_rev)
-         SELECT placement_id, host_tree_key, card_id, ?1 FROM placements",
+        "INSERT INTO retired_coordinates(coord_id, tree_id, card_id, retired_at_rev)
+         SELECT coord_id, tree_id, card_id, ?1 FROM coordinates",
         [revision],
     )?;
-    conn.execute("DELETE FROM placements", [])?;
-    conn.execute("DELETE FROM connection_trees", [])?;
+    conn.execute("DELETE FROM coordinates", [])?;
+    conn.execute("DELETE FROM trees", [])?;
     Ok(())
 }
 
-/// The plan lines a home delete adds for the coordinate data it affects: trees it removes, and
-/// stations in other trees that will show as Missing mounts (with their connections, kept).
+pub(crate) fn delete_state(
+    conn: &Connection,
+    delete_set: &BTreeSet<String>,
+) -> Result<Vec<String>> {
+    let mut state = Vec::new();
+    for address in delete_set {
+        let card = crate::load_card(conn, address)?;
+        state.push(format!("card {address} {}", card.text));
+    }
+    let plan = classify_delete(conn, delete_set, None, None)?;
+    for (card_id, coord_id, address) in &plan.reanchor {
+        state.push(format!("reanchor {address} {card_id} {coord_id}"));
+    }
+    let mut edge_ids = BTreeSet::new();
+    for id in plan.removed.iter().chain(&plan.missing) {
+        let row = coordinate(conn, id)?.context("deleted plan Coordinate is missing")?;
+        state.push(format!("coordinate {row:?}"));
+        let mut query = conn.prepare_cached(
+            "SELECT connection_id FROM coordinate_edges
+             WHERE tree_id = ?2 AND (from_coord_id = ?1 OR to_coord_id = ?1)",
+        )?;
+        for edge in query.query_map(params![id, row.tree_id], |r| r.get::<_, String>(0))? {
+            edge_ids.insert(edge?);
+        }
+    }
+    if !edge_ids.is_empty() {
+        let mut lookup =
+            conn.prepare_cached("SELECT * FROM coordinate_edges WHERE connection_id = ?1")?;
+        let columns = lookup.column_count();
+        for edge in edge_ids {
+            let values = lookup.query_row([edge], |r| {
+                (0..columns)
+                    .map(|i| r.get::<_, rusqlite::types::Value>(i))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })?;
+            state.push(format!("connection {values:?}"));
+        }
+    }
+    state.sort();
+    Ok(state)
+}
+
+pub(crate) fn keep_root_has_host_work(conn: &Connection, root: &str) -> Result<bool> {
+    let Some(tree) = tree_by_public_key(conn, crate::tree_id(root))? else {
+        return Ok(false);
+    };
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM coordinates WHERE tree_id = ?1 AND edge <> 'root')",
+        [&tree.tree_id],
+        |r| r.get(0),
+    )?)
+}
+
 pub(crate) fn delete_impact_lines(
     conn: &Connection,
     delete_set: &BTreeSet<String>,
     keep_root: Option<&str>,
 ) -> Result<Vec<String>> {
-    if !installed(conn) {
-        return Ok(Vec::new());
-    }
+    delete_impact_lines_in(conn, delete_set, keep_root, None)
+}
+
+pub(crate) fn delete_tree_impact_lines(
+    conn: &Connection,
+    delete_set: &BTreeSet<String>,
+    root: &str,
+) -> Result<Vec<String>> {
+    delete_impact_lines_in(conn, delete_set, None, Some(root))
+}
+
+fn delete_impact_lines_in(
+    conn: &Connection,
+    delete_set: &BTreeSet<String>,
+    keep_root: Option<&str>,
+    delete_root: Option<&str>,
+) -> Result<Vec<String>> {
+    let plan = classify_delete(conn, delete_set, keep_root, delete_root)?;
     let mut lines = Vec::new();
-    let mut removed_hosts = BTreeSet::new();
-    // Host data this delete owns and removes: the stations and connections of an emptied
-    // Connection tree, and the mounts beside deleted Topic Cards.
     if let Some(root) = keep_root
-        && let Some(handle) = Handle::parse(root).filter(|h| h.local.is_none())
-        && let Some(tree) = tree_by_num(conn, handle.tree)?
+        && let Some(tree) = tree_by_public_key(conn, crate::tree_id(root))?
+        && tree.role == TreeRole::Connection
     {
-        let stations = placements_of_host(conn, &tree.tree_id)?.len().saturating_sub(1);
-        let edges: i64 = conn.query_row("SELECT COUNT(*) FROM placement_edges WHERE tree_id = ?1", [&tree.tree_id], |r| r.get(0))?;
-        lines.push(format!("{root} keeps its root station; its other {stations} station(s) and {edges} tree connection(s) are removed"));
-        removed_hosts.insert(tree.tree_id);
+        let (stations, edges): (i64, i64) = conn.query_row(
+            "SELECT (SELECT count(*) FROM coordinates WHERE tree_id = ?1 AND edge <> 'root'),
+                    (SELECT count(*) FROM coordinate_edges WHERE tree_id = ?1)",
+            [&tree.tree_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        lines.push(format!(
+            "{root} keeps its root station; its other {stations} station(s) and {edges} tree connection(s) are removed"
+        ));
     }
-    let mut beside = 0usize;
+    for tree in plan.trees.values() {
+        if tree.role == TreeRole::Connection {
+            let n: i64 = conn.query_row(
+                "SELECT count(*) FROM coordinates WHERE tree_id = ?1",
+                [&tree.tree_id],
+                |r| r.get(0),
+            )?;
+            lines.push(format!(
+                "Connection tree {} goes with its {n} station(s) and their connections; its handles stay issued",
+                tree.handle(),
+            ));
+        } else if conn.query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM coordinates c JOIN card_identity i ON i.card_id = c.card_id
+                 WHERE c.tree_id = ?1 AND c.coord_id IS NOT i.filing_coord_id
+             ) OR EXISTS (SELECT 1 FROM coordinate_edges WHERE tree_id = ?1)",
+            [&tree.tree_id],
+            |r| r.get::<_, bool>(0),
+        )? {
+            lines.push(format!(
+                "Tree {} and its Coordinates and Tree connections will be removed",
+                tree.public_key,
+            ));
+        }
+    }
+    let mut edges = BTreeSet::new();
+    if !plan.removed.is_empty() {
+        let mut incident = conn.prepare_cached(
+            "SELECT e.connection_id FROM coordinates c JOIN coordinate_edges e
+             ON e.tree_id = c.tree_id AND e.from_coord_id = c.coord_id WHERE c.coord_id = ?1
+             UNION ALL
+             SELECT e.connection_id FROM coordinates c JOIN coordinate_edges e
+             ON e.tree_id = c.tree_id AND e.to_coord_id = c.coord_id WHERE c.coord_id = ?1",
+        )?;
+        for id in &plan.removed {
+            for edge in incident.query_map([id], |r| r.get::<_, String>(0))? {
+                edges.insert(edge?);
+            }
+        }
+    }
+    let extra_removed = plan
+        .removed
+        .difference(&plan.non_connection_filings)
+        .count();
+    let incident_edges = edges.len();
+    if extra_removed > 0 || incident_edges > 0 {
+        lines.push(format!(
+            "{} Coordinate(s) and their incident Tree connections will be removed",
+            plan.removed.len()
+        ));
+    }
+    for (_, coord_id, address) in &plan.reanchor {
+        let coord =
+            coordinate(conn, coord_id)?.context("surviving Filing Coordinate is missing")?;
+        let tree = tree_by_id(conn, &coord.tree_id)?.context("surviving Tree is missing")?;
+        lines.push(format!(
+            "keep {address} filed in {} (place:{coord_id})",
+            tree.handle()
+        ));
+    }
+    let mut missing = plan.missing;
+    if missing.is_empty() {
+        return Ok(lines);
+    }
+    let mut home_station = conn.prepare_cached(
+        "SELECT p.coord_id FROM card_identity i
+         JOIN coordinates p ON p.coord_id = i.filing_coord_id
+         JOIN trees t ON t.tree_id = p.tree_id
+         WHERE i.status = 'live' AND i.last_address = ?1 AND t.public_key = ?2",
+    )?;
     for address in delete_set {
-        if TreeRole::of_address(address) != TreeRole::Topic {
+        let Some(handle) = Handle::parse(address).filter(|handle| handle.local.is_some()) else {
+            continue;
+        };
+        let root = Handle::root(handle.tree);
+        if delete_set.contains(&root) || keep_root == Some(root.as_str()) {
             continue;
         }
-        let Ok(card) = crate::load_card(conn, address) else { continue };
-        beside += attachments_of_anchor(conn, &card_id_of_row(conn, card.row_id)?)?.len();
-    }
-    if beside > 0 {
-        lines.push(format!("{beside} Topic-side mount(s) beside the deleted Topic Cards are removed with them"));
-    }
-    for address in delete_set {
-        // A native Card whose tree stays keeps its home station as a Missing mount; an emptied
-        // tree (keep-root) or a deleted tree removes that station with the rest.
-        if let Some(handle) = Handle::parse(address).filter(|h| h.local.is_some())
-            && !delete_set.contains(&Handle::root(handle.tree))
-            && keep_root != Some(Handle::root(handle.tree).as_str())
-        {
-            lines.push(format!("{address} leaves its home station in ~{} as a Missing mount (unplace or rebind it there)", handle.tree));
+        let id: Option<String> = home_station
+            .query_row(params![address, root], |r| r.get(0))
+            .optional()?;
+        if id.is_some_and(|id| missing.remove(&id)) {
+            lines.push(format!(
+                "{address} leaves its home station in ~{} as a Missing mount (unplace or rebind it there)",
+                handle.tree,
+            ));
         }
     }
-    for address in delete_set {
-        if let Some(handle) = Handle::parse(address).filter(|h| h.local.is_none())
-            && let Some(tree) = tree_by_num(conn, handle.tree)?
-        {
-            let n = placements_of_host(conn, &tree.tree_id)?.len();
-            lines.push(format!("Connection tree {} goes with its {n} station(s) and their connections; its handles stay issued", tree.handle()));
-            removed_hosts.insert(tree.tree_id);
+    if !missing.is_empty() {
+        let mut hosts = BTreeSet::new();
+        let mut tree_id =
+            conn.prepare_cached("SELECT tree_id FROM coordinates WHERE coord_id = ?1")?;
+        for id in &missing {
+            hosts.insert(tree_id.query_row([id], |r| r.get::<_, String>(0))?);
         }
-    }
-    let mut missing = 0;
-    let mut hosts = BTreeSet::new();
-    for address in delete_set {
-        let Ok(card) = crate::load_card(conn, address) else { continue };
-        let card_id = card_id_of_row(conn, card.row_id)?;
-        // A native Card's home station is named on its own line above (or goes with its tree).
-        let home_tree = match Handle::parse(address).filter(|h| h.local.is_some()) {
-            Some(handle) => tree_by_num(conn, handle.tree)?.map(|tree| tree.tree_id),
-            None => None,
-        };
-        for p in placements_of_card(conn, &card_id)? {
-            if removed_hosts.contains(&p.host_tree_key) || home_tree.as_ref() == Some(&p.host_tree_key) {
-                continue;
-            }
-            missing += 1;
-            hosts.insert(p.host_tree_key.clone());
-        }
-    }
-    if missing > 0 {
+        let missing = missing.len();
         lines.push(format!(
             "{missing} station(s) in {} other tree(s) will show as Missing mounts, keeping their glosses, children and connections",
-            hosts.len()
+            hosts.len(),
         ));
     }
     Ok(lines)
 }
 
-/// Every Missing mount: a station whose Card was deleted at its home. `workspace` filters by the
-/// host tree's Workspace.
-pub(crate) fn missing_mounts(conn: &Connection, workspace: Option<Workspace>) -> Result<Vec<Value>> {
-    if !installed(conn) {
+pub(crate) fn missing_mounts(
+    conn: &Connection,
+    workspace: Option<Workspace>,
+) -> Result<Vec<Value>> {
+    if !table_exists(conn, "coordinates")? {
         return Ok(Vec::new());
     }
     let mut stmt = conn.prepare(&format!(
-        "SELECT {PLACEMENT_COLUMNS} FROM placements p WHERE EXISTS (
-             SELECT 1 FROM card_identity i WHERE i.card_id = p.card_id AND i.status = 'retired')
-         ORDER BY host_kind, host_tree_key, placement_id"
+        "SELECT {COORDINATE_COLUMNS} FROM coordinates c
+         WHERE EXISTS (SELECT 1 FROM card_identity i WHERE i.card_id = c.card_id AND i.status = 'retired')
+         AND (?1 IS NULL OR c.host_workspace = ?1) ORDER BY tree_id, coord_id",
     ))?;
-    let rows = stmt
-        .query_map([], placement_from_row)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows = stmt.query_map([workspace.map(Workspace::id)], coordinate_from_row)?;
     let mut out = Vec::new();
-    for p in rows {
-        let identity = identity(conn, &p.card_id)?.context("unknown Card")?;
-        let (host, host_workspace) = if p.host_kind == "topic" {
-            let root = format!("{}/0", p.host_tree_key);
-            let ws = crate::load_card(conn, &root).map(|c| c.workspace).unwrap_or(Workspace::Human);
-            (root, ws)
-        } else {
-            let Some(tree) = tree_by_id(conn, &p.host_tree_key)? else { continue };
-            (tree.handle(), tree.workspace)
-        };
-        if workspace.is_some_and(|w| w != host_workspace) {
-            continue;
-        }
+    for row in rows {
+        let row = row?;
+        let tree =
+            tree_by_id(conn, &row.tree_id)?.context("Missing Coordinate's Tree is missing")?;
+        let card = identity(conn, &row.card_id)?
+            .context("Missing Coordinate's Card identity is absent")?;
         out.push(json!({
-            "placement_id": p.placement_id,
-            "host": host,
-            "host_workspace": host_workspace.id(),
-            "coord": coordinate_of(conn, &p).ok(),
-            "card_id": p.card_id,
-            "last_address": identity.last_address,
-            "last_title": identity.last_title,
-            "gloss": p.gloss,
+            "coord_id": row.coord_id,
+            "placement_id": row.coord_id,
+            "host": tree.root_address(),
+            "host_workspace": row.host_workspace.id(),
+            "coord": coordinate_path(conn, &row)?,
+            "card_id": row.card_id,
+            "last_address": card.last_address,
+            "last_title": card.last_title,
+            "gloss": row.gloss,
         }));
     }
     Ok(out)
 }
-
-/// After Cards took new addresses: Topic-side mounts follow their anchor by identity. A mount whose
-/// anchor moved into another Topic moves to that Topic's host; a Card moved into a Topic that
-/// mounts it beside one of its Cards, or a mount that would meet the same Card already mounted in
-/// the destination Topic, is refused (a Topic tree holds a Card once).
-pub(crate) fn follow_anchor_moves(conn: &Connection, mapping: &BTreeMap<String, String>) -> Result<()> {
-    if !installed(conn) {
-        return Ok(());
-    }
-    for new in mapping.values() {
-        if new.starts_with("__") || TreeRole::of_address(new) != TreeRole::Topic {
-            continue;
-        }
-        let Ok(card) = crate::load_card(conn, new) else { continue };
-        let card_id = card_id_of_row(conn, card.row_id)?;
-        let topic = crate::tree_id(new).to_string();
-        // The moved Card is mounted beside a Card of the Topic it moved into.
-        if placements_of_host(conn, &topic)?.iter().any(|p| p.card_id == card_id) {
-            bail!(
-                "`{new}` is mounted beside a Card of Topic {topic} (a Topic-side mount); detach that mount before moving the Card into the Topic"
-            );
-        }
-        // Mounts anchored on the moved Card follow it into its new Topic.
-        for p in attachments_of_anchor(conn, &card_id)? {
-            if p.host_tree_key == topic {
-                continue;
-            }
-            if placements_of_host(conn, &topic)?.iter().any(|q| q.card_id == p.card_id) {
-                bail!(
-                    "the Card mounted beside `{new}` is already mounted in Topic {topic}; detach one of the two mounts before this move"
-                );
-            }
-            if let Some(address) = address_of_card_id(conn, &p.card_id)?
-                && TreeRole::of_address(&address) == TreeRole::Topic
-                && crate::tree_id(&address) == topic
-            {
-                bail!("the Card mounted beside `{new}` has its home in Topic {topic}; detach the mount before this move");
-            }
-            conn.execute(
-                "UPDATE placements SET host_tree_key = ?2 WHERE placement_id = ?1",
-                params![p.placement_id, topic],
-            )?;
-        }
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------------------------
-// Dump
-// ---------------------------------------------------------------------------------------------
-
-/// The version of `coordinates.json` in a dump.
-pub(crate) const DUMP_VERSION: u64 = 1;
 
 fn table_rows(conn: &Connection, sql: &str) -> Result<Vec<Value>> {
     let mut stmt = conn.prepare(sql)?;
@@ -1601,7 +2738,9 @@ pub(crate) fn dump_export(conn: &Connection) -> Result<Value> {
     }
     let metadata = |key: &str| -> Result<Option<String>> {
         Ok(conn
-            .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |r| r.get(0))
+            .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
             .optional()?)
     };
     let mut lock_evidence = serde_json::Map::new();
@@ -1613,7 +2752,13 @@ pub(crate) fn dump_export(conn: &Connection) -> Result<Value> {
         "lock_source_reviews",
     ] {
         if table_exists(conn, table)? {
-            lock_evidence.insert(table.to_string(), json!(table_rows(conn, &format!("SELECT * FROM {table} ORDER BY 1, 2"))?));
+            lock_evidence.insert(
+                table.to_string(),
+                json!(table_rows(
+                    conn,
+                    &format!("SELECT * FROM {table} ORDER BY 1, 2")
+                )?),
+            );
         }
     }
     Ok(json!({
@@ -1622,15 +2767,13 @@ pub(crate) fn dump_export(conn: &Connection) -> Result<Value> {
         "archive_id": metadata("archive_id")?,
         "archive_revision": crate::link_index::revision(conn)?,
         "next_connection_id": metadata("next_connection_id")?,
-        "identities": table_rows(conn,
-            "SELECT i.card_id, i.status, COALESCE(c.location, c.citation_key, i.last_address) AS address,
-                    i.last_address, i.last_title, i.retired_at_rev
-             FROM card_identity i LEFT JOIN cards c ON c.row_id = i.card_row ORDER BY i.card_id")?,
-        "handles": table_rows(conn, "SELECT handle, card_id, origin_tree_id, local_seq FROM card_handles ORDER BY handle")?,
-        "connection_trees": table_rows(conn, "SELECT tree_id, display_num, workspace, root_card_id, purpose, next_local_seq, created_at FROM connection_trees ORDER BY display_num")?,
-        "placements": table_rows(conn, "SELECT placement_id, host_kind, host_tree_key, card_id, parent_id, anchor_card_id, edge, ordinal, gloss FROM placements ORDER BY host_tree_key, placement_id")?,
-        "placement_edges": table_rows(conn, "SELECT * FROM placement_edges ORDER BY tree_id, connection_id")?,
-        "retired_placements": table_rows(conn, "SELECT * FROM retired_placements ORDER BY placement_id")?,
+        "next_topic_id": metadata("next_topic_id")?,
+        "card_identity": table_rows(conn, "SELECT * FROM card_identity ORDER BY card_id")?,
+        "card_handles": table_rows(conn, "SELECT * FROM card_handles ORDER BY handle")?,
+        "trees": table_rows(conn, "SELECT * FROM trees ORDER BY role, public_key")?,
+        "coordinates": table_rows(conn, "SELECT * FROM coordinates ORDER BY tree_id, coord_id")?,
+        "coordinate_edges": table_rows(conn, "SELECT * FROM coordinate_edges ORDER BY tree_id, connection_id")?,
+        "retired_coordinates": table_rows(conn, "SELECT * FROM retired_coordinates ORDER BY coord_id")?,
         "lock_evidence": Value::Object(lock_evidence),
     }))
 }

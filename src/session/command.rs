@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
@@ -10,7 +11,7 @@ pub(super) enum PointerContext {
     /// A Topic Card or Literature Card.
     TreeRoot,
     Regular,
-    /// A station of a Connection tree or a Topic-side mount: one occurrence of a Card.
+    /// One Coordinate of a Card in any tree.
     Station,
 }
 
@@ -20,14 +21,14 @@ enum Availability {
     OnCard,
     OnTreeRoot,
     OnRegular,
-    /// At a station (an occurrence of a Card in a Connection tree or beside a Topic Card).
     OnStation,
+    OnCardOrStation,
 }
 
 const COMMANDS: &[(&str, &str, Availability)] = &[
     (
         "go [<target>]",
-        "go to a Location, Citation key or handle (~7#4); a coordinate (~7/2, 3/2+1), place:<id> or ~7 opens a station; bare go returns to ROOT",
+        "open a Card by address or handle (~7#4), or a station by Coordinate (~7/2, ~7, a secondary path like 3/2|a, or place:<id>). Bare go returns to ROOT",
         Availability::Always,
     ),
     ("root", "return to ROOT", Availability::Always),
@@ -145,10 +146,11 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
     ),
     ("n", "go to the next station (the Direct successor) in this tree", Availability::OnStation),
     ("p", "go to the previous station (the structural predecessor)", Availability::OnStation),
+    ("up", "go to the previous station (the structural predecessor)", Availability::OnStation),
     ("b [<k>]", "go to a Side branch of this station (the k-th when there are several)", Availability::OnStation),
     ("home", "open the Card at its home; back returns to this station", Availability::OnStation),
     ("e", "edit the Card at this station (its home Card)", Availability::OnStation),
-    ("places", "list every tree this Card stands in, with coordinates and glosses (also at a home Card)", Availability::OnStation),
+    ("places", "list every Coordinate of this Card, including its Filing Coordinate", Availability::OnCardOrStation),
     ("conns", "list the tree connections of this station (incoming, outgoing, neutral)", Availability::OnStation),
     (
         "place <target> [side] [gloss...]",
@@ -156,6 +158,21 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         Availability::OnStation,
     ),
     ("unplace [reattach|detach]", "detach this station; the Card stays at its home", Availability::OnStation),
+    (
+        "add-coord <target> [side] [gloss...]",
+        "add a Secondary Coordinate after the current Coordinate or as a Side branch",
+        Availability::OnCardOrStation,
+    ),
+    (
+        "detach-coord [reattach|detach]",
+        "detach the current Coordinate and choose how to handle its successors",
+        Availability::OnCardOrStation,
+    ),
+    (
+        "refile",
+        "file this Card at the current Secondary Coordinate in its own Workspace",
+        Availability::OnStation,
+    ),
     (
         "connect <station> [directed] [<label>...]",
         "record a tree connection from this station to another station of the tree",
@@ -170,10 +187,10 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
     ("edit-gloss <text>|none", "set or clear this station's positional gloss", Availability::OnStation),
     (
         "move-place <parent-station> [side]",
-        "move this station (with its Side branches) under another station",
+        "move this Coordinate under another Coordinate in the tree",
         Availability::OnStation,
     ),
-    ("promote <location>", "move a native Connection-tree Card's home into a Topic tree (also at its home Card)", Availability::OnStation),
+    ("promote <location>", "move a native Connection-tree Card's home into a Topic tree", Availability::OnCardOrStation),
     ("stats", "count cards by kind", Availability::Always),
     ("status", "show service status", Availability::Always),
     ("lsbk", "list broken links", Availability::Always),
@@ -194,6 +211,7 @@ fn command_available(availability: Availability, context: PointerContext) -> boo
         Availability::OnTreeRoot => context == PointerContext::TreeRoot,
         Availability::OnRegular => context == PointerContext::Regular,
         Availability::OnStation => context == PointerContext::Station,
+        Availability::OnCardOrStation => context != PointerContext::Root,
     }
 }
 
@@ -220,7 +238,8 @@ fn show_check(accepted: &crate::gate::Accepted) {
     }
 }
 
-pub(super) fn pointer_context(root: &Path, pointer: &Pointer) -> Result<PointerContext> {    match pointer {
+pub(super) fn pointer_context(root: &Path, pointer: &Pointer) -> Result<PointerContext> {
+    match pointer {
         Pointer::Root => Ok(PointerContext::Root),
         Pointer::Station(_) => Ok(PointerContext::Station),
         Pointer::Card(target) => {
@@ -259,25 +278,111 @@ pub(super) trait Interaction {
 pub(super) enum Pointer {
     Root,
     Card(String),
-    /// One occurrence of a Card: a station of a Connection tree or a Topic-side mount, named by
-    /// its placement ID. Its coordinate is derived afresh at every view.
+    /// A Coordinate ID. The Card and current path are looked up from this occurrence.
     Station(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SessionState {
-    pointer: Pointer,
-    /// The Workspace shown at ROOT and given new Topics and Literature. It
-    /// follows the Pointer into whichever Workspace holds its Card.
-    workspace: crate::Workspace,
+    current: Visit,
     /// Where the Pointer was before each move, newest last, for `back`.
     back: Vec<Visit>,
     /// Where `back` came from, newest last, for `fwd`; a new move clears it.
     forward: Vec<Visit>,
 }
 
-/// One place the Pointer has been: the Card (or ROOT) and the Workspace shown.
-type Visit = (Pointer, crate::Workspace);
+/// A visit keeps the identity observed on arrival even after its address is reused.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Visit {
+    pointer: Pointer,
+    workspace: crate::Workspace,
+    coord_id: Option<String>,
+    card_id: Option<String>,
+}
+
+impl Visit {
+    fn new(pointer: Pointer, workspace: crate::Workspace) -> Self {
+        let coord_id = match &pointer {
+            Pointer::Station(id) => Some(id.clone()),
+            _ => None,
+        };
+        Self {
+            pointer,
+            workspace,
+            coord_id,
+            card_id: None,
+        }
+    }
+
+    fn capture(&mut self, conn: &Connection) -> Result<()> {
+        match &self.pointer {
+            Pointer::Root => {}
+            Pointer::Station(id) => {
+                if let Some(row) = crate::coord::coordinate(conn, id)? {
+                    self.workspace = row.host_workspace;
+                    self.card_id = Some(row.card_id);
+                }
+            }
+            Pointer::Card(address) => {
+                let card = crate::load_card(conn, address)?;
+                self.workspace = card.workspace;
+                if let Some((card_id, coord_id)) = conn
+                    .query_row(
+                        "SELECT card_id, filing_coord_id FROM card_identity
+                         WHERE card_row = ?1 AND status = 'live'",
+                        [card.row_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?
+                {
+                    self.card_id = Some(card_id);
+                    self.coord_id = coord_id;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn restore(mut self, conn: &Connection) -> Result<(Option<Self>, Option<String>)> {
+        if let Some(id) = &self.coord_id {
+            let Some(row) = crate::coord::coordinate(conn, id)? else {
+                let recovery = match self.card_id.as_deref() {
+                    Some(card_id) => Some(recover_removed_coordinate(conn, card_id)?),
+                    None => retired_station(conn, id)?,
+                };
+                let Some((pointer, notice)) = recovery else {
+                    return Ok((None, None));
+                };
+                if pointer == Pointer::Root {
+                    return Ok((None, Some(notice)));
+                }
+                let mut visit = Self::new(pointer, self.workspace);
+                visit.capture(conn)?;
+                return Ok((Some(visit), Some(notice)));
+            };
+            self.workspace = row.host_workspace;
+            self.card_id.get_or_insert(row.card_id);
+        }
+        if let Pointer::Card(address) = &self.pointer {
+            let Some(card_id) = &self.card_id else {
+                return Ok((None, None));
+            };
+            let Some(identity) = crate::coord::identity(conn, card_id)?.filter(|i| i.live) else {
+                return Ok((
+                    None,
+                    Some(format!("Card visited at `{address}` was deleted")),
+                ));
+            };
+            self.pointer = match &self.coord_id {
+                Some(id) if identity.filing_coord_id.as_deref() != Some(id.as_str()) => {
+                    Pointer::Station(id.clone())
+                }
+                _ => Pointer::Card(identity.last_address),
+            };
+        }
+        Ok((Some(self), None))
+    }
+}
 
 /// How many earlier places `back` remembers.
 const HISTORY_LIMIT: usize = 100;
@@ -285,40 +390,80 @@ const HISTORY_LIMIT: usize = 100;
 impl SessionState {
     pub(super) fn root() -> Self {
         Self {
-            pointer: Pointer::Root,
-            workspace: crate::Workspace::Human,
+            current: Visit::new(Pointer::Root, crate::Workspace::Human),
             back: Vec::new(),
             forward: Vec::new(),
         }
     }
 
     pub(super) fn pointer(&self) -> &Pointer {
-        &self.pointer
+        &self.current.pointer
     }
 
     pub(super) fn set_pointer(&mut self, pointer: Pointer) {
-        self.pointer = pointer;
+        self.current = Visit::new(pointer, self.workspace());
     }
 
     pub(super) fn workspace(&self) -> crate::Workspace {
-        self.workspace
+        self.current.workspace
     }
 
-    pub(super) fn follow_link(&mut self, root: &Path, target: String) {
-        let before = self.visit();
-        self.pointer = Pointer::Card(target);
-        self.sync_workspace(root);
+    pub(super) fn follow_link(&mut self, root: &Path, target: &str) -> Result<CommandResult> {
+        self.capture_current(root);
+        let before = self.current.clone();
+        let conn = crate::open_db(root)?;
+        let snapshot = conn.unchecked_transaction()?;
+        let result = if let Some(address) = crate::coord::canonical(&snapshot, target)? {
+            self.set_pointer(Pointer::Card(address));
+            CommandResult::Navigated
+        } else {
+            self.open_target(&snapshot, target)?
+        };
+        self.current.capture(&snapshot)?;
         self.remember(before);
+        Ok(result)
     }
 
-    fn visit(&self) -> Visit {
-        (self.pointer.clone(), self.workspace)
+    fn open_target(&mut self, conn: &Connection, target: &str) -> Result<CommandResult> {
+        use crate::coord;
+
+        if let Some(id) = coord::place_bookmark(target) {
+            match coord::resolve_coord(conn, target) {
+                Ok(row) => {
+                    self.set_pointer(Pointer::Station(row.coord_id));
+                    return Ok(CommandResult::Navigated);
+                }
+                Err(error) => {
+                    let Some((pointer, notice)) = retired_station(conn, id)? else {
+                        return Err(error);
+                    };
+                    self.set_pointer(pointer);
+                    return Ok(CommandResult::NavigationNotice(notice));
+                }
+            }
+        }
+        let pointer = if coord::is_coordinate(target) {
+            Pointer::Station(coord::resolve_coord(conn, target)?.coord_id)
+        } else if coord::Handle::parse(target).is_some_and(|handle| handle.local.is_none()) {
+            Pointer::Station(coord::resolve_coord(conn, &format!("{target}/0"))?.coord_id)
+        } else if let Some(address) = coord::canonical(conn, target)? {
+            Pointer::Card(address)
+        } else if let Some((_, id)) = coord::secondary_coordinate_at(conn, target)? {
+            Pointer::Station(id)
+        } else {
+            bail!("target `{target}` does not exist");
+        };
+        self.set_pointer(pointer);
+        Ok(CommandResult::Navigated)
     }
 
     /// Record the place the Pointer just left, as a file browser does: a new
     /// move forgets the places `back` came from.
     fn remember(&mut self, before: Visit) {
-        if before.0 == self.pointer {
+        if before.pointer == self.current.pointer
+            && before.card_id == self.current.card_id
+            && before.coord_id == self.current.coord_id
+        {
             return;
         }
         self.back.push(before);
@@ -328,17 +473,21 @@ impl SessionState {
         self.forward.clear();
     }
 
-    /// Step `back` (or with `forward`, `fwd`) to the nearest remembered place
-    /// that still exists; places whose Card was deleted are skipped.
-    fn step(&mut self, root: &Path, forward: bool) -> Result<()> {
+    /// Step through history. A detached Coordinate offers its Card's current filing address.
+    fn step(&mut self, root: &Path, forward: bool) -> Result<CommandResult> {
         let conn = crate::open_db(root)?;
+        let snapshot = conn.unchecked_transaction()?;
+        let mut notices = Vec::new();
         loop {
             let next = if forward {
                 self.forward.pop()
             } else {
                 self.back.pop()
             };
-            let Some((pointer, workspace)) = next else {
+            let Some(next) = next else {
+                if !notices.is_empty() {
+                    return Ok(CommandResult::NavigationNotice(notices.join(" | ")));
+                }
                 bail!(
                     "{}",
                     if forward {
@@ -348,51 +497,37 @@ impl SessionState {
                     }
                 );
             };
-            if let Pointer::Card(target) = &pointer
-                && !crate::target_exists(&conn, target)?
-            {
+            let (next, notice) = next.restore(&snapshot)?;
+            notices.extend(notice);
+            let Some(next) = next else {
                 continue;
-            }
-            if let Pointer::Station(id) = &pointer
-                && crate::coord::placement(&conn, id)?.is_none()
-            {
-                continue;
-            }
-            let here = self.visit();
+            };
+            let here = std::mem::replace(&mut self.current, next);
             if forward {
                 self.back.push(here);
             } else {
                 self.forward.push(here);
             }
-            self.pointer = pointer;
-            self.workspace = workspace;
-            return Ok(());
+            return Ok(if notices.is_empty() {
+                CommandResult::Navigated
+            } else {
+                CommandResult::NavigationNotice(notices.join(" | "))
+            });
         }
     }
 
-    /// Adopt the Workspace of the Card under the Pointer, if there is one.
-    pub(super) fn sync_workspace(&mut self, root: &Path) {
-        if let Pointer::Station(id) = &self.pointer
+    /// Bind a newly opened visit to its IDs and Workspace. Keep those IDs while it is open.
+    fn capture_current(&mut self, root: &Path) {
+        if self.current.card_id.is_none()
+            && self.current.pointer != Pointer::Root
             && let Ok(conn) = crate::open_db(root)
-            && let Ok(Some(station)) = crate::coord::placement(&conn, id)
-            && let Ok(host) = crate::connection::host_of(&conn, &station)
         {
-            self.workspace = match host {
-                crate::connection::Host::Connection(tree) => tree.workspace,
-                crate::connection::Host::Topic { workspace, .. } => workspace,
-            };
-            return;
-        }
-        if let Pointer::Card(target) = &self.pointer
-            && let Ok(conn) = crate::open_db(root)
-            && let Ok(card) = crate::load_card(&conn, target)
-        {
-            self.workspace = card.workspace;
+            let _ = self.current.capture(&conn);
         }
     }
 
     fn current_card(&self, command: &str) -> Result<String> {
-        match &self.pointer {
+        match self.pointer() {
             Pointer::Root => bail!("{command} needs a Card; use go <target> first"),
             Pointer::Card(target) => Ok(target.clone()),
             Pointer::Station(_) => bail!(
@@ -404,8 +539,7 @@ impl SessionState {
     #[cfg(test)]
     fn at(target: &str) -> Self {
         Self {
-            pointer: Pointer::Card(target.to_string()),
-            workspace: crate::Workspace::Human,
+            current: Visit::new(Pointer::Card(target.to_string()), crate::Workspace::Human),
             back: Vec::new(),
             forward: Vec::new(),
         }
@@ -416,6 +550,7 @@ impl SessionState {
 pub(super) struct CardSummary {
     pub(super) address: String,
     pub(super) title: String,
+    pub(super) bookmark: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -472,6 +607,7 @@ pub(super) struct Status {
 pub(super) enum CommandResult {
     Noop,
     Navigated,
+    NavigationNotice(String),
     Changed,
     List(Listing),
     Stats(Stats),
@@ -494,38 +630,48 @@ pub(super) enum Execution {
     Exit,
 }
 
-/// If another process removed the Pointer's Card, move the Pointer to its
-/// nearest existing ancestor (or ROOT) and describe what happened.
+fn retired_station(conn: &Connection, id: &str) -> Result<Option<(Pointer, String)>> {
+    let card_id: Option<String> = conn
+        .query_row(
+            "SELECT card_id FROM retired_coordinates WHERE coord_id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(card_id) = card_id else {
+        return Ok(None);
+    };
+    Ok(Some(recover_removed_coordinate(conn, &card_id)?))
+}
+
+fn recover_removed_coordinate(conn: &Connection, card_id: &str) -> Result<(Pointer, String)> {
+    Ok(match crate::coord::address_of_card_id(conn, card_id)? {
+        Some(home) => {
+            let notice = format!("placement removed: opened its Card at home `{home}` (Filing Coordinate)");
+            (Pointer::Card(home), notice)
+        }
+        None => (Pointer::Root, "placement removed: its Card was deleted".to_string()),
+    })
+}
+
+/// Recover a removed Coordinate at its Card's filing address. If a Card was deleted,
+/// recover at the nearest existing ancestor or ROOT.
 pub(super) fn recover_missing_pointer(
     root: &Path,
     state: &mut SessionState,
 ) -> Result<Option<String>> {
-    if let Pointer::Station(id) = &state.pointer {
+    if let Pointer::Station(id) = state.pointer() {
         let conn = crate::open_db(root)?;
-        if crate::coord::placement(&conn, id)?.is_some() {
+        if crate::coord::coordinate(&conn, id)?.is_some() {
             return Ok(None);
         }
-        // The station was detached (or its tree deleted) while the Session stood on it: say so,
-        // and open the surviving Card at its home rather than another Card at the old coordinate.
-        let card: Option<String> = conn
-            .query_row(
-                "SELECT card_id FROM retired_placements WHERE placement_id = ?1",
-                [id],
-                |r| r.get(0),
-            )
-            .ok();
-        let home = match card {
-            Some(card_id) => crate::coord::address_of_card_id(&conn, &card_id)?,
-            None => None,
-        };
-        let message = match &home {
-            Some(home) => format!("placement removed: this station was detached; opened its Card at home `{home}`"),
-            None => "placement removed: this station was detached and its Card no longer exists".to_string(),
-        };
-        state.pointer = home.map(Pointer::Card).unwrap_or(Pointer::Root);
-        return Ok(Some(message));
+        let (pointer, notice) = retired_station(&conn, id)?
+            .unwrap_or_else(|| (Pointer::Root, format!("coordinate `{id}` no longer exists")));
+        state.set_pointer(pointer);
+        state.capture_current(root);
+        return Ok(Some(notice));
     }
-    let Pointer::Card(target) = &state.pointer else {
+    let Pointer::Card(target) = state.pointer() else {
         return Ok(None);
     };
     let conn = crate::open_db(root)?;
@@ -540,7 +686,7 @@ pub(super) fn recover_missing_pointer(
         }
         ancestor = crate::parent_location(candidate);
     }
-    state.pointer = ancestor.map(Pointer::Card).unwrap_or(Pointer::Root);
+    state.set_pointer(ancestor.map(Pointer::Card).unwrap_or(Pointer::Root));
     Ok(Some(format!("card `{missing}` no longer exists")))
 }
 
@@ -615,7 +761,7 @@ fn tree_command(
         "delete_span" => crate::parent_location(&applied.address).unwrap_or(applied.address),
         _ => applied.address,
     };
-    state.pointer = Pointer::Card(pointer);
+    state.set_pointer(Pointer::Card(pointer));
     Ok(Execution::Continue(CommandResult::Changed))
 }
 
@@ -683,7 +829,7 @@ pub(super) fn execute_edit(
                         &metadata.title,
                     )?;
                     interaction.check(&accepted);
-                    state.pointer = Pointer::Card(metadata.citation_key);
+                    state.set_pointer(Pointer::Card(metadata.citation_key));
                     Ok(Execution::Continue(CommandResult::Changed))
                 }
                 crate::EditPart::Text => {
@@ -718,9 +864,10 @@ pub(super) fn execute(
     line: &str,
     interaction: &mut dyn Interaction,
 ) -> Result<Execution> {
-    let before = state.visit();
+    state.capture_current(root);
+    let before = state.current.clone();
     let execution = execute_command(root, state, line, interaction);
-    state.sync_workspace(root);
+    state.capture_current(root);
     // Every move of the Pointer is remembered, except the steps through that memory.
     if !matches!(line.split_whitespace().next(), Some("back" | "fwd")) {
         state.remember(before);
@@ -742,31 +889,16 @@ fn execute_command(
         [] => Ok(Execution::Continue(CommandResult::Noop)),
         ["q"] => Ok(Execution::Exit),
         ["go"] | ["root"] => {
-            state.pointer = Pointer::Root;
+            state.set_pointer(Pointer::Root);
             Ok(Execution::Continue(CommandResult::Navigated))
         }
         ["go", target] => {
             let conn = crate::open_db(root)?;
+            let snapshot = conn.unchecked_transaction()?;
             let target = target.trim_matches(|c| c == '\'' || c == '"');
-            // A coordinate or a station bookmark goes to that occurrence; `go ~7` enters the
-            // Connection tree at its root station; a handle opens the Card at its home.
-            if crate::coord::is_coordinate(target) || crate::coord::place_bookmark(target).is_some() {
-                let station = crate::coord::resolve_station(&conn, target)?;
-                state.pointer = Pointer::Station(station.placement_id);
-                return Ok(Execution::Continue(CommandResult::Navigated));
-            }
-            if let Some(handle) = crate::coord::Handle::parse(target).filter(|h| h.local.is_none())
-                && let Some(tree) = crate::coord::tree_by_num(&conn, handle.tree)?
-            {
-                let shape = crate::coord::load_tree_shape(&conn, &tree)?;
-                state.pointer = Pointer::Station(shape.root);
-                return Ok(Execution::Continue(CommandResult::Navigated));
-            }
-            let Some(address) = crate::coord::canonical(&conn, target)? else {
-                bail!("target `{target}` does not exist");
-            };
-            state.pointer = Pointer::Card(address);
-            Ok(Execution::Continue(CommandResult::Navigated))
+            let result = state.open_target(&snapshot, target)?;
+            state.current.capture(&snapshot)?;
+            Ok(Execution::Continue(result))
         }
         ["go", _, _, ..] => bail!("usage: go [<target>]"),
         ["ws"] => {
@@ -778,39 +910,33 @@ fn execute_command(
                     .map(|workspace| WorkspaceSummary {
                         workspace,
                         counts: crate::workspace::counts(&cards, workspace),
-                        current: workspace == state.workspace,
+                        current: workspace == state.workspace(),
                     })
                     .collect(),
             )))
         }
         ["ws", name] => {
-            state.workspace = crate::Workspace::parse(name)?;
-            state.pointer = Pointer::Root;
+            state.current = Visit::new(Pointer::Root, crate::Workspace::parse(name)?);
             Ok(Execution::Continue(CommandResult::Navigated))
         }
         ["ws", ..] => bail!("usage: ws [<workspace>]"),
         ["up"] => {
-            if let Pointer::Card(target) = &state.pointer {
-                state.pointer = crate::parent_location(target)
+            if let Pointer::Card(target) = state.pointer() {
+                let pointer = crate::parent_location(target)
                     .map(Pointer::Card)
                     .unwrap_or(Pointer::Root);
+                state.set_pointer(pointer);
             }
             Ok(Execution::Continue(CommandResult::Navigated))
         }
         ["up", ..] => bail!("usage: up"),
-        ["back"] => {
-            state.step(root, false)?;
-            Ok(Execution::Continue(CommandResult::Navigated))
-        }
+        ["back"] => Ok(Execution::Continue(state.step(root, false)?)),
         ["back", ..] => bail!("usage: back"),
-        ["fwd"] => {
-            state.step(root, true)?;
-            Ok(Execution::Continue(CommandResult::Navigated))
-        }
+        ["fwd"] => Ok(Execution::Continue(state.step(root, true)?)),
         ["fwd", ..] => bail!("usage: fwd"),
         ["ls"] => {
             let conn = crate::open_db(root)?;
-            let (heading, cards) = super::cards_for_list(&conn, state.pointer(), state.workspace)?;
+            let (heading, cards) = super::cards_for_list(&conn, state.pointer(), state.workspace())?;
             let cards = cards
                 .into_iter()
                 .map(|card| {
@@ -818,6 +944,7 @@ fn execute_command(
                     Ok(CardSummary {
                         address: card.address,
                         title: parsed.title,
+                        bookmark: None,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -864,7 +991,7 @@ fn execute_command(
             }
             let _lock = crate::acquire_edit_lock(root, "session Topic")?;
             let mut conn = crate::open_db(root)?;
-            let workspace = state.workspace;
+            let workspace = state.workspace();
             let mut created = None;
             let mut accepted = None;
             let mut save = |text: &str| {
@@ -876,7 +1003,7 @@ fn execute_command(
             if interaction.edit(&crate::topic_template(&title), "edit mode", &mut save)?
                 && let Some(location) = created
             {
-                state.pointer = Pointer::Card(location);
+                state.set_pointer(Pointer::Card(location));
             }
             if let Some(accepted) = accepted {
                 interaction.check(&accepted);
@@ -909,7 +1036,7 @@ fn execute_command(
                 Ok(())
             };
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
-                state.pointer = Pointer::Card(location);
+                state.set_pointer(Pointer::Card(location));
             }
             if let Some(accepted) = accepted {
                 interaction.check(&accepted);
@@ -938,7 +1065,7 @@ fn execute_command(
                 Ok(())
             };
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
-                state.pointer = Pointer::Card(location);
+                state.set_pointer(Pointer::Card(location));
             }
             if let Some(accepted) = accepted {
                 interaction.check(&accepted);
@@ -964,7 +1091,7 @@ fn execute_command(
                 accepted.context("validated Literature metadata is missing")?;
             let initial_text = crate::card::card_template(&metadata.title);
             let citation_key = metadata.citation_key.clone();
-            let workspace = state.workspace;
+            let workspace = state.workspace();
             let mut checked = None;
             let mut save_text = |edited: &str| {
                 let parsed = crate::parse_literature_edit_text(edited)?;
@@ -979,7 +1106,7 @@ fn execute_command(
                 Ok(())
             };
             if interaction.edit(&initial_text, "edit mode", &mut save_text)? {
-                state.pointer = Pointer::Card(citation_key);
+                state.set_pointer(Pointer::Card(citation_key));
             }
             if let Some(checked) = checked {
                 interaction.check(&checked);
@@ -1051,12 +1178,13 @@ fn execute_command(
             lines.extend(crate::coord::delete_impact_lines(&conn, &plan.delete_set, plan.kept_root().map(|(root, _)| root))?);
             interaction.confirm(&plan.confirmation, &lines)?;
             let result = crate::apply_delete_plan(&mut conn, plan)?;
-            state.pointer = match result.root_kept {
+            let pointer = match result.root_kept {
                 Some(root_address) => Pointer::Card(root_address),
                 None => crate::parent_location(&at)
                     .map(Pointer::Card)
                     .unwrap_or(Pointer::Root),
             };
+            state.set_pointer(pointer);
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["mv", rest @ ..] if !rest.is_empty() => {
@@ -1080,7 +1208,7 @@ fn execute_command(
             interaction.confirm("move", &crate::move_verification_lines(&plan))?;
             crate::apply_move_plan(&mut conn, &plan)?;
             let moved_to = plan.mapping.get(&at).cloned().unwrap_or(at);
-            state.pointer = Pointer::Card(moved_to);
+            state.set_pointer(Pointer::Card(moved_to));
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["mv"] => bail!("usage: mv [alone] <new-location> | mv [alone] before <location>"),
@@ -1107,7 +1235,7 @@ fn execute_command(
                 Ok(())
             };
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
-                state.pointer = Pointer::Card(plan.location.clone());
+                state.set_pointer(Pointer::Card(plan.location.clone()));
             }
             if let Some(accepted) = accepted {
                 interaction.check(&accepted);
@@ -1382,29 +1510,49 @@ mod tests {
                     CardSummary {
                         address: "0/0".to_string(),
                         title: "Topic".to_string(),
+                        bookmark: None,
                     },
                     CardSummary {
                         address: "LitA".to_string(),
                         title: "Work".to_string(),
+                        bookmark: None,
                     },
                 ],
             }))
         );
     }
 
-    fn insert_literature_tree(root: &Path) {
-        let conn = crate::open_db(root).expect("open database");
-        conn.execute(
-            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
-             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
-             ('0/1', NULL, 0, 0, NULL, '# Idea\n\n<!-- zt:reverse-links -->\n'),\
-             (NULL, 'LitA', 0, 1, '@book{LitA, title={Work}}', '# Work\n\n<!-- zt:reverse-links -->\n'),\
-             ('LitA/1', NULL, 0, 0, NULL, '# Note\n\n<!-- zt:reverse-links -->\n'),\
-             ('LitA/1|a', NULL, 0, 0, NULL, '# Aside\n\n<!-- zt:reverse-links -->\n'),\
-             (NULL, 'LitB', 0, 1, '@book{LitB, title={Other}}', '# Other\n\n<!-- zt:reverse-links -->\n')",
-            [],
+    // Write fixtures through the Card operations so each seed has a v2 Filing Coordinate.
+    fn seed_topic(root: &Path, workspace: crate::Workspace, text: &str) {
+        crate::ops::create_topic(root, crate::Access::Owner, workspace, text).expect("seed Topic");
+    }
+
+    fn seed_successor(root: &Path, kind: crate::ops::Successor, at: &str, text: &str) {
+        crate::ops::create_successor(
+            root,
+            crate::Access::Owner,
+            kind,
+            at,
+            crate::CardType::Idea,
+            None,
+            text,
         )
-        .expect("insert Literature tree");
+        .expect("seed successor");
+    }
+
+    fn seed_literature(root: &Path, bibtex: &str, text: &str) {
+        crate::ops::create_literature(root, crate::Access::Owner, crate::Workspace::Human, bibtex, text)
+            .expect("seed Literature Card");
+    }
+
+    fn insert_literature_tree(root: &Path) {
+        use crate::ops::Successor::{Direct, Side};
+        seed_topic(root, crate::Workspace::Human, "# Topic\n");
+        seed_successor(root, Direct, "0/0", "# Idea\n");
+        seed_literature(root, "@book{LitA, title={Work}}", "");
+        seed_successor(root, Direct, "LitA", "# Note\n");
+        seed_successor(root, Side, "LitA/1", "# Aside\n");
+        seed_literature(root, "@book{LitB, title={Other}}", "");
     }
 
     #[test]
@@ -1487,11 +1635,14 @@ mod tests {
         // A place whose Card is gone is skipped.
         run(&mut state, "go LitA/1|a").expect("go");
         run(&mut state, "go LitA/1").expect("go");
-        crate::open_db(temp.path())
-            .expect("open database")
-            .execute("DELETE FROM cards WHERE location = 'LitA/1|a'", [])
-            .expect("delete card");
-        assert_eq!(run(&mut state, "back").expect("back"), card("LitA"));
+        let mut other_session = SessionState::at("LitA/1|a");
+        execute(temp.path(), &mut other_session, "del", &mut recorder(&["delete"]))
+            .expect("delete the Card in another Session");
+        let restored = execute_without_interaction(temp.path(), &mut state, "back").expect("back");
+        assert!(
+            matches!(restored, Execution::Continue(CommandResult::NavigationNotice(notice)) if notice.contains("deleted"))
+        );
+        assert_eq!(state.pointer(), &card("LitA"));
         run(&mut state, "back 2").expect_err("back takes no arguments");
     }
 
@@ -1694,15 +1845,8 @@ mod tests {
     fn ty_sets_the_type_of_the_current_regular_card_only() {
         let temp = tempfile::tempdir().expect("temp dir");
         crate::initialize_database(temp.path()).expect("initialize database");
-        let conn = crate::open_db(temp.path()).expect("open database");
-        conn.execute(
-            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
-             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
-             ('0/1', NULL, 0, 0, NULL, '# Base\n\nbody\n\n<!-- zt:reverse-links -->\n')",
-            [],
-        )
-        .expect("insert Cards");
-        drop(conn);
+        seed_topic(temp.path(), crate::Workspace::Human, "# Topic\n");
+        seed_successor(temp.path(), crate::ops::Successor::Direct, "0/0", "# Base\n\nbody\n");
         let card_type = |at: &str| {
             let conn = crate::open_db(temp.path()).expect("open database");
             crate::load_card(&conn, at).expect("card").card_type
@@ -1760,14 +1904,9 @@ mod tests {
     fn the_session_retype_reaches_the_shared_gate() {
         let temp = tempfile::tempdir().expect("temp dir");
         crate::initialize_database(temp.path()).expect("initialize database");
+        seed_topic(temp.path(), crate::Workspace::Agent, "# Topic\n\n主题说明。\n");
+        seed_successor(temp.path(), crate::ops::Successor::Direct, "0/0", "# Base\n\n这一段说明背景并给出充分理由。这一段说明结果如何出现。它让读者看到条件。\n");
         let mut conn = crate::open_db(temp.path()).expect("open database");
-        conn.execute(
-            "INSERT INTO cards(location, is_topic, is_lit, text, workspace, card_type) VALUES\
-             ('0/0', 1, 0, '# Topic\n\n主题说明。\n', 'agent', 'idea'),\
-             ('0/1', 0, 0, '# Base\n\n这一段说明背景并给出充分理由。这一段说明结果如何出现。它让读者看到条件。\n', 'agent', 'idea')",
-            [],
-        )
-        .expect("insert Cards");
         crate::gate::change_stage(&mut conn, "enforce").expect("enforce");
         drop(conn);
         let card_type = |at: &str| {
@@ -1939,15 +2078,15 @@ mod tests {
             ),
             (
                 SessionState::at("0/0"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | ord side <card> <card> ... | ord direct <from>..<through> ... | lt <history|economics|mathematics|others> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | ord side <card> <card> ... | ord direct <from>..<through> ... | lt <history|economics|mathematics|others> | places | add-coord <target> [side] [gloss...] | detach-coord [reattach|detach] | promote <location> | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("LitA"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | ord side <card> <card> ... | ord direct <from>..<through> ... | lt <history|economics|mathematics|others> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | ord side <card> <card> ... | ord direct <from>..<through> ... | lt <history|economics|mathematics|others> | places | add-coord <target> [side] [gloss...] | detach-coord [reattach|detach] | promote <location> | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | mv [<from>]..<through> after|side|before <location> | del [<from>]..<through> [into <location>] | in [..<through>] | out [..<through>] | ord side <card> <card> ... | ord direct <from>..<through> ... | ty <idea|event|finding|model|hub|term|cited> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | mv [<from>]..<through> after|side|before <location> | del [<from>]..<through> [into <location>] | in [..<through>] | out [..<through>] | ord side <card> <card> ... | ord direct <from>..<through> ... | ty <idea|event|finding|model|hub|term|cited> [<facet>] | lv <level|none> | mf <form|none> | places | add-coord <target> [side] [gloss...] | detach-coord [reattach|detach] | promote <location> | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;
@@ -1992,14 +2131,7 @@ mod tests {
     fn direct_successor_creation_uses_current_pointer_and_moves_after_save() {
         let temp = tempfile::tempdir().expect("temp dir");
         crate::initialize_database(temp.path()).expect("initialize database");
-        let conn = crate::open_db(temp.path()).expect("open database");
-        conn.execute(
-            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)\
-             VALUES('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n')",
-            [],
-        )
-        .expect("insert Topic");
-        drop(conn);
+        seed_topic(temp.path(), crate::Workspace::Human, "# Topic\n");
         let mut state = SessionState::at("0/0");
         let mut interaction = ScriptedInteraction {
             edits: VecDeque::from([Some(
@@ -2028,15 +2160,8 @@ mod tests {
     fn side_successor_creation_uses_current_pointer_and_moves_after_save() {
         let temp = tempfile::tempdir().expect("temp dir");
         crate::initialize_database(temp.path()).expect("initialize database");
-        let conn = crate::open_db(temp.path()).expect("open database");
-        conn.execute(
-            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
-             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
-             ('0/1', NULL, 0, 0, NULL, '# Base\n\n<!-- zt:reverse-links -->\n')",
-            [],
-        )
-        .expect("insert Cards");
-        drop(conn);
+        seed_topic(temp.path(), crate::Workspace::Human, "# Topic\n");
+        seed_successor(temp.path(), crate::ops::Successor::Direct, "0/0", "# Base\n");
         let mut state = SessionState::at("0/1");
         let mut interaction = ScriptedInteraction {
             edits: VecDeque::from([Some(
@@ -2090,14 +2215,7 @@ mod tests {
     fn regular_card_edit_uses_current_pointer_and_preserves_it_after_save() {
         let temp = tempfile::tempdir().expect("temp dir");
         crate::initialize_database(temp.path()).expect("initialize database");
-        let conn = crate::open_db(temp.path()).expect("open database");
-        conn.execute(
-            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)\
-             VALUES('0/0', NULL, 1, 0, NULL, '# Topic\n\nold\n\n<!-- zt:reverse-links -->\n')",
-            [],
-        )
-        .expect("insert Topic");
-        drop(conn);
+        seed_topic(temp.path(), crate::Workspace::Human, "# Topic\n\nold\n");
         let mut state = SessionState::at("0/0");
         let mut interaction = ScriptedInteraction {
             edits: VecDeque::from([Some(
@@ -2123,15 +2241,7 @@ mod tests {
     fn literature_text_edit_uses_numbered_choice_and_preserves_citation_pointer() {
         let temp = tempfile::tempdir().expect("temp dir");
         crate::initialize_database(temp.path()).expect("initialize database");
-        let conn = crate::open_db(temp.path()).expect("open database");
-        conn.execute(
-            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)\
-             VALUES(NULL, 'LitA', 0, 1, '@book{LitA, title={Work}}',\
-                    '# Work\n\nold\n\n<!-- zt:reverse-links -->\n')",
-            [],
-        )
-        .expect("insert Literature Card");
-        drop(conn);
+        seed_literature(temp.path(), "@book{LitA, title={Work}}", "old\n");
         let mut state = SessionState::at("LitA");
         let mut interaction = ScriptedInteraction {
             edits: VecDeque::from([Some(
@@ -2160,15 +2270,7 @@ mod tests {
     fn literature_metadata_edit_updates_title_without_moving_the_pointer() {
         let temp = tempfile::tempdir().expect("temp dir");
         crate::initialize_database(temp.path()).expect("initialize database");
-        let conn = crate::open_db(temp.path()).expect("open database");
-        conn.execute(
-            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)\
-             VALUES(NULL, 'LitA', 0, 1, '@book{LitA, title={Old Work}}',\
-                    '# Old Work\n\nbody\n\n<!-- zt:reverse-links -->\n')",
-            [],
-        )
-        .expect("insert Literature Card");
-        drop(conn);
+        seed_literature(temp.path(), "@book{LitA, title={Old Work}}", "body\n");
         let mut state = SessionState::at("LitA");
         let mut interaction = ScriptedInteraction {
             edits: VecDeque::from([Some("@book{LitA, title={New Work}}".to_string())]),
@@ -2195,16 +2297,10 @@ mod tests {
     fn delete_requires_confirmation_then_moves_the_pointer_to_the_parent() {
         let temp = tempfile::tempdir().expect("temp dir");
         crate::initialize_database(temp.path()).expect("initialize database");
-        let conn = crate::open_db(temp.path()).expect("open database");
-        conn.execute(
-            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
-             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
-             ('0/1', NULL, 0, 0, NULL, '# Base\n\n<!-- zt:reverse-links -->\n'),\
-             ('0/1|a', NULL, 0, 0, NULL, '# Side\n\n<!-- zt:reverse-links -->\n')",
-            [],
-        )
-        .expect("insert Cards");
-        drop(conn);
+        use crate::ops::Successor::{Direct, Side};
+        seed_topic(temp.path(), crate::Workspace::Human, "# Topic\n");
+        seed_successor(temp.path(), Direct, "0/0", "# Base\n");
+        seed_successor(temp.path(), Side, "0/1", "# Side\n");
         let mut state = SessionState::at("0/1|a");
         let mut interaction = ScriptedInteraction {
             edits: VecDeque::new(),
@@ -2233,19 +2329,12 @@ mod tests {
     fn move_requires_confirmation_then_moves_the_pointer_and_subtree() {
         let temp = tempfile::tempdir().expect("temp dir");
         crate::initialize_database(temp.path()).expect("initialize database");
-        let conn = crate::open_db(temp.path()).expect("open database");
-        conn.execute(
-            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
-             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
-             ('0/1', NULL, 0, 0, NULL, '# Base\n\n<!-- zt:reverse-links -->\n'),\
-             ('0/1|a', NULL, 0, 0, NULL, '# Side\n\n<!-- zt:reverse-links -->\n'),\
-             ('0/1|a|1', NULL, 0, 0, NULL, '# Child\n\n<!-- zt:reverse-links -->\n'),\
-             ('0/2', NULL, 0, 0, NULL, '# Target\n\nsee [[0/1|a]]\n\n<!-- zt:reverse-links -->\n')",
-            [],
-        )
-        .expect("insert Cards");
-        crate::link_index::rebuild(&conn).expect("index the seeded Cards");
-        drop(conn);
+        use crate::ops::Successor::{Direct, Side};
+        seed_topic(temp.path(), crate::Workspace::Human, "# Topic\n");
+        seed_successor(temp.path(), Direct, "0/0", "# Base\n");
+        seed_successor(temp.path(), Side, "0/1", "# Side\n");
+        seed_successor(temp.path(), Direct, "0/1|a", "# Child\n");
+        seed_successor(temp.path(), Direct, "0/1", "# Target\n\nsee [[0/1|a]]\n");
         let mut state = SessionState::at("0/1|a");
         let mut interaction = ScriptedInteraction {
             edits: VecDeque::new(),
@@ -2283,18 +2372,11 @@ mod tests {
     fn ins_and_mv_before_put_a_card_between_two_cards() {
         let temp = tempfile::tempdir().expect("temp dir");
         crate::initialize_database(temp.path()).expect("initialize database");
-        let conn = crate::open_db(temp.path()).expect("open database");
-        conn.execute(
-            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
-             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
-             ('0/1', NULL, 0, 0, NULL, '# One\n\n<!-- zt:reverse-links -->\n'),\
-             ('0/2', NULL, 0, 0, NULL, '# Two\n\nafter [[0/1]]\n\n<!-- zt:reverse-links -->\n'),\
-             ('0/3', NULL, 0, 0, NULL, '# Three\n\n<!-- zt:reverse-links -->\n')",
-            [],
-        )
-        .expect("insert Cards");
-        crate::link_index::rebuild(&conn).expect("index the seeded Cards");
-        drop(conn);
+        use crate::ops::Successor::Direct;
+        seed_topic(temp.path(), crate::Workspace::Human, "# Topic\n");
+        seed_successor(temp.path(), Direct, "0/0", "# One\n");
+        seed_successor(temp.path(), Direct, "0/1", "# Two\n\nafter [[0/1]]\n");
+        seed_successor(temp.path(), Direct, "0/2", "# Three\n");
         let title = |at: &str| {
             let conn = crate::open_db(temp.path()).expect("open database");
             crate::parse_card_text(&crate::load_card(&conn, at).expect("card").text)
@@ -2356,17 +2438,8 @@ mod tests {
     fn literature_citation_rename_uses_the_same_confirmation_boundary() {
         let temp = tempfile::tempdir().expect("temp dir");
         crate::initialize_database(temp.path()).expect("initialize database");
-        let conn = crate::open_db(temp.path()).expect("open database");
-        conn.execute(
-            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
-             (NULL, 'LitA', 0, 1, '@book{LitA, title={Old Work}}',\
-                    '# Old Work\n\nbody\n\n<!-- zt:reverse-links -->\n'),\
-             ('0/0', NULL, 1, 0, NULL, '# Topic\n\nsee [[LitA]]\n\n<!-- zt:reverse-links -->\n')",
-            [],
-        )
-        .expect("insert Cards");
-        crate::link_index::rebuild(&conn).expect("index the seeded Cards");
-        drop(conn);
+        seed_literature(temp.path(), "@book{LitA, title={Old Work}}", "body\n");
+        seed_topic(temp.path(), crate::Workspace::Human, "# Topic\n\nsee [[LitA]]\n");
         let mut state = SessionState::at("LitA");
         let mut interaction = ScriptedInteraction {
             edits: VecDeque::from([Some("@book{LitB, title={New Work}}".to_string())]),
@@ -2419,6 +2492,99 @@ mod tests {
         }
     }
 
+    #[test]
+    fn coordinates_can_be_opened_in_all_tree_roles_and_listed_with_same_tree_repeats() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        crate::initialize_database(root).expect("initialize database");
+        insert_literature_tree(root);
+        crate::connection::run(
+            root,
+            crate::Access::Owner,
+            "create_connection_tree",
+            &serde_json::json!({"title": "Map"}),
+        )
+        .expect("create Connection tree");
+
+        let mut state = SessionState::root();
+        for (parent, add, path) in [
+            ("0/1", "add-coord LitA/1 side Topic gloss", "0/1|a"),
+            ("LitA/1", "add-coord LitA/1 side Book gloss", "LitA/1|b"),
+            ("~1", "add-coord LitA/1 Map gloss", "~1/1"),
+        ] {
+            execute_without_interaction(root, &mut state, &format!("go {parent}")).expect("go to parent");
+            execute_without_interaction(root, &mut state, add).expect("add Coordinate");
+            let added = state.pointer().clone();
+            assert!(matches!(&added, Pointer::Station(_)));
+            execute_without_interaction(root, &mut state, "root").expect("return to ROOT");
+            execute_without_interaction(root, &mut state, &format!("go {path}")).expect("open by Coordinate path");
+            assert_eq!(state.pointer(), &added);
+        }
+        let at_station = execute_without_interaction(root, &mut state, "places").expect("station places");
+        execute_without_interaction(root, &mut state, "home").expect("open filing Card");
+        assert_eq!(
+            execute_without_interaction(root, &mut state, "places").expect("Card places"),
+            at_station
+        );
+        let Execution::Continue(CommandResult::List(listing)) = at_station else {
+            panic!("places must return a listing");
+        };
+        assert_eq!(
+            listing.cards.iter().map(|row| row.address.as_str()).collect::<Vec<_>>(),
+            ["0/1|a", "LitA/1", "LitA/1|b", "~1/1"]
+        );
+        assert!(listing.cards[1].title.ends_with("[filing]"));
+        assert!(listing.cards[2].title.ends_with("[secondary]"));
+    }
+
+    #[test]
+    fn detached_history_and_bookmarks_recover_at_the_new_filing_address() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        crate::initialize_database(root).expect("initialize database");
+        seed_topic(root, crate::Workspace::Human, "# Source\n");
+        seed_successor(root, crate::ops::Successor::Direct, "0/0", "# Card\n");
+        seed_topic(root, crate::Workspace::Human, "# Destination\n");
+
+        let mut observer = SessionState::root();
+        execute_without_interaction(root, &mut observer, "go 0/1").expect("visit original Filing Coordinate");
+        execute_without_interaction(root, &mut observer, "root").expect("leave original Filing Coordinate");
+        let mut detached_observer = observer.clone();
+
+        let mut state = SessionState::at("1/0");
+        execute_without_interaction(root, &mut state, "add-coord 0/1").expect("add destination Coordinate");
+        execute(root, &mut state, "refile", &mut recorder(&["refile"])).expect("refile Card");
+        execute_without_interaction(root, &mut state, "go 0/1").expect("open former Filing Coordinate");
+        let Pointer::Station(detached) = state.pointer().clone() else {
+            panic!("former Filing Coordinate must open as a station");
+        };
+        execute_without_interaction(root, &mut observer, "back").expect("restore original visit");
+        assert_eq!(observer.pointer(), &Pointer::Station(detached.clone()));
+        execute_without_interaction(root, &mut state, "home").expect("open new filing Card");
+
+        let mut other_session = SessionState::root();
+        let bookmark = format!("go place:{detached}");
+        execute_without_interaction(root, &mut other_session, &bookmark).expect("open by bookmark");
+        execute(root, &mut other_session, "detach-coord detach", &mut recorder(&["detach"]))
+            .expect("detach old Coordinate");
+
+        let restored = execute_without_interaction(root, &mut detached_observer, "back")
+            .expect("restore a detached filing visit");
+        assert!(
+            matches!(restored, Execution::Continue(CommandResult::NavigationNotice(notice)) if notice.contains("placement removed"))
+        );
+        assert_eq!(detached_observer.pointer(), &Pointer::Card("1/1".to_string()));
+
+        for command in ["back", bookmark.as_str()] {
+            let result = execute_without_interaction(root, &mut state, command).expect("recover detached Coordinate");
+            let Execution::Continue(CommandResult::NavigationNotice(notice)) = result else {
+                panic!("expected a recovery notice");
+            };
+            assert!(notice.contains("placement removed") && notice.contains("`1/1`"), "{notice}");
+            assert_eq!(state.pointer(), &Pointer::Card("1/1".to_string()));
+        }
+    }
+
     /// Topic `0/0` with 一 `0/1` .. 四 `0/4`; 一 has the Side successors 甲, 乙, 丙; 二 has 二甲.
     fn outline_archive() -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -2445,6 +2611,31 @@ mod tests {
     fn title_of(root: &Path, at: &str) -> String {
         let conn = crate::open_db(root).expect("open");
         crate::parse_card_text(&crate::load_card(&conn, at).expect("card").text).expect("parse").title
+    }
+
+    #[test]
+    fn back_and_fwd_follow_cards_after_another_session_swaps_their_addresses() {
+        let temp = outline_archive();
+        let root = temp.path();
+        let mut state = SessionState::root();
+        execute_without_interaction(root, &mut state, "go 0/1").expect("visit first Card");
+        execute_without_interaction(root, &mut state, "go 0/2").expect("visit second Card");
+
+        let mut other = SessionState::at("0/0");
+        execute(
+            root,
+            &mut other,
+            "ord direct 0/2..0/2 0/1..0/1 0/3..0/4",
+            &mut recorder(&["move"]),
+        )
+        .expect("swap first and second Cards");
+        assert_eq!(title_of(root, "0/1"), "二");
+        assert_eq!(title_of(root, "0/2"), "一");
+
+        execute_without_interaction(root, &mut state, "back").expect("restore first Card");
+        assert_eq!(state.pointer(), &Pointer::Card("0/2".to_string()));
+        execute_without_interaction(root, &mut state, "fwd").expect("restore second Card");
+        assert_eq!(state.pointer(), &Pointer::Card("0/1".to_string()));
     }
 
     /// S8 (#236): `mv ..<through> after <location>` moves a span from the current Card; the plan is

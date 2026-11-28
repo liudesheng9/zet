@@ -3102,8 +3102,8 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .drawer.connection::before { background: var(--lit); }
 .drawer.connection .addr { color: var(--lit); }
 .drawer .t.untitled, .stack .t.untitled { color: var(--ink-faint); font-weight: 500; font-style: italic; }
-.conn-panel h3, .side-shelf h3, .lens-pane h3 { font-size: 13px; margin: 8px 0 6px; }
-.conn-panel ul, .side-shelf ul, .lens-pane ul { list-style: none; margin: 0; padding: 0; }
+.conn-panel h3, .lens-pane h3 { font-size: 13px; margin: 8px 0 6px; }
+.conn-panel ul, .lens-pane ul { list-style: none; margin: 0; padding: 0; }
 .prov { font-size: 11px; padding: 0 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent, #c4622d) 12%, transparent); white-space: nowrap; }
 .conn-item .kind { font-family: ui-monospace, monospace; font-size: 11px; opacity: .7; }
 .conn-item .note { flex-basis: 100%; font-size: 12px; opacity: .75; padding-left: 8px; }
@@ -3123,9 +3123,12 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .lens-pane .warn { color: #a26a00; font-size: 12px; }
 .lens-pane .hint { font-size: 11px; opacity: .6; }
 .home-extras { margin-top: 12px; font-size: 13px; }
-.side-shelf { border: 1px dashed color-mix(in srgb, currentColor 30%, transparent); border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; }
-.side-shelf .coord { font-family: ui-monospace, monospace; font-size: 12px; opacity: .7; margin-right: 6px; }
-.side-shelf li.missing { opacity: .6; text-decoration: line-through; }
+.coordinate-inspector { margin-top: 12px; }
+.coordinate-inspector summary { cursor: pointer; }
+.coordinate-list { list-style: none; margin: 4px 0 8px; padding: 0; }
+.coordinate-list li { display: flex; align-items: baseline; gap: 8px; margin-block: 3px; }
+.coordinate-role { color: var(--ink-faint); font: 500 11px var(--mono); }
+.node .badge.coordinate-repeat { color: var(--ink-soft); font-variant-numeric: tabular-nums; flex: none; }
 .gloss { font-style: italic; opacity: .75; }
 .back-to-station { display: block; margin: 0 0 10px; }
 
@@ -3137,8 +3140,8 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 :root { --tree-l: 56%; --tree-c: .15; --tree-stock: 11%; }
 :root[data-theme="dark"] { --tree-l: 74%; --tree-c: .14; --tree-stock: 14%; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --tree-l: 74%; --tree-c: .14; --tree-stock: 14%; } }
-.node.station, .beside-tab { --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170)); }
 .node.station {
+  --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170));
   background-color: color-mix(in oklab, var(--tree-ink) var(--tree-stock), var(--stock));
   border-color: color-mix(in oklab, var(--tree-ink) 30%, var(--stock-edge));
   /* The coloured top edge of the card, as coloured index cards have: the tree at one glance. */
@@ -3170,24 +3173,6 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .node.station.missing .t { color: var(--ink-faint); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--broken) 55%, transparent); }
 .node.focus.station.missing { border-color: var(--pointer); }
 
-/* The Topic-side mounts beside a Map card: cards tucked behind its right edge, each peeking out
-   on the stock of the tree it comes from. A tab slides out a little under the hand. */
-.beside-tabs { position: absolute; left: calc(100% - 3px); top: 6px; display: flex; flex-direction: column; gap: 2px; z-index: -1; }
-.beside-tab {
-  display: block; max-width: 138px; padding: 1px 9px 1px 8px; cursor: pointer;
-  font: 500 11px/16px var(--serif); color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  background: color-mix(in oklab, var(--tree-ink) calc(var(--tree-stock) * 1.6), var(--stock));
-  border: 1px solid color-mix(in oklab, var(--tree-ink) 30%, var(--stock-edge)); border-left: 0; border-radius: 0 3px 3px 0;
-  box-shadow: 1px 1px 3px -1px rgba(60, 45, 20, .3);
-  transition: translate .22s var(--ease), color .2s;
-}
-.beside-tab b { font: 600 9.5px var(--mono); color: oklch(var(--tree-l) var(--tree-c) var(--coord-h, 170)); margin-right: 5px; }
-.beside-tab.marked { translate: 6px 0; color: var(--ink); box-shadow: 0 0 0 2px color-mix(in oklab, var(--tree-ink) 50%, transparent); }
-.beside-tab:hover, .beside-tab:focus-visible { translate: 6px 0; color: var(--ink); }
-.beside-tab.missing { background: transparent; border-style: dashed; text-decoration: line-through; }
-.beside-tab.more { font: 500 10px/16px var(--mono); color: var(--ink-faint); background: var(--stock); cursor: pointer; }
-.beside-tab.more:hover, .beside-tab.more:focus-visible { color: var(--ink); }
-
 /* The Connection tree's own tools, at the desk's lower right. */
 .conn-bar { position: absolute; right: 16px; bottom: 14px; z-index: 6; display: flex; gap: 6px; }
 
@@ -3211,9 +3196,6 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .conn-tools button { border: 0; background: none; color: var(--ink-faint); font-size: 13px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
 .conn-tools button:hover { background: var(--line-soft); color: var(--ink); }
 .conn-tools button.danger:hover { color: var(--broken); }
-.beside-chip { --tree-ink: oklch(var(--tree-l) var(--tree-c) var(--tree-h, 170)); border-left: 3px solid color-mix(in oklab, var(--tree-ink) 45%, transparent); }
-.beside-chip.marked { box-shadow: 0 0 0 2px color-mix(in oklab, var(--tree-ink) 45%, transparent); }
-.beside-chip .addr { color: oklch(var(--tree-l) var(--tree-c) var(--coord-h, 170)); font-family: var(--mono); font-size: 11px; }
 
 /* The Connect dialog: one labelled field a line. */
 .conn-form { display: grid; gap: 8px; }

@@ -23,27 +23,40 @@
   const DIRECTIONAL = ['rests-on', 'illustrates', 'relaxes', 'objects', 'specializes'];
   const KINDS = ['rests-on', 'illustrates', 'contrasts', 'relaxes', 'corresponds', 'objects', 'specializes', 'refers'];
 
+  const coordinateId = (s) => s && (s.coord_id || s.placement_id);
+  const parentId = (s) => s.parent_coord_id ?? s.parent_id;
+  const slotOf = (s) => s.slot ?? s.ordinal ?? 0;
+
+  function repeatCounts(stations) {
+    const counts = new Map();
+    for (const s of stations) if (s.card_id) counts.set(s.card_id, (counts.get(s.card_id) || 0) + 1);
+    return counts;
+  }
+
   /**
    * The stations of one tree in reading order with their depth: the root at 0, the root's Direct
    * chain as top-level peers at 1, each Side branch one deeper than its parent and its own Direct
    * chain at the same depth. `stations` are `get_connection_tree` placements (any order).
    */
   function outline(stations) {
-    const byId = new Map(stations.map((s) => [s.placement_id, s]));
+    const byId = new Map(stations.map((s) => [coordinateId(s), s]));
+    const repeats = repeatCounts(stations);
     const direct = new Map();
     const sides = new Map();
     let rootId = null;
     for (const s of stations) {
-      if (s.edge === 'root') rootId = s.placement_id;
-      else if (s.edge === 'direct') direct.set(s.parent_id, s.placement_id);
+      const parent = parentId(s);
+      if (s.edge === 'root') rootId = coordinateId(s);
+      else if (s.edge === 'direct') direct.set(parent, coordinateId(s));
       else if (s.edge === 'side') {
-        if (!sides.has(s.parent_id)) sides.set(s.parent_id, []);
-        sides.get(s.parent_id).push(s);
+        if (!sides.has(parent)) sides.set(parent, []);
+        sides.get(parent).push(s);
       }
     }
-    for (const list of sides.values()) list.sort((a, b) => (a.ordinal || 0) - (b.ordinal || 0));
+    for (const list of sides.values()) list.sort((a, b) => slotOf(a) - slotOf(b));
     const rows = [];
     const seen = new Set();
+    const row = (s, depth) => ({ ...s, depth, repeatCount: repeats.get(s.card_id) || 1, isFiling: Boolean(s.is_filing) });
     const walkChain = (id, depth) => {
       // A Direct chain stays at one depth; each station's Side branches go one deeper.
       let at = id;
@@ -51,18 +64,19 @@
         seen.add(at);
         const station = byId.get(at);
         if (!station) break;
-        rows.push({ ...station, depth });
-        for (const side of sides.get(at) || []) walkChain(side.placement_id, depth + 1);
+        rows.push(row(station, depth));
+        for (const side of sides.get(at) || []) walkChain(coordinateId(side), depth + 1);
         at = direct.get(at);
       }
     };
     if (rootId) {
       seen.add(rootId);
-      rows.push({ ...byId.get(rootId), depth: 0 });
+      rows.push(row(byId.get(rootId), 0));
       walkChain(direct.get(rootId), 1);
+      for (const side of sides.get(rootId) || []) walkChain(coordinateId(side), 1);
     }
     // Anything unreachable (should not exist) still shows, last, so nothing is hidden.
-    for (const s of stations) if (!seen.has(s.placement_id)) rows.push({ ...s, depth: 1, orphan: true });
+    for (const s of stations) if (!seen.has(coordinateId(s))) rows.push({ ...row(s, 1), orphan: true });
     return rows;
   }
 
@@ -70,7 +84,7 @@
   function counts(connections) {
     const n = new Map();
     for (const c of connections || []) {
-      for (const end of [c.from && c.from.placement_id, c.to && c.to.placement_id]) {
+      for (const end of [coordinateId(c.from), coordinateId(c.to)]) {
         if (end) n.set(end, (n.get(end) || 0) + 1);
       }
     }
@@ -84,8 +98,8 @@
   function focusEdges(connections, focusId, overlay) {
     const out = [];
     for (const c of connections || []) {
-      const from = c.from && c.from.placement_id;
-      const to = c.to && c.to.placement_id;
+      const from = coordinateId(c.from);
+      const to = coordinateId(c.to);
       const touches = from === focusId || to === focusId;
       if (!overlay && !touches) continue;
       let role = 'other';
@@ -161,10 +175,10 @@
 
   function bookmark(station) {
     const label = (station.title || station.coord || 'station').replace(/[\[\]]/g, '');
-    return `[${label}](place:${station.placement_id})`;
+    return `[${label}](place:${coordinateId(station)})`;
   }
 
-  /** The station route: an occurrence is addressed by its placement ID, never by its coordinate. */
+  /** The station route uses the occurrence's stable ID. */
   function stationHash(placementId) {
     return '#/place/' + encodeURIComponent(placementId);
   }
@@ -190,7 +204,7 @@
   /** The gloss-review lines of a plan answer, for the dialog. */
   function glossReview(plan) {
     return ((plan && plan.effects && plan.effects.gloss_review) || []).map((r) => ({
-      placement_id: r.placement_id, coord: r.coord, gloss: r.gloss,
+      placement_id: coordinateId(r), coord: r.coord, gloss: r.gloss,
     }));
   }
 
@@ -259,14 +273,14 @@
   }
 
   /**
-   * A Connection tree as the Map draws it: one Card summary per station, keyed by coordinate, with
+   * A tree as the Map draws it: one Card summary per station, keyed by Coordinate ID, with
    * the outline fields (`parent`, `edge`), the tree connections as `links` (a neutral connection
    * runs both ways) and `inbound` counts, and `station`: the home address, home tree, role, hue,
-   * origin, status, gloss and portal of what stands there. `tree` is a `get_connection_tree` answer.
+   * origin, status, gloss and portal of what stands there.
    */
   function mapTree(tree) {
-    const stations = (tree && tree.placements) || [];
-    const byId = new Map(stations.map((s) => [s.placement_id, s]));
+    const stations = outline(tree?.coordinates || tree?.placements || []);
+    const byId = new Map(stations.map((s) => [coordinateId(s), s]));
     const coordOf = (id) => (byId.has(id) ? byId.get(id).coord : null);
     const out = new Map();
     const inn = new Map();
@@ -275,25 +289,28 @@
       if (!map.get(key).includes(value)) map.get(key).push(value);
     };
     for (const e of (tree && tree.connections) || []) {
-      const a = coordOf(e.from && e.from.placement_id);
-      const b = coordOf(e.to && e.to.placement_id);
+      const a = coordOf(coordinateId(e.from));
+      const b = coordOf(coordinateId(e.to));
       if (!a || !b || a === b) continue;
       add(out, a, b); add(inn, b, a);
       if (e.direction !== 'directed') { add(out, b, a); add(inn, a, b); }
     }
     const own = tree && tree.tree;
+    const kind = tree?.role || tree?.tree_role || 'connection';
     let root = null;
     const byCoord = new Map();
     const cards = stations.map((s) => {
       if (s.edge === 'root') root = s.coord;
       const home = s.home_address || '';
       const homeTree = s.edge === 'root' ? own : treeOf(home);
-      const role = s.edge === 'root' ? 'connection' : roleOf(homeTree);
-      byCoord.set(s.coord, s.placement_id);
+      const role = s.home_role || roleOf(homeTree);
+      const id = coordinateId(s);
+      byCoord.set(s.coord, id);
       return {
         address: s.coord,
-        parent: s.parent_id ? coordOf(s.parent_id) : null,
+        parent: parentId(s) ? coordOf(parentId(s)) : null,
         edge: s.edge,
+        slot: slotOf(s),
         // An untitled root (its title is its own handle) reads as untitled (D2).
         title: s.edge === 'root' && (tree.untitled || s.title === own) ? '' : (s.title || home),
         type: s.type || 'idea',
@@ -301,15 +318,16 @@
         links: out.get(s.coord) || [],
         kinds: {},
         inbound: (inn.get(s.coord) || []).length,
-        kind: s.edge === 'root' ? 'connection' : undefined,
+        kind: s.edge === 'root' ? kind : undefined,
         station: {
-          id: s.placement_id, home, tree: homeTree, role, hue: treeHue(homeTree, role),
+          id, home, tree: homeTree, role, hue: treeHue(homeTree, role),
           origin: s.edge === 'root' ? 'root' : s.origin || 'mount', status: s.status || 'live',
-          gloss: s.gloss || '', portal: s.portal || null, places: s.places || 0,
+          gloss: s.gloss || '', portal: s.portal || null, places: s.places ?? s.repeatCount,
+          repeatCount: s.repeatCount, isFiling: s.isFiling,
         },
       };
     });
-    return { tree: 'conn:' + own, handle: own, kind: 'connection', title: (tree && tree.title) || own, root, cards, byCoord, inbound: inn };
+    return { tree: kind === 'connection' ? 'conn:' + own : own, handle: own, kind, title: (tree && tree.title) || own, root, cards, byId, byCoord, inbound: inn };
   }
 
   /** The focus the Map lays out at one station: its coordinate and its connections as Links. */
@@ -336,10 +354,21 @@
   function projectionLines(crossings) {
     const out = [];
     for (const [tree, cross] of Object.entries(crossings || {})) {
+      const targets = new Map((cross?.stations || []).map((s) => [coordinateId(s), s.target_coord_ids]));
+      const used = new Map();
       for (const line of (cross && cross.lines) || []) {
-        if (!line.from || !line.to || line.from === line.to) continue;
-        const id = line.kind === 'connection' ? line.connection_id : `${line.from_coord}>${line.to_coord}`;
-        out.push({ ...line, tree, title: (cross && cross.title) || '', key: `x${tree}|${line.kind}|${id}` });
+        const fromId = line.from_coord_id || line.from_placement_id || line.from;
+        const toId = line.to_coord_id || line.to_placement_id || line.to;
+        if (!fromId || !toId || fromId === toId) continue;
+        const fromKey = line.from_coord_id || line.from_placement_id || line.from_coord || fromId;
+        const toKey = line.to_coord_id || line.to_placement_id || line.to_coord || toId;
+        const key = JSON.stringify([tree, line.kind, fromKey, toKey, line.connection_id]);
+        const occurrence = used.get(key) || 0;
+        used.set(key, occurrence + 1);
+        out.push({
+          ...line, tree, title: cross.title || '', key: `x${key}|${occurrence}`, fromId, toId,
+          fromTargets: targets.get(fromId) || [], toTargets: targets.get(toId) || [],
+        });
       }
     }
     return out;
@@ -355,10 +384,13 @@
     const lanes = new Map();
     const byEnd = new Map();
     for (const line of all) {
-      const pair = [line.from, line.to].sort().join('\u0001');
+      const pair = [line.from || line.fromId, line.to || line.toId].sort().join('\u0001');
       line.lane = lanes.get(pair) || 0;
       lanes.set(pair, line.lane + 1);
-      for (const end of [line.from, line.to]) {
+      const ends = new Set([line.from, line.to, line.from_coord_id, line.to_coord_id, line.fromId, line.toId,
+        ...line.fromTargets, ...line.toTargets, ...(line.target_coord_ids || [])]);
+      for (const end of ends) {
+        if (!end) continue;
         if (!byEnd.has(end)) byEnd.set(end, []);
         byEnd.get(end).push(line);
       }
@@ -368,7 +400,7 @@
 
   /**
    * The projection lines the Map draws now: with `all` every line; otherwise those that touch the
-   * focused or the hovered address, each once. Takes the `crossings` field or its `crossingIndex`.
+   * focused or the hovered address or Coordinate ID, each once. Takes the `crossings` field or its index.
    */
   function visibleCrossings(crossings, focus, hovered, all) {
     const index = crossings && crossings.byEnd ? crossings : crossingIndex(crossings);
@@ -393,7 +425,7 @@
   function exitsAt(crossings, address) {
     const out = [];
     for (const [tree, cross] of Object.entries(crossings || {})) {
-      const n = cross && cross.exits && cross.exits[address];
+      const n = cross?.exits_by_coord?.[address] ?? cross?.exits?.[address];
       if (n) out.push({ tree, n });
     }
     return out.sort((a, b) => a.tree.localeCompare(b.tree, undefined, { numeric: true }));

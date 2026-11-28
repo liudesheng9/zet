@@ -968,18 +968,23 @@ impl Refusal {
             Reason::PinnedDelete => "deleted",
             other => unreachable!("`{}` is not a pin reason", other.id()),
         };
-        let message = format!(
-            "{} {} cannot be {effect}: {} {} a pinned target of locked tree {}; locked source {} {} {} {}",
+        let mut message = format!(
+            "{} {} cannot be {effect}: {} {} a pinned target of locked tree {}",
             noun(&cards),
             quoted(&cards),
             pronoun(&cards),
             verb(&cards),
             quoted(&trees),
-            source_noun(&sources),
-            quoted(&sources),
-            source_verb(&sources),
-            pronoun(&cards)
         );
+        if !sources.is_empty() {
+            message.push_str(&format!(
+                "; locked source {} {} {} {}",
+                source_noun(&sources),
+                quoted(&sources),
+                source_verb(&sources),
+                pronoun(&cards),
+            ));
+        }
         Self {
             reason,
             message,
@@ -1191,13 +1196,22 @@ fn load_state(conn: &Connection) -> Result<Option<State>> {
         member_by_address.insert(address, (lock_id, root));
     }
     let mut pins_by_target: BTreeMap<i64, Vec<PinSource>> = BTreeMap::new();
-    let mut stmt = conn.prepare(
+    // Coordinate pins block a target's move or deletion through the same gate as Link pins.
+    // They can have multiple occurrences per Lock and have no source Card holding a Link.
+    let coordinate_pins = if crate::coord_lock::installed(conn) {
+        "UNION ALL SELECT DISTINCT p.lock_id, p.target_row, NULL FROM lock_placement_pins p
+         JOIN locks l ON l.lock_id = p.lock_id WHERE l.unlocked_at IS NULL"
+    } else {
+        ""
+    };
+    let mut stmt = conn.prepare(&format!(
         "SELECT p.lock_id, p.target_row, m.address FROM lock_pins p
          JOIN locks l ON l.lock_id = p.lock_id
          LEFT JOIN lock_members m ON m.lock_id = p.lock_id AND m.row_id = p.source_row
          WHERE l.unlocked_at IS NULL
-         ORDER BY p.lock_id, p.target_row, m.address",
-    )?;
+         {coordinate_pins}
+         ORDER BY 1, 2, 3"
+    ))?;
     for row in stmt.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
@@ -1480,9 +1494,7 @@ pub(crate) struct LockPlan {
     pub(crate) warnings: Vec<Warning>,
     pub(crate) seal: String,
     pub(crate) plan_hash: String,
-    /// The coordinate evidence the Lock also captures: the stations and tree connections of a
-    /// Connection tree, or the Topic-side mounts of a Topic, with the pins on mounted targets
-    /// (docs/multi-tree-coordinates-proposal.md §8.1). Null when the tree has none.
+    /// The tree's v2 Coordinate and connection evidence, with a pin per live external occurrence.
     pub(crate) coordinates: Value,
 }
 
@@ -1674,6 +1686,23 @@ fn hash_json(value: &Value) -> String {
         .collect()
 }
 
+/// Connection handles can retain the number of their original tree after a refile.
+fn filing_member_rows(conn: &Connection, tree: &str) -> Result<Option<BTreeSet<i64>>> {
+    if !tree.starts_with('~') || !crate::coord::installed(conn) {
+        return Ok(None);
+    }
+    let Some(tree) = crate::coord::tree_by_public_key(conn, tree)? else {
+        return Ok(None);
+    };
+    let mut stmt = conn.prepare(
+        "SELECT i.card_row FROM card_identity i
+         JOIN coordinates c ON c.coord_id = i.filing_coord_id
+         WHERE i.status = 'live' AND c.tree_id = ?1",
+    )?;
+    let rows = stmt.query_map([&tree.tree_id], |row| row.get(0))?;
+    Ok(Some(rows.collect::<rusqlite::Result<_>>()?))
+}
+
 /// Resolve one requested Tree root into everything the confirmation and its dialog need.
 pub(crate) fn plan(
     conn: &Connection,
@@ -1712,9 +1741,14 @@ pub(crate) fn plan(
         .iter()
         .map(|card| (card.address.clone(), card))
         .collect::<BTreeMap<_, _>>();
+    let filing_rows = filing_member_rows(conn, &tree)?;
     let mut members = BTreeMap::new();
     for card in &cards {
-        if !crate::is_tree_member(&card.address, &tree) {
+        let filed_here = filing_rows.as_ref().map_or_else(
+            || crate::is_tree_member(&card.address, &tree),
+            |rows| rows.contains(&card.row_id),
+        );
+        if !filed_here {
             continue;
         }
         if card.workspace != target.workspace {
@@ -1759,7 +1793,7 @@ pub(crate) fn plan(
                 });
                 continue;
             };
-            if crate::is_tree_member(&target_card.address, &tree) {
+            if members.contains_key(&target_card.address) {
                 continue;
             }
             // One pin per distinct `(locked source row, existing target row)` pair: a repeated macro
@@ -1874,6 +1908,11 @@ pub(crate) fn lock_tx(conn: &Connection, plan: &LockPlan) -> Result<Lock> {
             existing.lock_id,
             existing.seal_display()
         );
+    }
+    if let Some(rows) = filing_member_rows(conn, &plan.tree)?
+        && rows != plan.members.iter().map(|member| member.row_id).collect::<BTreeSet<_>>()
+    {
+        bail!("tree `{}` changed its filing membership. Request a new Lock plan", plan.root);
     }
     verify_member_indexes(conn, plan)?;
     conn.execute(
@@ -2102,6 +2141,8 @@ pub(crate) fn ensure_unlocked(conn: &Connection, change: Change<'_>) -> Result<(
 fn check_change(conn: &Connection, state: &State, change: Change<'_>) -> Result<()> {
     match change {
         Change::Edit(row_id) => {
+            // The caller resolves the selected Coordinate to its Card row. This gate also covers
+            // edits through Secondary Coordinates, with source drift handled per pin by coord_lock.
             if let Some(blocker) = member_blocker(state, row_id) {
                 // The refused Card's own address, never another member's: the owner's refusal names
                 // the exact Card whose write the Lock stopped (R217, S05-AC04).
@@ -3142,9 +3183,15 @@ fn compare_lock(
     }
     // R283: the current exact tree membership equals the snapshot, extras included.
     let snapshot = baseline.keys().cloned().collect::<BTreeSet<_>>();
+    let filing_rows = filing_member_rows(conn, &lock.tree)?;
     let current = cards
         .iter()
-        .filter(|card| crate::is_tree_member(&card.address, &lock.tree))
+        .filter(|card| {
+            filing_rows.as_ref().map_or_else(
+                || crate::is_tree_member(&card.address, &lock.tree),
+                |rows| rows.contains(&card.row_id),
+            )
+        })
         .map(|card| card.address.clone())
         .collect::<BTreeSet<_>>();
     for address in current.difference(&snapshot) {
@@ -3203,7 +3250,7 @@ fn compare_lock(
                 .expected(target_address.clone())
                 .actual(card.address.clone()),
             ),
-            Some(card) if crate::is_tree_member(&card.address, &lock.tree) => {
+            Some(card) if current.contains(&card.address) => {
                 integrity.faults.push(Fault::lock(
                     id,
                     "pin-inside",
@@ -3222,6 +3269,7 @@ fn compare_lock(
         &pins,
         by_address,
         by_row,
+        &current,
     )?);
     Ok(())
 }
@@ -3259,6 +3307,7 @@ fn link_pin_faults(
     pins: &[(i64, i64, String)],
     by_address: &BTreeMap<&str, &StoredCard>,
     by_row: &BTreeMap<i64, &StoredCard>,
+    current_members: &BTreeSet<String>,
 ) -> Result<Vec<Fault>> {
     let mut faults = Vec::new();
     let broken = captured_warnings(conn, lock.lock_id)?;
@@ -3287,7 +3336,7 @@ fn link_pin_faults(
             else {
                 continue;
             };
-            if crate::is_tree_member(&target_card.address, &lock.tree) {
+            if current_members.contains(&target_card.address) {
                 continue;
             }
             if broken.contains(&(address.clone(), target.to_string())) {
@@ -3372,8 +3421,7 @@ fn scan(conn: &Connection) -> Result<Integrity> {
     for lock in &locks {
         compare_lock(conn, lock, &cards, &by_address, &by_row, &mut integrity)?;
     }
-    // The coordinate evidence of the same Locks: frozen stations and connections, and the pins on
-    // mounted targets (docs/multi-tree-coordinates-proposal.md §8.1).
+    // Coordinate verification follows each Lock's evidence version (proposal §8.3).
     for (lock_id, kind, subject, detail) in crate::coord_lock::faults(conn)? {
         integrity.faults.push(Fault::lock(lock_id, &kind, &subject, detail));
     }

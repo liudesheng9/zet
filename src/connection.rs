@@ -1,15 +1,6 @@
-//! Connection trees (`~n`, 关联树), Topic-side mounts (`<loc>+k`) and tree connections: the
-//! operations and reads of docs/multi-tree-coordinates-proposal.md §7 and §9.3, shared by the MCP
-//! server, the GUI and the Session.
-//!
-//! Every write runs under the archive edit lock in one transaction. It checks the **host**
-//! authority (the Workspace and Lock of the tree that owns the placements and connections) apart
-//! from the **home** authority of any Card it reads: mounting or connecting a Card never writes the
-//! Card. A write that changes what a reader saw before (a move, an unplace, a rebind, a deleted
-//! connection, an extraction, a promotion, a seeding) answers a plan first and applies on its
-//! confirmation word; `expected_revision` and `plan_hash` from the plan, when passed back, must
-//! still match. `op_key` makes a write idempotent: the same key and request replay the stored
-//! answer, a different request under the same key is refused.
+//! Coordinate operations, tree-local connections, and projections shared by MCP, GUI, and Session.
+//! Writes run under the archive edit lock in one transaction. Host authority covers Coordinates,
+//! while owner authority covers Cards. Destructive operations bind their plans to the revision.
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -18,11 +9,11 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crate::coord::{self, ConnTree, EdgeKind, Handle, Placement, TreeRole, TreeShape};
+use crate::coord::{self, ConnTree, EdgeKind, Handle, Placement, TreeRecord, TreeRole, TreeShape};
 use crate::{Access, CardType, Workspace};
 
 /// The MCP and batch-free write tools of this module.
-pub(crate) const WRITE_TOOLS: [&str; 15] = [
+pub(crate) const WRITE_TOOLS: [&str; 22] = [
     "create_connection_tree",
     "place_card",
     "create_connection_card",
@@ -38,16 +29,25 @@ pub(crate) const WRITE_TOOLS: [&str; 15] = [
     "seed_connection_tree",
     "edit_connection_tree",
     "review_source",
+    "add_coordinate",
+    "add_coordinates",
+    "move_coordinate",
+    "reorder_coordinates",
+    "detach_coordinate",
+    "refile_card",
+    "rebind_coordinate",
 ];
 
 /// The read tools of this module.
-pub(crate) const READ_TOOLS: [&str; 6] = [
+pub(crate) const READ_TOOLS: [&str; 8] = [
     "list_side_mounts",
     "list_connection_trees",
     "get_connection_tree",
     "list_placements",
     "list_connections",
     "get_dependencies",
+    "list_coordinates",
+    "get_tree_coordinates",
 ];
 
 pub(crate) fn is_write_tool(name: &str) -> bool {
@@ -110,7 +110,10 @@ fn plain_line(value: &str, name: &str, max: usize) -> Result<String> {
         bail!("`{name}` is empty; pass null to clear it");
     }
     if value.chars().count() > max {
-        bail!("`{name}` has {} characters; at most {max} are allowed", value.chars().count());
+        bail!(
+            "`{name}` has {} characters; at most {max} are allowed",
+            value.chars().count()
+        );
     }
     if value.contains(['\n', '\r', '\0']) {
         bail!("`{name}` must be one line of plain text");
@@ -137,7 +140,9 @@ fn plain_note(value: &str) -> Result<String> {
         bail!("`note` must be plain text");
     }
     if value.contains("[[") {
-        bail!("`note` is plain text and creates no Link; develop the assertion into a Card to cite Cards");
+        bail!(
+            "`note` is plain text and creates no Link; develop the assertion into a Card to cite Cards"
+        );
     }
     Ok(value.to_string())
 }
@@ -151,7 +156,13 @@ fn hash_value(value: &Value) -> String {
 fn request_core(tool: &str, args: &Value) -> Value {
     let mut core = args.clone();
     if let Some(map) = core.as_object_mut() {
-        for key in ["confirm", "plan_hash", "expected_revision", "op_key", "preview"] {
+        for key in [
+            "confirm",
+            "plan_hash",
+            "expected_revision",
+            "op_key",
+            "preview",
+        ] {
             map.remove(key);
         }
     }
@@ -165,7 +176,7 @@ fn request_core(tool: &str, args: &Value) -> Value {
 /// Run one tool of this module under `access`. Reads open their own read; writes take the edit
 /// lock and one transaction.
 pub(crate) fn run(root: &Path, access: Access, tool: &str, args: &Value) -> Result<Value> {
-    if !is_write_tool(tool) {
+    if !is_write_tool(tool) && tool != "delete_card" {
         // One read transaction: every row of the answer belongs to one archive revision.
         let conn = crate::open_db(root)?;
         let view = conn.unchecked_transaction()?;
@@ -173,7 +184,25 @@ pub(crate) fn run(root: &Path, access: Access, tool: &str, args: &Value) -> Resu
         view.rollback()?;
         return Ok(value);
     }
-    let _lock = crate::acquire_edit_lock_within(root, crate::ops::EDIT_PATIENCE, "connection tree")?;
+    if tool == "delete_card" {
+        arg_str(args, "card_id")?;
+        if args.get("at").is_some_and(|at| !at.is_null()) {
+            bail!(
+                "give either `at` for an explicit subtree delete or `card_id` for a single Card delete"
+            );
+        }
+        if args
+            .get("confirm")
+            .is_some_and(|confirm| !confirm.is_null())
+        {
+            arg_str(args, "confirm")?;
+            if opt_str(args, "plan_hash")?.is_none() {
+                bail!("confirming a Card delete requires the plan_hash; ask for the plan first");
+            }
+        }
+    }
+    let _lock =
+        crate::acquire_edit_lock_within(root, crate::ops::EDIT_PATIENCE, "connection tree")?;
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let op_key = opt_str(args, "op_key")?.map(str::to_string);
@@ -191,11 +220,27 @@ pub(crate) fn run(root: &Path, access: Access, tool: &str, args: &Value) -> Resu
                 bail!("op_key `{key}` was already used for a different request");
             }
             let mut value: Value = serde_json::from_str(&result)?;
+            if tool == "delete_card"
+                && args["confirm"].as_str().is_some()
+                && value["plan_hash"].as_str() != args["plan_hash"].as_str()
+            {
+                bail!("plan_hash does not match the recorded Card delete");
+            }
             value["replayed"] = json!(true);
             return Ok(value);
         }
     }
     let revision = crate::link_index::revision(&tx)?;
+    if let Some(expected) = args.get("expected_revision") {
+        let expected = expected
+            .as_u64()
+            .context("expected_revision must be an archive revision")?;
+        if expected != revision {
+            bail!(
+                "stale plan: the archive is at revision {revision}, expected {expected}; ask for a new plan"
+            );
+        }
+    }
     let mut ctx = Ctx {
         conn: &tx,
         access,
@@ -205,7 +250,10 @@ pub(crate) fn run(root: &Path, access: Access, tool: &str, args: &Value) -> Resu
         changed: false,
     };
     let value = write(&mut ctx)?;
-    let applied = value.get("applied").and_then(Value::as_bool).unwrap_or(true);
+    let applied = value
+        .get("applied")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     // `preview: true` asks what would happen and never writes, also for a write that would
     // otherwise apply at once.
     if args.get("preview").and_then(Value::as_bool) == Some(true) && applied {
@@ -221,7 +269,7 @@ pub(crate) fn run(root: &Path, access: Access, tool: &str, args: &Value) -> Resu
         return Ok(value);
     }
     let changed = ctx.changed;
-    if changed {
+    if changed && crate::link_index::revision(&tx)? == revision {
         crate::link_index::bump_revision(&tx)?;
     }
     let mut value = value;
@@ -239,6 +287,15 @@ pub(crate) fn run(root: &Path, access: Access, tool: &str, args: &Value) -> Resu
     Ok(value)
 }
 
+/// Delete the named Card through the shared Coordinate transaction and receipt path.
+pub(crate) fn delete_card_identity(
+    root: &Path,
+    access: crate::ops::Access,
+    args: &Value,
+) -> Result<Value> {
+    run(root, access, "delete_card", args)
+}
+
 struct Ctx<'a> {
     conn: &'a Connection,
     access: Access,
@@ -252,7 +309,15 @@ impl Ctx<'_> {
     /// Plan-or-apply: when the confirmation word is absent (or a stale plan is passed back), answer
     /// the plan and write nothing.
     fn confirmed(&self, word: &str, lines: &[String], effects: &Value) -> Result<Option<Value>> {
-        confirm_plan(self.conn, self.tool, self.args, self.revision, word, lines, effects)
+        confirm_plan(
+            self.conn,
+            self.tool,
+            self.args,
+            self.revision,
+            word,
+            lines,
+            effects,
+        )
     }
 }
 
@@ -263,24 +328,50 @@ fn write(ctx: &mut Ctx) -> Result<Value> {
         "place_card" => place(ctx),
         "create_connection_card" => create_native(ctx),
         "edit_placement" => edit_gloss(ctx),
-        "move_placement" => move_station(ctx),
-        "unplace" => unplace(ctx),
-        "rebind_placement" => rebind(ctx),
+        "move_placement" | "move_coordinate" => move_station(ctx),
+        "unplace" | "detach_coordinate" => unplace(ctx),
+        "rebind_placement" | "rebind_coordinate" => rebind(ctx),
+        "add_coordinate" | "add_coordinates" => place(ctx),
+        "reorder_coordinates" => reorder_coordinates(ctx),
+        "refile_card" => refile(ctx),
+        "delete_card" => delete_card(ctx),
         "connect_placements" => connect(ctx),
         "edit_connection" => edit_connection(ctx),
         "delete_connection" => delete_connection(ctx),
         "extract_branch" => extract(ctx),
         "promote_card" => promote(ctx),
-        "seed_connection_tree" => crate::dependencies::seed(ctx.conn, ctx.access, ctx.args, &mut |word, lines, effects| confirm_plan(ctx.conn, ctx.tool, ctx.args, ctx.revision, word, lines, effects)).map(|value| {
-            if value.get("applied").and_then(Value::as_bool).unwrap_or(true) {
+        "seed_connection_tree" => crate::dependencies::seed(
+            ctx.conn,
+            ctx.access,
+            ctx.args,
+            &mut |word, lines, effects| {
+                confirm_plan(
+                    ctx.conn,
+                    ctx.tool,
+                    ctx.args,
+                    ctx.revision,
+                    word,
+                    lines,
+                    effects,
+                )
+            },
+        )
+        .map(|value| {
+            if value
+                .get("applied")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+            {
                 ctx.changed = true;
             }
             value
         }),
-        "review_source" => crate::coord_lock::review_source(ctx.conn, ctx.access, ctx.args).map(|value| {
-            ctx.changed = true;
-            value
-        }),
+        "review_source" => {
+            crate::coord_lock::review_source(ctx.conn, ctx.access, ctx.args).map(|value| {
+                ctx.changed = true;
+                value
+            })
+        }
         other => bail!("unknown Connection tree tool `{other}`"),
     }
 }
@@ -308,7 +399,9 @@ pub(crate) fn confirm_plan(
     let confirm = args.get("confirm").and_then(Value::as_str);
     if confirm != Some(word) {
         if let Some(other) = confirm {
-            bail!("the confirmation word of this plan is `{word}`, not `{other}`; ask for the plan again");
+            bail!(
+                "the confirmation word of this plan is `{word}`, not `{other}`; ask for the plan again"
+            );
         }
         return Ok(Some(json!({
             "applied": false,
@@ -319,18 +412,27 @@ pub(crate) fn confirm_plan(
             "expected_revision": revision,
         })));
     }
-    let Some(expected) = args.get("expected_revision").and_then(Value::as_u64) else {
-        bail!("a confirmation carries the plan's expected_revision and plan_hash; ask for the plan first");
-    };
-    if expected != revision {
+    let expected = args.get("expected_revision").and_then(Value::as_u64);
+    if expected.is_none() && tool != "delete_card" {
+        bail!(
+            "a confirmation carries the plan's expected_revision and plan_hash; ask for the plan first"
+        );
+    }
+    if let Some(expected) = expected
+        && expected != revision
+    {
         bail!(
             "stale plan: the archive is at revision {revision} but the plan was made at revision {expected}; ask for a new plan"
         );
     }
     match args.get("plan_hash").and_then(Value::as_str) {
         Some(given) if given == plan_hash => Ok(None),
-        Some(_) => bail!("stale plan: the plan changed since it was shown (or the request changed); ask for a new plan"),
-        None => bail!("a confirmation carries the plan's expected_revision and plan_hash; ask for the plan first"),
+        Some(_) => bail!(
+            "stale plan: the plan changed since it was shown (or the request changed); ask for a new plan"
+        ),
+        None => bail!(
+            "a confirmation carries the plan's expected_revision and plan_hash; ask for the plan first"
+        ),
     }
 }
 
@@ -338,369 +440,63 @@ pub(crate) fn confirm_plan(
 // Host authority
 // ---------------------------------------------------------------------------------------------
 
-/// The host of a write: a Connection tree or a Topic tree (for Topic-side mounts).
 #[derive(Clone, Debug)]
-pub(crate) enum Host {
-    Connection(ConnTree),
-    Topic { topic: String, workspace: Workspace, root: String },
-}
+pub(crate) struct Host(pub(crate) TreeRecord);
 
 impl Host {
-    pub(crate) fn key(&self) -> String {
-        match self {
-            Host::Connection(tree) => tree.tree_id.clone(),
-            Host::Topic { topic, .. } => topic.clone(),
-        }
+    pub(crate) fn key(&self) -> &str {
+        &self.0.tree_id
     }
 
-    fn workspace(&self) -> Workspace {
-        match self {
-            Host::Connection(tree) => tree.workspace,
-            Host::Topic { workspace, .. } => *workspace,
-        }
+    pub(crate) fn workspace(&self) -> Workspace {
+        self.0.workspace
     }
 
-    fn label(&self) -> String {
-        match self {
-            Host::Connection(tree) => tree.handle(),
-            Host::Topic { root, .. } => root.clone(),
-        }
+    pub(crate) fn label(&self) -> String {
+        self.0.root_address()
     }
 }
 
-/// The placements whose live Card has its home in one Topic or Literature tree `tree` (the plane):
-/// `(placement, address)` for every Connection-tree station and Topic-side mount of those Cards.
-/// Membership follows the live canonical home: a retired Card is never in a plane, a promoted
-/// native Card is in its Topic's plane, and a Literature root is in its own plane by its key.
-fn plane_placements(conn: &Connection, tree: &str) -> Result<Vec<(Placement, String)>> {
-    if !coord::installed(conn) {
-        return Ok(Vec::new());
-    }
-    // The Literature root by its key, every Location under `tree/` as an index range.
-    let rows: Vec<(String, String)> = conn
-        .prepare_cached(
-            "SELECT p.placement_id, COALESCE(c.location, c.citation_key) FROM placements p
-             JOIN card_identity i ON i.card_id = p.card_id AND i.status = 'live'
-             JOIN cards c ON c.row_id = i.card_row
-             WHERE c.citation_key = ?1 OR (c.location >= ?2 AND c.location < ?3)",
-        )?
-        .query_map(params![tree, format!("{tree}/"), format!("{tree}0")], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    let mut out = Vec::new();
-    for (id, address) in rows {
-        if let Some(p) = coord::placement(conn, &id)? {
-            out.push((p, address));
-        }
-    }
-    Ok(out)
-}
-
-/// The shapes of the Connection trees that hold `placements`, each built once.
-fn host_shapes(conn: &Connection, placements: &[(Placement, String)]) -> Result<BTreeMap<String, Option<TreeShape>>> {
-    let mut shapes = BTreeMap::new();
-    for (p, _) in placements {
-        if p.host_kind != "connection" || shapes.contains_key(&p.host_tree_key) {
-            continue;
-        }
-        // A damaged tree is reported by `zt status`; the views leave it out.
-        let shape = match coord::tree_by_id(conn, &p.host_tree_key)? {
-            Some(tree) => coord::load_tree_shape(conn, &tree).ok(),
-            None => None,
-        };
-        shapes.insert(p.host_tree_key.clone(), shape);
-    }
-    Ok(shapes)
-}
-
-/// `elsewhere`: every coordinate the Cards of one Topic or Literature tree have outside their home: the stations
-/// of Connection trees and the Topic-side mounts, by the Card's address. The page stamps them on
-/// the head of each Card, so a Card in several trees shows each place it stands. Each Connection
-/// tree's shape is built once, however many of the plane's Cards it holds.
-fn elsewhere_of(conn: &Connection, placements: &[(Placement, String)], shapes: &BTreeMap<String, Option<TreeShape>>) -> Result<Value> {
-    let mut out = serde_json::Map::new();
-    for (p, address) in placements {
-        let (coord, host) = if p.host_kind == "connection" {
-            let Some(Some(shape)) = shapes.get(&p.host_tree_key) else { continue };
-            let Some(coord) = shape.coord.get(&p.placement_id) else { continue };
-            (coord.clone(), shape.tree.handle())
-        } else {
-            let Ok(host) = host_of(conn, p) else { continue };
-            let Ok(coord) = coord::coordinate_of(conn, p) else { continue };
-            (coord, host.label())
-        };
-        let entry = json!({
-            "placement_id": p.placement_id,
-            "coord": coord,
-            "host": host,
-            "gloss": p.gloss,
-        });
-        if let Value::Array(list) = out.entry(address.clone()).or_insert_with(|| json!([])) {
-            list.push(entry);
-        }
-    }
-    for list in out.values_mut() {
-        if let Value::Array(list) = list {
-            list.sort_by(|a, b| a["coord"].as_str().cmp(&b["coord"].as_str()));
-        }
-    }
-    Ok(Value::Object(out))
-}
-
-/// The title of a Connection tree's root Card and whether the root is untitled: a root written
-/// without a title is stored with its own handle as its title (a Card title is never empty), and a
-/// title equal to the root's handle carries no meaning (docs/connection-trees-free-proposal.md D2).
-/// A root that cannot be read is an error, never an untitled root.
-pub(crate) fn root_title(conn: &Connection, tree: &ConnTree) -> Result<(String, bool)> {
-    let address = coord::address_of_card_id(conn, &tree.root_card_id)?
-        .with_context(|| format!("the root Card of {} is missing", tree.handle()))?;
-    let card = crate::load_card(conn, &address)?;
-    let title = crate::parse_card_text(&card.text)?.title;
-    if title == tree.handle() {
-        return Ok((String::new(), true));
-    }
-    Ok((title, false))
-}
-
-/// Both coordinate views of one Topic or Literature tree, from one membership read and one shape
-/// per Connection tree: `elsewhere` (the stamps) and `crossings` (the projection).
-pub(crate) fn tree_coordinates(conn: &Connection, tree: &str) -> Result<(Value, Value)> {
-    let placements = plane_placements(conn, tree)?;
-    let shapes = host_shapes(conn, &placements)?;
-    Ok((elsewhere_of(conn, &placements, &shapes)?, crossings_of(conn, &placements, &shapes)?))
-}
-
-/// `crossings`: the projection of every Connection tree that crosses one Topic or Literature tree
-/// (docs/connection-trees-free-proposal.md D4). A Connection tree is a structure in a higher
-/// dimension; the tree being read is a plane. For each Connection tree with a station whose live
-/// Card has its home in the plane, the answer names those stations, the structure lines between
-/// them (each in-plane station to its nearest in-plane ancestor through `parent_id`, Direct and
-/// Side alike; `hops` counts the stations outside the plane in between and `edge` is the kind of
-/// the step out of that ancestor), the tree connections whose two stations are both in the plane
-/// (each parallel assertion its own line), and the exits: how many structural neighbours and tree
-/// connections of each in-plane station lie outside the plane. The root station is the tree itself:
-/// it is in no plane, ends the climb, and is never counted as an exit, by structure or by
-/// connection. A Missing mount is outside every plane but still counts toward hops and exits.
-/// Topic-side mounts are not part of the projection. Only the trees that cross the plane are read;
-/// the cost is the size of those trees.
-fn crossings_of(conn: &Connection, placements: &[(Placement, String)], shapes: &BTreeMap<String, Option<TreeShape>>) -> Result<Value> {
-    let mut by_host: BTreeMap<&str, BTreeMap<&str, &str>> = BTreeMap::new();
-    for (p, address) in placements {
-        if p.host_kind == "connection" {
-            by_host.entry(&p.host_tree_key).or_default().insert(&p.placement_id, address);
-        }
-    }
-    let mut out = serde_json::Map::new();
-    for (host, in_plane) in by_host {
-        let Some(Some(shape)) = shapes.get(host) else { continue };
-        let mut stations = Vec::new();
-        let mut lines = Vec::new();
-        let mut exits: BTreeMap<String, u64> = BTreeMap::new();
-        let outside = |id: &str| id != shape.root && !in_plane.contains_key(id);
-        for id in &shape.order {
-            let Some(&address) = in_plane.get(id.as_str()) else { continue };
-            let p = &shape.by_id[id];
-            stations.push(json!({"address": address, "placement_id": id, "coord": shape.coord[id]}));
-            // The nearest in-plane ancestor, through the stations outside the plane.
-            let mut below = p;
-            let mut hops = 0u64;
-            while let Some(parent_id) = below.parent_id.as_deref() {
-                if parent_id == shape.root {
-                    break;
-                }
-                if let Some(&from) = in_plane.get(parent_id) {
-                    lines.push(json!({
-                        "kind": "structure", "from": from, "to": address,
-                        "from_placement_id": parent_id, "to_placement_id": id,
-                        "from_coord": shape.coord.get(parent_id), "to_coord": shape.coord[id],
-                        "edge": below.edge.id(), "hops": hops,
-                    }));
-                    break;
-                }
-                let Some(parent) = shape.by_id.get(parent_id) else { break };
-                hops += 1;
-                below = parent;
-            }
-            let mut n = 0u64;
-            if p.parent_id.as_deref().is_some_and(outside) {
-                n += 1;
-            }
-            if shape.direct.get(id).is_some_and(|c| outside(c)) {
-                n += 1;
-            }
-            n += shape.side.get(id).map_or(0, |kids| kids.iter().filter(|c| outside(c)).count() as u64);
-            if n > 0 {
-                *exits.entry(address.to_string()).or_default() += n;
-            }
-        }
-        for e in edges_of_tree(conn, &shape.tree.tree_id)? {
-            if e.from == shape.root || e.to == shape.root {
-                continue;
-            }
-            match (in_plane.get(e.from.as_str()), in_plane.get(e.to.as_str())) {
-                (Some(&from), Some(&to)) => lines.push(json!({
-                    "kind": "connection", "from": from, "to": to,
-                    "from_placement_id": e.from, "to_placement_id": e.to,
-                    "from_coord": shape.coord.get(&e.from), "to_coord": shape.coord.get(&e.to),
-                    "direction": if e.directed { "directed" } else { "neutral" },
-                    "relation_label": e.label, "relation_kind": e.kind, "connection_id": e.connection_id,
-                })),
-                (Some(&one), None) | (None, Some(&one)) => *exits.entry(one.to_string()).or_default() += 1,
-                (None, None) => {}
-            }
-        }
-        let (title, untitled) = root_title(conn, &shape.tree)?;
-        out.insert(
-            shape.tree.handle(),
-            json!({
-                "tree": shape.tree.handle(), "title": title, "untitled": untitled,
-                "workspace": shape.tree.workspace.id(), "stations": stations, "lines": lines, "exits": exits,
-            }),
-        );
-    }
-    Ok(Value::Object(out))
-}
-
-/// The host of an existing placement.
-pub(crate) fn host_of(conn: &Connection, placement: &Placement) -> Result<Host> {
-    if placement.host_kind == "topic" {
-        let root = format!("{}/0", placement.host_tree_key);
-        let workspace = crate::load_card(conn, &root)
-            .map(|card| card.workspace)
-            .with_context(|| format!("Topic `{root}` hosting this mount does not exist"))?;
-        Ok(Host::Topic {
-            topic: placement.host_tree_key.clone(),
-            workspace,
-            root,
-        })
-    } else {
-        let tree = coord::tree_by_id(conn, &placement.host_tree_key)?
-            .context("the Connection tree of this station was deleted")?;
-        Ok(Host::Connection(tree))
-    }
+pub(crate) fn host_of(conn: &Connection, coordinate: &Placement) -> Result<Host> {
+    Ok(Host(
+        coord::tree_by_id(conn, &coordinate.tree_id)?
+            .context("the coordinate's tree was deleted")?,
+    ))
 }
 
 /// Whether `access` may change the placements and connections of `host` now: its Workspace, and no
 /// active Lock on the host tree.
 pub(crate) fn can_edit_host(conn: &Connection, access: Access, host: &Host) -> Result<bool> {
-    Ok(access.can_write(host.workspace()) && !crate::coord_lock::host_locked(conn, &host.key())?)
+    Ok(access.can_write(host.workspace()) && !crate::coord_lock::host_locked(conn, host.key())?)
 }
 
 fn ensure_host_writable(conn: &Connection, access: Access, host: &Host) -> Result<()> {
     access.ensure_writable(host.workspace())?;
-    crate::coord_lock::ensure_host_unlocked(conn, &host.key(), &host.label())
+    crate::coord_lock::ensure_host_unlocked(conn, host.key(), &host.label())
 }
 
 /// Whether `access` may edit the Card's own text now: its home Workspace and home Lock.
 pub(crate) fn can_edit_card(conn: &Connection, access: Access, card: &crate::Card) -> bool {
     access.can_write(card.workspace)
-        && crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Edit(card.row_id)).is_ok()
+        && crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Edit(card.row_id))
+            .is_ok()
 }
 
 // ---------------------------------------------------------------------------------------------
 // Station views
 // ---------------------------------------------------------------------------------------------
 
-/// How a station's Card stands: a live Card or a Missing mount (its home deleted the Card).
-fn station_value(
-    conn: &Connection,
-    access: Access,
-    host: &Host,
-    host_editable: bool,
-    placement: &Placement,
-    coord_text: &str,
-) -> Result<Value> {
-    let identity = coord::identity(conn, &placement.card_id)?.context("station names an unknown Card")?;
-    let mut value = json!({
-        "placement_id": placement.placement_id,
-        "coord": coord_text,
-        "card_id": placement.card_id,
-        "edge": placement.edge.id(),
-        "parent_id": placement.parent_id,
-        "ordinal": placement.ordinal,
-        "gloss": placement.gloss,
-        "host": host.label(),
-        "host_workspace": host.workspace().id(),
-        "can_edit_placement": host_editable,
-        "bookmark": format!("place:{}", placement.placement_id),
-    });
-    if let Some(row) = identity.card_row.filter(|_| identity.live) {
-        let card = card_by_row(conn, row)?;
-        let role = TreeRole::of(&card);
-        let native = matches!(host, Host::Connection(tree) if Handle::parse(&card.address).is_some_and(|h| h.tree == tree.display_num));
-        value["status"] = json!("live");
-        value["home_address"] = json!(card.address);
-        value["home_role"] = json!(role.id());
-        value["home_workspace"] = json!(card.workspace.id());
-        let parsed = crate::parse_card_text(&card.text).ok();
-        value["title"] = json!(parsed.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| identity.last_title.clone()));
-        // The opening lines, as the Map shows them on a lifted card.
-        value["excerpt"] = json!(parsed.as_ref().map(|p| crate::ops::excerpt(&p.body)).unwrap_or_default());
-        value["type"] = json!(card.card_type.id());
-        value["origin"] = json!(if native { "native" } else { "mount" });
-        // How many places the Card stands in (every station and mount), so a Map card can count its
-        // other coordinates without a request of its own.
-        value["places"] = json!(conn.query_row("SELECT COUNT(*) FROM placements WHERE card_id = ?1", [&placement.card_id], |r| r.get::<_, i64>(0))?);
-        value["can_edit_card"] = json!(can_edit_card(conn, access, &card));
-        value["citation"] = json!(format!("[[{}]]", citation_address(conn, &placement.card_id, &card.address)?));
-        if let Some(drift) = crate::coord_lock::drift(conn, &placement.placement_id)? {
-            value["drift"] = drift;
-        }
-        let is_root = card.is_lit
-            || card.is_topic
-            || (role == TreeRole::Connection && Handle::parse(&card.address).is_some_and(|h| h.local.is_none()));
-        // A mounted tree root is a portal; the host tree's own root is not.
-        if is_root && placement.edge != EdgeKind::Root {
-            // A mounted tree root is one portal node: it never expands its home tree.
-            value["portal"] = json!({
-                "tree": crate::tree_id(&card.address),
-                "role": role.id(),
-                "cards": home_tree_size(conn, &card)?,
-            });
-        }
-    } else {
-        value["status"] = json!("missing");
-        value["home_address"] = json!(identity.last_address);
-        value["title"] = json!(identity.last_title);
-        value["origin"] = json!("mount");
-        value["can_edit_card"] = json!(false);
-    }
-    Ok(value)
-}
-
 /// The citable address of a Card: its permanent handle when it has one (a native Card keeps
 /// `~7#4` across promotion), else its canonical home address.
 pub(crate) fn citation_address(conn: &Connection, card_id: &str, address: &str) -> Result<String> {
     let handle: Option<String> = conn
-        .query_row("SELECT handle FROM card_handles WHERE card_id = ?1", [card_id], |r| r.get(0))
+        .query_row(
+            "SELECT handle FROM card_handles WHERE card_id = ?1",
+            [card_id],
+            |r| r.get(0),
+        )
         .optional()?;
     Ok(handle.unwrap_or_else(|| address.to_string()))
-}
-
-fn home_tree_size(conn: &Connection, card: &crate::Card) -> Result<i64> {
-    match TreeRole::of(card) {
-        TreeRole::Connection => {
-            let Some(tree) = coord::home_tree_of_address(conn, &card.address)? else {
-                return Ok(1);
-            };
-            Ok(conn.query_row(
-                "SELECT COUNT(*) FROM placements WHERE host_tree_key = ?1",
-                [&tree.tree_id],
-                |r| r.get(0),
-            )?)
-        }
-        _ => {
-            let tree = crate::tree_id(&card.address);
-            // Two index lookups: the Literature root by its key, and every Location under `tree/`
-            // as a range (`/` sorts just before `0`). A `LIKE` here scanned every Card once per
-            // mounted tree root, about 0.1 s each on a 55,000-Card archive.
-            Ok(conn.query_row(
-                "SELECT (SELECT COUNT(*) FROM cards WHERE citation_key = ?1)
-                      + (SELECT COUNT(*) FROM cards WHERE location >= ?2 AND location < ?3)",
-                params![tree, format!("{tree}/"), format!("{tree}0")],
-                |r| r.get(0),
-            )?)
-        }
-    }
 }
 
 pub(crate) fn card_by_row(conn: &Connection, row: i64) -> Result<crate::Card> {
@@ -712,160 +508,412 @@ pub(crate) fn card_by_row(conn: &Connection, row: i64) -> Result<crate::Card> {
     crate::load_card(conn, &address)
 }
 
-/// A live Card named by a Card address (`at`/`target_at`) or by `card_id`.
-fn target_card(conn: &Connection, args: &Value, at_field: &str) -> Result<(crate::Card, String)> {
-    if let Some(card_id) = opt_str(args, "card_id")? {
-        let identity = coord::identity(conn, card_id)?.with_context(|| format!("Card `{card_id}` does not exist"))?;
-        let row = identity
-            .card_row
-            .filter(|_| identity.live)
-            .with_context(|| format!("Card `{card_id}` was deleted (last at `{}`)", identity.last_address))?;
-        return Ok((card_by_row(conn, row)?, card_id.to_string()));
+fn alias<'a>(args: &'a Value, names: &[&str]) -> Result<Option<&'a str>> {
+    let mut value = None;
+    for name in names {
+        if let Some(next) = opt_str(args, name)? {
+            if value.is_some_and(|previous| previous != next) {
+                bail!("give one of {}", names.join(", "));
+            }
+            value = Some(next);
+        }
     }
-    let at = arg_str(args, at_field)?;
-    if coord::is_coordinate(at) || coord::place_bookmark(at).is_some() {
-        let station = coord::resolve_station(conn, at)?;
-        let address = coord::address_of_card_id(conn, &station.card_id)?
-            .with_context(|| format!("the Card at `{at}` was deleted"))?;
-        let card = crate::load_card(conn, &address)?;
-        return Ok((card, station.card_id));
-    }
-    let card = crate::load_card(conn, at)?;
-    let card_id = coord::card_id_of_row(conn, card.row_id)?;
-    Ok((card, card_id))
+    Ok(value)
 }
 
-/// A station of `tree` named by a coordinate, a `place:` bookmark or a placement ID.
+fn required_alias<'a>(args: &'a Value, names: &[&str]) -> Result<&'a str> {
+    alias(args, names)?.with_context(|| format!("give one of {}", names.join(", ")))
+}
+
+fn named_card_id(conn: &Connection, text: &str) -> Result<String> {
+    if coord::is_uuid(text) && coord::identity(conn, text)?.is_some() {
+        return Ok(text.to_string());
+    }
+    if !coord::is_coordinate(text)
+        && coord::place_bookmark(text).is_none()
+        && let Some(address) = coord::canonical(conn, text)?
+    {
+        return coord::card_id_of(conn, &address);
+    }
+    Ok(coord::resolve_coord(conn, text)?.card_id)
+}
+
+pub(crate) fn named_target_id(conn: &Connection, args: &Value, at_field: &str) -> Result<String> {
+    if let Some(id) = opt_str(args, "card_id")? {
+        Ok(id.to_string())
+    } else if let Some(at) = opt_str(args, "target_coord_id")? {
+        Ok(coord::resolve_coord(conn, at)?.card_id)
+    } else {
+        named_card_id(conn, arg_str(args, at_field)?)
+    }
+}
+
+pub(crate) fn live_card(
+    conn: &Connection,
+    card_id: &str,
+) -> Result<(crate::Card, coord::Identity)> {
+    let identity = coord::identity(conn, card_id)?
+        .with_context(|| format!("Card `{card_id}` does not exist"))?;
+    let row = identity
+        .card_row
+        .filter(|_| identity.live)
+        .with_context(|| {
+            format!(
+                "Card `{card_id}` was deleted (last at `{}`)",
+                identity.last_address
+            )
+        })?;
+    Ok((card_by_row(conn, row)?, identity))
+}
+
 fn station_in(conn: &Connection, shape: &TreeShape, text: &str) -> Result<Placement> {
-    let placement = coord::resolve_station(conn, text)?;
-    if placement.host_tree_key != shape.tree.tree_id {
-        bail!("station `{text}` is not in Connection tree {}", shape.tree.handle());
+    let row = match shape
+        .by_coord
+        .get(text)
+        .or_else(|| shape.by_id.get(text).map(|p| &p.coord_id))
+    {
+        Some(id) => shape.by_id[id].clone(),
+        None => coord::resolve_coord(conn, text)?,
+    };
+    if row.tree_id != shape.tree.tree_id {
+        bail!("coordinate `{text}` is not in tree {}", shape.tree.handle());
     }
-    Ok(placement)
+    Ok(row)
 }
 
-fn shape_of(conn: &Connection, tree: &ConnTree) -> Result<TreeShape> {
+fn shape_of(conn: &Connection, tree: &TreeRecord) -> Result<TreeShape> {
     coord::load_tree_shape(conn, tree)
 }
 
-/// The tree that holds a station named by `field` (a placement ID, bookmark or coordinate).
-fn station_arg(conn: &Connection, args: &Value, field: &str) -> Result<(Placement, Host)> {
-    let text = arg_str(args, field)?;
-    let placement = coord::resolve_station(conn, text)?;
-    let host = host_of(conn, &placement)?;
-    Ok((placement, host))
+fn station_arg(conn: &Connection, args: &Value) -> Result<(Placement, Host)> {
+    let row = coord::resolve_coord(
+        conn,
+        required_alias(args, &["coord_id", "placement_id", "coord"])?,
+    )?;
+    let host = host_of(conn, &row)?;
+    Ok((row, host))
 }
 
-// ---------------------------------------------------------------------------------------------
-// Low-level writes
-// ---------------------------------------------------------------------------------------------
+pub(crate) fn filing_row(conn: &Connection, identity: &coord::Identity) -> Result<Placement> {
+    let id = identity
+        .filing_coord_id
+        .as_deref()
+        .context("Card has no Filing Coordinate")?;
+    let row = coord::coordinate(conn, id)?.context("Card's Filing Coordinate is missing")?;
+    if row.card_id != identity.card_id || row.host_workspace != identity.live_owner_workspace()? {
+        bail!("Card's Filing Coordinate disagrees with its identity or Workspace");
+    }
+    Ok(row)
+}
+
+fn check_admission(conn: &Connection, tree: &TreeRecord, identity: &coord::Identity) -> Result<()> {
+    if !identity.live {
+        bail!("Card `{}` was deleted", identity.last_address);
+    }
+    if tree.role == TreeRole::Literature && filing_row(conn, identity)?.tree_id != tree.tree_id {
+        bail!(
+            "MC3: Literature trees are closed to foreign Cards in v1; only repeated Coordinates of this book's own filed Cards are allowed"
+        );
+    }
+    Ok(())
+}
 
 fn insert_placement(conn: &Connection, p: &Placement) -> Result<()> {
     conn.execute(
-        "INSERT INTO placements(placement_id, host_kind, host_tree_key, card_id, parent_id, anchor_card_id, edge, ordinal, gloss)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO coordinates(coord_id, tree_id, host_workspace, card_id, parent_coord_id, edge, slot, gloss)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![p.coord_id, p.tree_id, p.host_workspace.id(), p.card_id, p.parent_coord_id,
+                p.edge.id(), p.slot, p.gloss],
+    )?;
+    Ok(())
+}
+
+fn set_position(
+    conn: &Connection,
+    id: &str,
+    tree: &TreeRecord,
+    parent: &str,
+    edge: EdgeKind,
+    slot: Option<u64>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE coordinates SET tree_id = ?2, host_workspace = ?3, parent_coord_id = ?4,
+                edge = ?5, slot = ?6 WHERE coord_id = ?1",
         params![
-            p.placement_id,
-            p.host_kind,
-            p.host_tree_key,
-            p.card_id,
-            p.parent_id,
-            p.anchor_card_id,
-            p.edge.id(),
-            p.ordinal.map(|v| v as i64),
-            p.gloss,
+            id,
+            tree.tree_id,
+            tree.workspace.id(),
+            parent,
+            edge.id(),
+            slot
         ],
     )?;
     Ok(())
 }
 
-/// Rewrite the structural slot of one station. Side ordinals are first parked above every used
-/// ordinal, because the partial unique indexes are checked per statement.
-fn set_slot(conn: &Connection, id: &str, parent: Option<&str>, edge: EdgeKind, ordinal: Option<u64>) -> Result<()> {
+fn set_parent(conn: &Connection, id: &str, parent: &str) -> Result<()> {
     conn.execute(
-        "UPDATE placements SET parent_id = ?2, edge = ?3, ordinal = ?4 WHERE placement_id = ?1",
-        params![id, parent, edge.id(), ordinal.map(|v| v as i64)],
+        "UPDATE coordinates SET parent_coord_id = ?2 WHERE coord_id = ?1",
+        params![id, parent],
     )?;
     Ok(())
 }
 
-/// Park a set of stations out of the way: each becomes a Side station of the root with a unique
-/// high ordinal. Used inside one transaction while a plan rearranges stations; the final shape is
-/// validated before commit (a Side of the root is never left behind).
+/// Free unique slots before a splice. Root Side slots are used only until the transaction
+/// has assigned each parked Coordinate its final position.
 fn park(conn: &Connection, shape: &TreeShape, ids: &[String]) -> Result<()> {
-    let base: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(ordinal), 0) FROM placements WHERE host_tree_key = ?1",
-        [&shape.tree.tree_id],
-        |r| r.get(0),
-    )?;
-    for (i, id) in ids.iter().enumerate() {
-        conn.execute(
-            "UPDATE placements SET parent_id = ?2, edge = 'side', ordinal = ?3 WHERE placement_id = ?1",
-            params![id, shape.root, base + 1_000_000 + i as i64],
-        )?;
-    }
-    Ok(())
-}
-
-/// Renumber the Side stations of `parent` densely 1..N in their current order.
-fn compact_sides(conn: &Connection, host_key: &str, parent: &str) -> Result<()> {
-    let mut stmt = conn.prepare(
-        "SELECT placement_id FROM placements WHERE host_tree_key = ?1 AND parent_id = ?2 AND edge = 'side' ORDER BY ordinal",
-    )?;
-    let ids = stmt
-        .query_map(params![host_key, parent], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(stmt);
-    let base: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(ordinal), 0) FROM placements WHERE host_tree_key = ?1",
-        [host_key],
-        |r| r.get(0),
-    )?;
-    for (i, id) in ids.iter().enumerate() {
-        conn.execute(
-            "UPDATE placements SET ordinal = ?2 WHERE placement_id = ?1",
-            params![id, base + 2_000_000 + i as i64],
-        )?;
-    }
-    for (i, id) in ids.iter().enumerate() {
-        conn.execute(
-            "UPDATE placements SET ordinal = ?2 WHERE placement_id = ?1",
-            params![id, i as i64 + 1],
-        )?;
-    }
-    Ok(())
-}
-
-/// Validate the final shape of a Connection tree after a write: the structural invariants, and
-/// every live native Card of the tree still has its home station.
-fn validate_tree(conn: &Connection, tree: &ConnTree) -> Result<TreeShape> {
-    let shape = shape_of(conn, tree).with_context(|| format!("Connection tree {} would break", tree.handle()))?;
-    let native_missing: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM card_identity i JOIN cards c ON c.row_id = i.card_row
-         WHERE i.status = 'live' AND (c.location = ?1 OR c.location LIKE ?2)
-           AND NOT EXISTS (SELECT 1 FROM placements p WHERE p.host_tree_key = ?3 AND p.card_id = i.card_id)",
-        params![tree.handle(), format!("~{}#%", tree.display_num), tree.tree_id],
-        |r| r.get(0),
-    )?;
-    if native_missing > 0 {
-        bail!("a native Card of {} would lose its home station; delete or promote it instead", tree.handle());
-    }
-    Ok(shape)
-}
-
-fn retire_placements(conn: &Connection, ids: &[String], revision: i64) -> Result<()> {
+    let occupied: BTreeSet<_> = side_slots(conn, &shape.root)?
+        .into_iter()
+        .map(|(_, slot)| slot)
+        .collect();
+    let mut slot = 0;
     for id in ids {
-        let (host, card): (String, String) = conn.query_row(
-            "SELECT host_tree_key, card_id FROM placements WHERE placement_id = ?1",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        conn.execute(
-            "INSERT OR IGNORE INTO retired_placements(placement_id, host_tree_key, card_id, retired_at_rev) VALUES(?1, ?2, ?3, ?4)",
-            params![id, host, card, revision],
+        slot = add_slots(slot, 1)?;
+        while occupied.contains(&slot) {
+            slot = add_slots(slot, 1)?;
+        }
+        set_position(
+            conn,
+            id,
+            &shape.tree,
+            &shape.root,
+            EdgeKind::Side,
+            Some(slot),
         )?;
     }
     Ok(())
+}
+
+fn side_slots(conn: &Connection, parent: &str) -> Result<Vec<(String, u64)>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT coord_id, slot FROM coordinates WHERE parent_coord_id = ?1 AND edge = 'side' ORDER BY slot",
+    )?;
+    let rows = stmt
+        .query_map([parent], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+fn direct_child(conn: &Connection, parent: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT coord_id FROM coordinates WHERE parent_coord_id = ?1 AND edge = 'direct'",
+            [parent],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+fn add_slots(slot: u64, count: u64) -> Result<u64> {
+    slot.checked_add(count)
+        .filter(|&slot| slot <= i64::MAX as u64)
+        .context("Side slots exhausted")
+}
+
+fn compact_sides(conn: &Connection, tree: &TreeRecord, parent: &str) -> Result<()> {
+    if tree.role == TreeRole::Connection {
+        for (i, (id, slot)) in side_slots(conn, parent)?.into_iter().enumerate() {
+            let next = i as u64 + 1;
+            if next != slot {
+                set_position(conn, &id, tree, parent, EdgeKind::Side, Some(next))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+struct Slot {
+    parent: String,
+    edge: EdgeKind,
+    before: Option<String>,
+    explicit: Option<u64>,
+}
+
+fn slot_arg(conn: &Connection, shape: &TreeShape, args: &Value) -> Result<Slot> {
+    let parent = station_in(
+        conn,
+        shape,
+        required_alias(
+            args,
+            &[
+                "parent_coord_id",
+                "parent_placement_id",
+                "parent_coord",
+                "parent",
+            ],
+        )?,
+    )?;
+    let edge = match opt_str(args, "edge")?.unwrap_or("direct") {
+        "direct" => EdgeKind::Direct,
+        "side" => EdgeKind::Side,
+        other => bail!("unknown edge `{other}`; expected direct or side"),
+    };
+    if edge == EdgeKind::Side && parent.edge == EdgeKind::Root {
+        bail!("the root takes no Side successor; use its Direct successor");
+    }
+    let before = alias(args, &["before_coord_id", "before"])?
+        .map(|text| station_in(conn, shape, text))
+        .transpose()?;
+    if let Some(sibling) = &before
+        && (edge != EdgeKind::Side
+            || sibling.edge != EdgeKind::Side
+            || sibling.parent_coord_id.as_deref() != Some(&parent.coord_id))
+    {
+        bail!("`before` names a Side successor of the same parent");
+    }
+    let explicit = match args.get("slot") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .filter(|&n| n > 0 && n <= i64::MAX as u64)
+                .context("slot must be a positive integer")?,
+        ),
+    };
+    if explicit.is_some() && (before.is_some() || edge != EdgeKind::Side) {
+        bail!("an explicit slot is for a Side insertion without `before`");
+    }
+    Ok(Slot {
+        parent: parent.coord_id,
+        edge,
+        before: before.map(|p| p.coord_id),
+        explicit,
+    })
+}
+
+/// Reserve consecutive Side slots, shifting only the siblings that conflict.
+fn reserve_side_slots(
+    conn: &Connection,
+    tree: &TreeRecord,
+    slot: &Slot,
+    count: usize,
+) -> Result<u64> {
+    let siblings = side_slots(conn, &slot.parent)?;
+    let count = count as u64;
+    if let Some(start) = slot.explicit {
+        let end = add_slots(start, count - 1)?;
+        if siblings
+            .iter()
+            .any(|(_, current)| (start..=end).contains(current))
+        {
+            bail!("Side slot {start} or a later slot in this block is occupied");
+        }
+        return Ok(start);
+    }
+    let Some(before) = &slot.before else {
+        let start = add_slots(siblings.last().map_or(0, |(_, n)| *n), 1)?;
+        add_slots(start, count - 1)?;
+        return Ok(start);
+    };
+    let position = siblings
+        .iter()
+        .position(|(id, _)| id == before)
+        .context("`before` is not a Side sibling")?;
+    let start = siblings[position].1;
+    let mut next = add_slots(start, count)?;
+    let mut shifts = Vec::new();
+    for (id, old) in &siblings[position..] {
+        if *old >= next {
+            break;
+        }
+        shifts.push((id, next));
+        next = next.saturating_add(1);
+    }
+    for (id, rank) in shifts.into_iter().rev() {
+        set_position(
+            conn,
+            id,
+            tree,
+            &slot.parent,
+            EdgeKind::Side,
+            Some(add_slots(rank, 0)?),
+        )?;
+    }
+    Ok(start)
+}
+
+fn gloss_review(
+    shapes: &[&TreeShape],
+    affected: &BTreeSet<String>,
+    args: &Value,
+) -> Result<(Vec<Value>, BTreeMap<String, Option<String>>, Vec<String>)> {
+    let updates = match args.get("gloss_updates") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_object()
+                .context("gloss_updates must be an object keyed by coord_id")?,
+        ),
+    };
+    let mut review = Vec::new();
+    let mut decisions = BTreeMap::new();
+    let mut missing = Vec::new();
+    for shape in shapes {
+        for id in affected {
+            if let Some(row) = shape.by_id.get(id)
+                && let Some(gloss) = &row.gloss
+            {
+                review.push(json!({"coord_id": id, "placement_id": id, "coord": shape.coord[id], "gloss": gloss}));
+                if updates.is_none_or(|updates| !updates.contains_key(id)) {
+                    missing.push(id.clone());
+                }
+            }
+        }
+    }
+    if let Some(updates) = updates {
+        for (id, value) in updates {
+            if !shapes.iter().any(|shape| shape.by_id.contains_key(id)) {
+                bail!("gloss_updates names a Coordinate outside the affected trees: {id}");
+            }
+            let gloss = match value {
+                Value::Null => None,
+                Value::String(s) if s.trim().is_empty() => None,
+                Value::String(s) => Some(plain_line(s, "gloss", coord::GLOSS_MAX)?),
+                _ => bail!("gloss_updates values are strings (keep or replace) or null (clear)"),
+            };
+            decisions.insert(id.clone(), gloss);
+        }
+    }
+    Ok((review, decisions, missing))
+}
+
+pub(crate) fn append_gloss_review(lines: &mut Vec<String>, review: &[Value]) {
+    for item in review {
+        lines.push(format!(
+            "review gloss of {}: {}",
+            item["coord"].as_str().unwrap_or_default(),
+            item["gloss"].as_str().unwrap_or_default(),
+        ));
+    }
+}
+
+pub(crate) fn require_gloss_decisions(missing: &[String]) -> Result<()> {
+    if !missing.is_empty() {
+        bail!(
+            "gloss review required: pass gloss_updates for {}",
+            missing.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn apply_glosses(conn: &Connection, decisions: &BTreeMap<String, Option<String>>) -> Result<()> {
+    for (id, gloss) in decisions {
+        conn.execute(
+            "UPDATE coordinates SET gloss = ?2 WHERE coord_id = ?1 AND gloss IS NOT ?2",
+            params![id, gloss],
+        )?;
+    }
+    Ok(())
+}
+
+fn coordinate_result(p: &Placement, shape: &TreeShape, address: &str, is_filing: bool) -> Value {
+    json!({
+        "coord_id": p.coord_id, "placement_id": p.coord_id, "coord": shape.coord[&p.coord_id],
+        "card_id": p.card_id, "home_address": address, "tree": shape.tree.handle(),
+        "edge": p.edge.id(), "parent_coord_id": p.parent_coord_id, "slot": p.slot, "ordinal": p.slot,
+        "is_filing": is_filing,
+    })
 }
 
 /// The connections that touch any of `ids`.
@@ -880,7 +928,7 @@ fn incident_edges(conn: &Connection, tree_id: &str, ids: &BTreeSet<String>) -> R
 }
 
 // ---------------------------------------------------------------------------------------------
-// Tree connections (placement_edges)
+// Tree connections (coordinate_edges)
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
@@ -899,7 +947,7 @@ pub(crate) struct Edge {
     pub(crate) updated_at_rev: i64,
 }
 
-const EDGE_COLUMNS: &str = "connection_id, tree_id, from_placement_id, to_placement_id, direction, relation_label, relation_kind, note, created_by, created_at_rev, updated_by, updated_at_rev";
+const EDGE_COLUMNS: &str = "connection_id, tree_id, from_coord_id, to_coord_id, direction, relation_label, relation_kind, note, created_by, created_at_rev, updated_by, updated_at_rev";
 
 fn edge_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
     Ok(Edge {
@@ -920,7 +968,7 @@ fn edge_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
 
 pub(crate) fn edges_of_tree(conn: &Connection, tree_id: &str) -> Result<Vec<Edge>> {
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT {EDGE_COLUMNS} FROM placement_edges WHERE tree_id = ?1 ORDER BY created_at_rev, connection_id"
+        "SELECT {EDGE_COLUMNS} FROM coordinate_edges WHERE tree_id = ?1 ORDER BY created_at_rev, connection_id"
     ))?;
     let rows = stmt
         .query_map([tree_id], edge_from_row)?
@@ -931,7 +979,7 @@ pub(crate) fn edges_of_tree(conn: &Connection, tree_id: &str) -> Result<Vec<Edge
 pub(crate) fn edge_by_id(conn: &Connection, connection_id: &str) -> Result<Option<Edge>> {
     Ok(conn
         .query_row(
-            &format!("SELECT {EDGE_COLUMNS} FROM placement_edges WHERE connection_id = ?1"),
+            &format!("SELECT {EDGE_COLUMNS} FROM coordinate_edges WHERE connection_id = ?1"),
             [connection_id],
             edge_from_row,
         )
@@ -940,7 +988,7 @@ pub(crate) fn edge_by_id(conn: &Connection, connection_id: &str) -> Result<Optio
 
 fn insert_edge(conn: &Connection, e: &Edge) -> Result<()> {
     conn.execute(
-        &format!("INSERT INTO placement_edges({EDGE_COLUMNS}) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"),
+        &format!("INSERT INTO coordinate_edges({EDGE_COLUMNS}) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"),
         params![
             e.connection_id,
             e.tree_id,
@@ -976,7 +1024,9 @@ fn normalize_edge(e: &mut Edge) -> Result<()> {
             );
         }
         if !e.directed && !["contrasts", "corresponds", "refers"].contains(&kind.as_str()) {
-            bail!("relation_kind `{kind}` has a direction; set direction to `directed` and order the endpoints");
+            bail!(
+                "relation_kind `{kind}` has a direction; set direction to `directed` and order the endpoints"
+            );
         }
     }
     if !e.directed && e.from > e.to {
@@ -989,16 +1039,22 @@ fn normalize_edge(e: &mut Edge) -> Result<()> {
 /// a directed assertion.
 pub(crate) fn edge_value(conn: &Connection, shape: &TreeShape, e: &Edge) -> Result<Value> {
     let end = |id: &str| -> Result<Value> {
-        let p = shape.by_id.get(id).context("connection endpoint is not a station of this tree")?;
+        let p = shape
+            .by_id
+            .get(id)
+            .context("connection endpoint is not a station of this tree")?;
         let identity = coord::identity(conn, &p.card_id)?.context("unknown Card")?;
         let title = match identity.card_row.filter(|_| identity.live) {
             Some(row) => {
                 let card = card_by_row(conn, row)?;
-                crate::parse_card_text(&card.text).map(|p| p.title).unwrap_or(identity.last_title.clone())
+                crate::parse_card_text(&card.text)
+                    .map(|p| p.title)
+                    .unwrap_or(identity.last_title.clone())
             }
             None => identity.last_title.clone(),
         };
         Ok(json!({
+            "coord_id": id,
             "placement_id": id,
             "coord": shape.coord.get(id),
             "card_id": p.card_id,
@@ -1030,6 +1086,8 @@ pub(crate) fn edge_value(conn: &Connection, shape: &TreeShape, e: &Edge) -> Resu
     };
     Ok(json!({
         "connection_id": e.connection_id,
+        "from_coord_id": e.from,
+        "to_coord_id": e.to,
         "direction": if e.directed { "directed" } else { "neutral" },
         "from": from,
         "to": to,
@@ -1057,7 +1115,11 @@ fn validate_purpose(value: Option<&str>) -> Result<Option<String>> {
 
 fn next_connection_number(conn: &Connection) -> Result<u64> {
     let next: Option<String> = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'next_connection_id'", [], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'next_connection_id'",
+            [],
+            |r| r.get(0),
+        )
         .optional()?;
     let next = next.and_then(|v| v.parse::<u64>().ok()).unwrap_or(1).max(1);
     // Never below a number already issued: a handle survives its tree.
@@ -1067,7 +1129,9 @@ fn next_connection_number(conn: &Connection) -> Result<u64> {
         |r| r.get(0),
     )?;
     let next = next.max(issued.map(|v| v as u64 + 1).unwrap_or(1));
-    let after = next.checked_add(1).context("Connection tree numbers exhausted")?;
+    let after = next
+        .checked_add(1)
+        .context("Connection tree numbers exhausted")?;
     conn.execute(
         "INSERT INTO metadata(key, value) VALUES('next_connection_id', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -1099,7 +1163,14 @@ pub(crate) fn create_tree_tx(
     let text = crate::compose_card_text(title, body, "");
     let accepted = crate::gate::check_proposed(
         conn,
-        &crate::gate::Candidate::create(&handle, crate::gate::Kind::Connection, workspace, &text, CardType::Idea, None),
+        &crate::gate::Candidate::create(
+            &handle,
+            crate::gate::Kind::Connection,
+            workspace,
+            &text,
+            CardType::Idea,
+            None,
+        ),
     )?;
     let parsed = crate::parse_card_text(&text)?;
     let text = crate::compose_card_text(&parsed.title, &parsed.body, &parsed.reverse);
@@ -1109,31 +1180,15 @@ pub(crate) fn create_tree_tx(
         params![handle, text, workspace.id()],
     )?;
     let row = conn.last_insert_rowid();
-    let card_id = coord::card_id_of_row(conn, row)?;
-    let tree_id = coord::new_uuid()?;
-    conn.execute(
-        "INSERT INTO connection_trees(tree_id, display_num, workspace, root_card_id, purpose, next_local_seq, created_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
-        params![tree_id, num as i64, workspace.id(), card_id, purpose],
-    )?;
-    conn.execute(
-        "INSERT INTO card_handles(handle, card_id, origin_tree_id, local_seq) VALUES(?1, ?2, ?3, 0)",
-        params![handle, card_id, tree_id],
-    )?;
-    let root_placement = coord::new_uuid()?;
-    insert_placement(
+    let (card_id, tree_id, root_placement) = coord::register_root_card_tx(
         conn,
-        &Placement {
-            placement_id: root_placement.clone(),
-            host_kind: "connection".into(),
-            host_tree_key: tree_id.clone(),
-            card_id: card_id.clone(),
-            parent_id: None,
-            anchor_card_id: None,
-            edge: EdgeKind::Root,
-            ordinal: None,
-            gloss: None,
-        },
+        row,
+        TreeRole::Connection,
+        &handle,
+        Some(num),
+        workspace,
+        &parsed.title,
+        purpose.as_deref(),
     )?;
     crate::link_index::sync_source(conn, &handle)?;
     let mut value = json!({
@@ -1141,6 +1196,7 @@ pub(crate) fn create_tree_tx(
         "tree_id": tree_id,
         "address": handle,
         "card_id": card_id,
+        "root_coord_id": root_placement,
         "root_placement_id": root_placement,
         "coord": format!("{handle}/0"),
         "workspace": workspace.id(),
@@ -1160,7 +1216,14 @@ fn create_tree(ctx: &mut Ctx) -> Result<Value> {
     };
     let title = opt_str(ctx.args, "title")?.unwrap_or_default();
     let body = opt_str(ctx.args, "body")?.unwrap_or_default();
-    let value = create_tree_tx(ctx.conn, ctx.access, workspace, title, body, opt_str(ctx.args, "purpose")?)?;
+    let value = create_tree_tx(
+        ctx.conn,
+        ctx.access,
+        workspace,
+        title,
+        body,
+        opt_str(ctx.args, "purpose")?,
+    )?;
     ctx.changed = true;
     Ok(value)
 }
@@ -1169,10 +1232,12 @@ fn create_tree(ctx: &mut Ctx) -> Result<Value> {
 /// Card's text, edited like any Card).
 fn edit_tree(ctx: &mut Ctx) -> Result<Value> {
     let tree = coord::resolve_tree(ctx.conn, arg_str(ctx.args, "tree")?)?;
-    let host = Host::Connection(tree.clone());
+    let host = Host(tree.clone());
     ensure_host_writable(ctx.conn, ctx.access, &host)?;
     let purpose = match patch(ctx.args, "purpose")? {
-        Patch::Keep => return Ok(json!({"tree": tree.handle(), "purpose": tree.purpose, "changed": false})),
+        Patch::Keep => {
+            return Ok(json!({"tree": tree.handle(), "purpose": tree.purpose, "changed": false}));
+        }
         Patch::Clear => None,
         Patch::Set(p) => Some(plain_line(p, "purpose", coord::PURPOSE_MAX)?),
     };
@@ -1180,7 +1245,7 @@ fn edit_tree(ctx: &mut Ctx) -> Result<Value> {
         return Ok(json!({"tree": tree.handle(), "purpose": purpose, "changed": false}));
     }
     ctx.conn.execute(
-        "UPDATE connection_trees SET purpose = ?2 WHERE tree_id = ?1",
+        "UPDATE trees SET purpose = ?2 WHERE tree_id = ?1",
         params![tree.tree_id, purpose],
     )?;
     ctx.changed = true;
@@ -1191,522 +1256,260 @@ fn edit_tree(ctx: &mut Ctx) -> Result<Value> {
 // Place (mount) a Card
 // ---------------------------------------------------------------------------------------------
 
-/// Where a new station goes in a Connection tree: under `parent` as its Direct successor (spliced
-/// before an existing Direct successor) or as a Side successor (appended, or before a sibling).
-struct Slot {
-    parent: String,
-    edge: EdgeKind,
-    before: Option<String>,
-}
-
-fn slot_arg(conn: &Connection, shape: &TreeShape, args: &Value) -> Result<Slot> {
-    let parent = match (opt_str(args, "parent_placement_id")?, opt_str(args, "parent_coord")?, opt_str(args, "parent")?) {
-        (Some(p), None, None) | (None, Some(p), None) | (None, None, Some(p)) => station_in(conn, shape, p)?,
-        (None, None, None) => bail!("name the parent station with `parent_coord` or `parent_placement_id`"),
-        _ => bail!("give one of `parent_coord`, `parent_placement_id` or `parent`"),
-    };
-    let edge = match opt_str(args, "edge")?.unwrap_or("direct") {
-        "direct" => EdgeKind::Direct,
-        "side" => EdgeKind::Side,
-        other => bail!("unknown edge `{other}`; expected direct or side"),
-    };
-    if edge == EdgeKind::Side && parent.edge == EdgeKind::Root {
-        bail!("the root takes no Side successor: its Direct chain (`{}/1`, `{}/2`, …) holds the top-level stations", shape.tree.handle(), shape.tree.handle());
-    }
-    let before = match opt_str(args, "before")? {
-        Some(b) => {
-            let sibling = station_in(conn, shape, b)?;
-            if edge != EdgeKind::Side || sibling.parent_id.as_deref() != Some(parent.placement_id.as_str()) || sibling.edge != EdgeKind::Side {
-                bail!("`before` names a Side successor of the same parent");
-            }
-            Some(sibling.placement_id)
-        }
-        None => None,
-    };
-    Ok(Slot {
-        parent: parent.placement_id,
-        edge,
-        before,
-    })
-}
-
-/// Insert one new station at `slot`. A Direct station is spliced in: the parent's old Direct
-/// successor continues after the new station. Returns the stations whose structural predecessor
-/// changed (for gloss review).
-fn insert_at_slot(conn: &Connection, shape: &TreeShape, slot: &Slot, mut p: Placement) -> Result<Vec<String>> {
-    let mut changed = Vec::new();
-    match slot.edge {
-        EdgeKind::Direct => {
-            let displaced = shape.direct.get(&slot.parent).cloned();
-            if let Some(d) = &displaced {
-                park(conn, shape, std::slice::from_ref(d))?;
-            }
-            p.parent_id = Some(slot.parent.clone());
-            p.edge = EdgeKind::Direct;
-            p.ordinal = None;
-            insert_placement(conn, &p)?;
-            if let Some(d) = displaced {
-                set_slot(conn, &d, Some(&p.placement_id), EdgeKind::Direct, None)?;
-                changed.push(d);
-            }
-        }
-        EdgeKind::Side => {
-            let siblings = shape.side.get(&slot.parent).cloned().unwrap_or_default();
-            let position = match &slot.before {
-                Some(b) => siblings.iter().position(|s| s == b).context("`before` is not a sibling")?,
-                None => siblings.len(),
-            };
-            // Park the later siblings, insert, then renumber densely.
-            let later: Vec<String> = siblings[position..].to_vec();
-            park(conn, shape, &later)?;
-            p.parent_id = Some(slot.parent.clone());
-            p.edge = EdgeKind::Side;
-            p.ordinal = Some(position as u64 + 1);
-            insert_placement(conn, &p)?;
-            for (i, id) in later.iter().enumerate() {
-                set_slot(conn, id, Some(&slot.parent), EdgeKind::Side, Some(position as u64 + 2 + i as u64))?;
-            }
-        }
-        _ => bail!("unsupported slot"),
-    }
-    Ok(changed)
-}
-
-/// The gloss decisions a write needs: every station in `affected` whose gloss is nonempty must be
-/// named in `gloss_updates` (a string keeps or replaces it, null clears it).
-fn gloss_review(shape: &TreeShape, affected: &[String], args: &Value) -> Result<(Vec<Value>, BTreeMap<String, Option<String>>, Vec<String>)> {
-    let updates = args.get("gloss_updates").and_then(Value::as_object).cloned().unwrap_or_default();
-    let mut review = Vec::new();
-    let mut decided = BTreeMap::new();
-    let mut missing = Vec::new();
-    for id in affected {
-        let Some(p) = shape.by_id.get(id) else { continue };
-        if let Some(gloss) = &p.gloss {
-            review.push(json!({"placement_id": id, "coord": shape.coord.get(id), "gloss": gloss}));
-            match updates.get(id) {
-                Some(Value::Null) => {
-                    decided.insert(id.clone(), None);
-                }
-                Some(Value::String(s)) if s.trim().is_empty() => {
-                    decided.insert(id.clone(), None);
-                }
-                Some(Value::String(s)) => {
-                    decided.insert(id.clone(), Some(plain_line(s, "gloss", coord::GLOSS_MAX)?));
-                }
-                Some(_) => bail!("gloss_updates values are strings (keep or replace) or null (clear)"),
-                None => missing.push(id.clone()),
-            }
-        }
-    }
-    for (id, value) in &updates {
-        if !affected.contains(id) && shape.by_id.contains_key(id) {
-            // An explicit edit of an unaffected gloss is allowed too.
-            decided.insert(id.clone(), match value {
-                Value::Null => None,
-                Value::String(s) if s.trim().is_empty() => None,
-                Value::String(s) => Some(plain_line(s, "gloss", coord::GLOSS_MAX)?),
-                _ => bail!("gloss_updates values are strings (keep or replace) or null (clear)"),
-            });
-        }
-    }
-    Ok((review, decided, missing))
-}
-
-/// The gloss decision for one station whose anchor or Card changes: a nonempty gloss must be named
-/// in `gloss_updates` (a string keeps or replaces it, null clears it). Returns the review line and the
-/// decision (`None` when the gloss is empty and nothing needs deciding).
-fn single_gloss_review(station: &Placement, args: &Value) -> Result<(Option<Value>, Option<Option<String>>, bool)> {
-    let Some(gloss) = &station.gloss else {
-        return Ok((None, None, false));
-    };
-    let review = json!({"placement_id": station.placement_id, "gloss": gloss});
-    let updates = args.get("gloss_updates").and_then(Value::as_object);
-    match updates.and_then(|u| u.get(&station.placement_id)) {
-        Some(Value::Null) => Ok((Some(review), Some(None), false)),
-        Some(Value::String(t)) if t.trim().is_empty() => Ok((Some(review), Some(None), false)),
-        Some(Value::String(t)) => Ok((Some(review), Some(Some(plain_line(t, "gloss", coord::GLOSS_MAX)?)), false)),
-        Some(_) => bail!("gloss_updates values are strings (keep or replace) or null (clear)"),
-        None => Ok((Some(review), None, true)),
-    }
-}
-
-fn apply_glosses(conn: &Connection, decided: &BTreeMap<String, Option<String>>) -> Result<()> {
-    for (id, gloss) in decided {
-        conn.execute("UPDATE placements SET gloss = ?2 WHERE placement_id = ?1", params![id, gloss])?;
+fn refuse_legacy_attachment(args: &Value) -> Result<()> {
+    if opt_str(args, "edge")? == Some("attach")
+        || args.get("anchor_at").is_some_and(|at| !at.is_null())
+    {
+        bail!(
+            "Topic-side mounts (+k / edge: attach) are retired under MC1; use add_coordinate to place the Card directly onto a Standard Direct or Side slot in the Topic tree"
+        );
     }
     Ok(())
 }
 
 fn place(ctx: &mut Ctx) -> Result<Value> {
     let conn = ctx.conn;
-    let edge = opt_str(ctx.args, "edge")?.unwrap_or("direct");
-    if edge == "attach" || opt_str(ctx.args, "anchor_at")?.is_some() {
-        return attach(ctx);
+    let legacy = ctx.tool == "place_card";
+    if legacy {
+        refuse_legacy_attachment(ctx.args)?;
     }
-    let tree = coord::resolve_tree(conn, arg_str(ctx.args, "host")?)?;
-    let host = Host::Connection(tree.clone());
-    ensure_host_writable(conn, ctx.access, &host)?;
-    if ctx.args.get("targets").is_some() {
-        return place_many(ctx, tree);
-    }
-    let (card, card_id) = target_card(conn, ctx.args, "target_at")?;
+    let host_name = required_alias(ctx.args, &["tree", "host"])?;
+    let tree = if legacy {
+        coord::resolve_tree(conn, host_name)?
+    } else {
+        coord::resolve_any_tree(conn, host_name)?
+    };
+    ensure_host_writable(conn, ctx.access, &Host(tree.clone()))?;
     let shape = shape_of(conn, &tree)?;
-    if let Some(existing) = shape.placement_of_card(&card_id) {
-        // One coordinate per Card per tree: placing it again answers its station.
-        return Ok(json!({
-            "already_placed": true,
-            "placement_id": existing.placement_id,
-            "coord": shape.coord.get(&existing.placement_id),
-            "card_id": card_id,
-            "tree": tree.handle(),
-            "changed": false,
-        }));
+    let multiple = ctx.tool == "add_coordinates" || ctx.args.get("targets").is_some();
+    if multiple && ctx.tool == "add_coordinate" {
+        bail!("use add_coordinates to place a list of targets");
     }
-    let gloss = opt_str(ctx.args, "gloss")?
-        .map(|g| plain_line(g, "gloss", coord::GLOSS_MAX))
-        .transpose()?;
-    let slot = slot_arg(conn, &shape, ctx.args)?;
-    let affected: Vec<String> = match slot.edge {
-        EdgeKind::Direct => shape.direct.get(&slot.parent).cloned().into_iter().collect(),
-        _ => Vec::new(),
-    };
-    let (review, decided, missing) = gloss_review(&shape, &affected, ctx.args)?;
-    // A confirmation sent for a plan is checked even when this placement now needs none (another
-    // client cleared the gloss under review): a stale plan never applies.
-    if review.is_empty() && ctx.args.get("confirm").is_some() {
-        ctx.confirmed("place", &[], &json!({"gloss_review": review}))?;
-    }
-    if !review.is_empty() {
-        let lines: Vec<String> = review
-            .iter()
-            .map(|r| format!("review gloss of {} (its predecessor changes): {}", r["coord"].as_str().unwrap_or_default(), r["gloss"].as_str().unwrap_or_default()))
-            .collect();
-        if !missing.is_empty() && ctx.args.get("confirm").and_then(Value::as_str) == Some("place") {
-            bail!("gloss review required: pass gloss_updates for {}", missing.join(", "));
-        }
-        if let Some(plan) = ctx.confirmed("place", &lines, &json!({"gloss_review": review}))? {
-            return Ok(plan);
-        }
-    }
-    let placement_id = coord::new_uuid()?;
-    insert_at_slot(
-        conn,
-        &shape,
-        &slot,
-        Placement {
-            placement_id: placement_id.clone(),
-            host_kind: "connection".into(),
-            host_tree_key: tree.tree_id.clone(),
-            card_id: card_id.clone(),
-            parent_id: None,
-            anchor_card_id: None,
-            edge: slot.edge,
-            ordinal: None,
-            gloss,
-        },
-    )?;
-    apply_glosses(conn, &decided)?;
-    let shape = validate_tree(conn, &tree)?;
-    ctx.changed = true;
-    Ok(json!({
-        "applied": true,
-        "placement_id": placement_id,
-        "coord": shape.coord.get(&placement_id),
-        "card_id": card_id,
-        "home_address": card.address,
-        "tree": tree.handle(),
-        "changed": true,
-    }))
-}
-
-/// Mount a set of Cards at once (`targets`, docs/connection-trees-free-proposal.md D1). The whole
-/// batch is resolved against the tree as it stands, deduplicated by Card identity (a promoted
-/// handle and its Topic address name one Card) in first-occurrence order, and spliced in as one
-/// block: with a Direct edge the Cards form a Direct chain after the parent (`P → A → B → old`,
-/// only `old` changing predecessor), with a Side edge they become consecutive Side branches of the
-/// parent, before `before` or appended. One transaction, one gloss review, one revision. A batch
-/// whose Cards all stand in the tree already is a successful no-op (its `op_key` receipt is kept).
-fn place_many(ctx: &mut Ctx, tree: ConnTree) -> Result<Value> {
-    let conn = ctx.conn;
-    if ctx.args.get("target_at").is_some() || ctx.args.get("card_id").is_some() {
-        bail!("give either `targets` (several Cards) or `target_at`/`card_id` (one Card), not both");
-    }
-    if ctx.args.get("gloss").is_some() {
-        bail!("a gloss belongs to one station: mount the Cards, then gloss each station with edit_placement");
-    }
-    let list = ctx.args["targets"].as_array().context("`targets` is a list of Card addresses, Citation keys or handles")?;
-    if list.is_empty() {
-        bail!("`targets` names no Card");
-    }
-    if list.len() > PLACE_MANY_MAX {
-        bail!("`targets` names {} Cards; at most {PLACE_MANY_MAX} are mounted in one call", list.len());
-    }
-    let shape = shape_of(conn, &tree)?;
-    let mut wanted: Vec<(String, String)> = Vec::new();
-    let mut already = Vec::new();
-    let mut seen = BTreeSet::new();
-    for item in list {
-        let at = item.as_str().context("`targets` is a list of strings")?;
-        let (card, card_id) = target_card(conn, &json!({ "target_at": at }), "target_at")?;
-        if !seen.insert(card_id.clone()) {
-            continue;
-        }
-        match shape.placement_of_card(&card_id) {
-            Some(existing) => already.push(json!({"target": at, "placement_id": existing.placement_id, "coord": shape.coord.get(&existing.placement_id), "card_id": card_id})),
-            None => wanted.push((card.address, card_id)),
-        }
-    }
-    if wanted.is_empty() {
-        // A confirmation sent for a plan that still placed Cards is checked first: the tree changed
-        // under it (another client mounted them), so it is stale, never a silent success.
-        if ctx.args.get("confirm").is_some() {
-            ctx.confirmed("place", &[], &json!({"gloss_review": [], "order": [], "displaced": null, "already_placed": already}))?;
-        }
-        return Ok(json!({"applied": true, "changed": false, "tree": tree.handle(), "placed": [], "already_placed": already}));
-    }
-    let slot = slot_arg(conn, &shape, ctx.args)?;
-    let displaced = match slot.edge {
-        EdgeKind::Direct => shape.direct.get(&slot.parent).cloned(),
-        _ => None,
-    };
-    let affected: Vec<String> = displaced.iter().cloned().collect();
-    let (review, decided, missing) = gloss_review(&shape, &affected, ctx.args)?;
-    let order: Vec<Value> = wanted.iter().map(|(a, id)| json!([a, id])).collect();
-    let effects = json!({"gloss_review": review, "order": order, "displaced": displaced, "already_placed": already});
-    if review.is_empty() && ctx.args.get("confirm").is_some() {
-        ctx.confirmed("place", &[], &effects)?;
-    }
-    if !review.is_empty() {
-        let mut lines: Vec<String> = vec![format!("mount {} Card(s) {} {}", wanted.len(), if slot.edge == EdgeKind::Side { "as Side branches of" } else { "after" }, shape.coord[&slot.parent])];
-        lines.extend(wanted.iter().enumerate().map(|(i, (a, _))| format!("{}. {a}", i + 1)));
-        lines.extend(review.iter().map(|r| format!("review gloss of {} (its predecessor changes): {}", r["coord"].as_str().unwrap_or_default(), r["gloss"].as_str().unwrap_or_default())));
-        if !missing.is_empty() && ctx.args.get("confirm").and_then(Value::as_str) == Some("place") {
-            bail!("gloss review required: pass gloss_updates for {}", missing.join(", "));
-        }
-        if let Some(plan) = ctx.confirmed("place", &lines, &effects)? {
-            return Ok(plan);
-        }
-    }
-    let new_station = |card_id: &str, parent: &str, edge: EdgeKind, ordinal: Option<u64>| -> Result<String> {
-        let placement_id = coord::new_uuid()?;
-        insert_placement(
-            conn,
-            &Placement {
-                placement_id: placement_id.clone(),
-                host_kind: "connection".into(),
-                host_tree_key: tree.tree_id.clone(),
-                card_id: card_id.to_string(),
-                parent_id: Some(parent.to_string()),
-                anchor_card_id: None,
-                edge,
-                ordinal,
-                gloss: None,
-            },
-        )?;
-        Ok(placement_id)
-    };
-    let mut ids = Vec::new();
-    match slot.edge {
-        EdgeKind::Direct => {
-            if let Some(d) = &displaced {
-                park(conn, &shape, std::slice::from_ref(d))?;
-            }
-            let mut parent = slot.parent.clone();
-            for (_, card_id) in &wanted {
-                parent = new_station(card_id, &parent, EdgeKind::Direct, None)?;
-                ids.push(parent.clone());
-            }
-            if let Some(d) = &displaced {
-                set_slot(conn, d, Some(&parent), EdgeKind::Direct, None)?;
-            }
-        }
-        EdgeKind::Side => {
-            let siblings = shape.side.get(&slot.parent).cloned().unwrap_or_default();
-            let position = match &slot.before {
-                Some(b) => siblings.iter().position(|s| s == b).context("`before` is not a sibling")?,
-                None => siblings.len(),
-            };
-            let later: Vec<String> = siblings[position..].to_vec();
-            park(conn, &shape, &later)?;
-            for (i, (_, card_id)) in wanted.iter().enumerate() {
-                ids.push(new_station(card_id, &slot.parent, EdgeKind::Side, Some((position + 1 + i) as u64))?);
-            }
-            for (i, id) in later.iter().enumerate() {
-                set_slot(conn, id, Some(&slot.parent), EdgeKind::Side, Some((position + wanted.len() + 1 + i) as u64))?;
-            }
-        }
-        _ => bail!("unsupported slot"),
-    }
-    apply_glosses(conn, &decided)?;
-    let shape = validate_tree(conn, &tree)?;
-    ctx.changed = true;
-    let placed: Vec<Value> = ids
-        .iter()
-        .zip(&wanted)
-        .map(|(id, (address, card_id))| json!({"placement_id": id, "coord": shape.coord.get(id), "home_address": address, "card_id": card_id}))
-        .collect();
-    Ok(json!({
-        "applied": true,
-        "changed": true,
-        "tree": tree.handle(),
-        "placed": placed,
-        "already_placed": already,
-    }))
-}
-
-/// The most Cards one `place_card` call mounts with `targets`.
-const PLACE_MANY_MAX: usize = 500;
-
-// ---------------------------------------------------------------------------------------------
-// Topic-side mounts (`<loc>+k`)
-// ---------------------------------------------------------------------------------------------
-
-fn attach(ctx: &mut Ctx) -> Result<Value> {
-    let conn = ctx.conn;
-    if ctx.args.get("targets").is_some() {
-        bail!("`targets` mounts several Cards in a Connection tree; a Topic-side mount takes one Card (target_at)");
-    }
-    let anchor_at = opt_str(ctx.args, "anchor_at")?
-        .or(opt_str(ctx.args, "host")?)
-        .context("name the Topic home Card with `anchor_at`")?;
-    let anchor = crate::load_card(conn, anchor_at)?;
-    if TreeRole::of(&anchor) != TreeRole::Topic {
-        bail!("a Topic-side mount stands beside a Card of a Topic tree; `{}` is not one", anchor.address);
-    }
-    let topic = crate::tree_id(&anchor.address).to_string();
-    let root = format!("{topic}/0");
-    let host = Host::Topic {
-        topic: topic.clone(),
-        workspace: crate::load_card(conn, &root)?.workspace,
-        root,
-    };
-    ensure_host_writable(conn, ctx.access, &host)?;
-    let anchor_id = coord::card_id_of_row(conn, anchor.row_id)?;
-    let (card, card_id) = target_card(conn, ctx.args, "target_at")?;
-    if TreeRole::of(&card) == TreeRole::Topic && crate::tree_id(&card.address) == topic {
-        bail!("`{}` already has its home in Topic {topic}; a Topic-side mount brings a Card from outside", card.address);
-    }
-    if let Some(existing) = coord::placements_of_host(conn, &topic)?.into_iter().find(|p| p.card_id == card_id) {
-        return Ok(json!({
-            "already_placed": true,
-            "placement_id": existing.placement_id,
-            "coord": coord::coordinate_of(conn, &existing)?,
-            "card_id": card_id,
-            "changed": false,
-        }));
-    }
-    let gloss = opt_str(ctx.args, "gloss")?
-        .map(|g| plain_line(g, "gloss", coord::GLOSS_MAX))
-        .transpose()?;
-    let siblings = coord::attachments_of_anchor(conn, &anchor_id)?;
-    let position = match opt_str(ctx.args, "before")? {
-        Some(b) => {
-            let sibling = coord::resolve_station(conn, b)?;
-            siblings
-                .iter()
-                .position(|s| s.placement_id == sibling.placement_id)
-                .context("`before` names a mount beside the same Card")?
-        }
-        None => siblings.len(),
-    };
-    let base = siblings.iter().filter_map(|s| s.ordinal).max().unwrap_or(0) + 1_000_000;
-    for (i, s) in siblings[position..].iter().enumerate() {
-        conn.execute("UPDATE placements SET ordinal = ?2 WHERE placement_id = ?1", params![s.placement_id, (base + i as u64) as i64])?;
-    }
-    let placement_id = coord::new_uuid()?;
-    insert_placement(
-        conn,
-        &Placement {
-            placement_id: placement_id.clone(),
-            host_kind: "topic".into(),
-            host_tree_key: topic.clone(),
-            card_id: card_id.clone(),
-            parent_id: None,
-            anchor_card_id: Some(anchor_id.clone()),
-            edge: EdgeKind::Attach,
-            ordinal: Some(position as u64 + 1),
-            gloss,
-        },
-    )?;
-    for (i, s) in siblings[position..].iter().enumerate() {
-        conn.execute("UPDATE placements SET ordinal = ?2 WHERE placement_id = ?1", params![s.placement_id, (position + 2 + i) as i64])?;
-    }
-    ctx.changed = true;
-    Ok(json!({
-        "applied": true,
-        "placement_id": placement_id,
-        "coord": format!("{}+{}", anchor.address, position + 1),
-        "card_id": card_id,
-        "home_address": card.address,
-        "anchor": anchor.address,
-        "changed": true,
-    }))
-}
-
-/// Renumber the mounts beside one anchor densely after a removal.
-fn compact_attachments(conn: &Connection, anchor_id: &str) -> Result<()> {
-    let siblings = coord::attachments_of_anchor(conn, anchor_id)?;
-    let base = siblings.iter().filter_map(|s| s.ordinal).max().unwrap_or(0) + 2_000_000;
-    for (i, s) in siblings.iter().enumerate() {
-        conn.execute("UPDATE placements SET ordinal = ?2 WHERE placement_id = ?1", params![s.placement_id, (base + i as u64) as i64])?;
-    }
-    for (i, s) in siblings.iter().enumerate() {
-        conn.execute("UPDATE placements SET ordinal = ?2 WHERE placement_id = ?1", params![s.placement_id, i as i64 + 1])?;
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------------------------
-// Native Cards (`~n#k`)
-// ---------------------------------------------------------------------------------------------
-
-/// The Card types a Connection tree may author natively. Structured families need their own home
-/// structure (Phase 5) or keep their book-bound home.
-pub(crate) fn ensure_native_type(card_type: CardType) -> Result<()> {
-    match card_type {
-        CardType::Idea | CardType::Event | CardType::Finding => Ok(()),
-        CardType::Model | CardType::Hub | CardType::Term | CardType::Cited => bail!(
-            "native_structure_required: a Connection tree authors Idea, Event and Finding Cards natively; a {} Card keeps its structured home (a Model or Math unit needs its filing structure, a Hub its level's home, a Term or Cited Card its book). Mount an existing one, or write a native Idea Card",
-            card_type.id()
-        ),
-    }
-}
-
-fn create_native(ctx: &mut Ctx) -> Result<Value> {
-    let conn = ctx.conn;
-    let tree = coord::resolve_tree(conn, arg_str(ctx.args, "tree")?)?;
-    let host = Host::Connection(tree.clone());
-    ensure_host_writable(conn, ctx.access, &host)?;
-    let card_type = match opt_str(ctx.args, "type")? {
-        Some(t) => CardType::parse(t)?,
-        None => CardType::Idea,
-    };
-    ensure_native_type(card_type)?;
-    let title = opt_str(ctx.args, "title")?.unwrap_or_default();
-    let body = opt_str(ctx.args, "body")?.unwrap_or_default();
-    let shape = shape_of(conn, &tree)?;
-    let slot = slot_arg(conn, &shape, ctx.args)?;
-    let affected: Vec<String> = match slot.edge {
-        EdgeKind::Direct => shape.direct.get(&slot.parent).cloned().into_iter().collect(),
-        _ => Vec::new(),
-    };
-    let (review, decided, missing) = gloss_review(&shape, &affected, ctx.args)?;
-    if !review.is_empty() && !missing.is_empty() {
+    if legacy && multiple && ctx.args.get("gloss").is_some() {
         bail!(
-            "gloss review required: the new Card displaces {}; pass gloss_updates for {}",
-            review.iter().filter_map(|r| r["coord"].as_str()).collect::<Vec<_>>().join(", "),
-            missing.join(", ")
+            "a gloss belongs to one station: mount the Cards, then gloss each station with edit_placement"
         );
     }
     let gloss = opt_str(ctx.args, "gloss")?
         .map(|g| plain_line(g, "gloss", coord::GLOSS_MAX))
         .transpose()?;
+    if multiple && gloss.is_some() {
+        bail!("pass gloss only for a single Coordinate");
+    }
+    let targets = if multiple {
+        if ["target_at", "target_coord_id", "card_id"]
+            .iter()
+            .any(|name| ctx.args.get(*name).is_some())
+        {
+            bail!("give either targets or one Card, not both");
+        }
+        let targets = ctx.args["targets"]
+            .as_array()
+            .context("targets must be an array of Card addresses")?;
+        if targets.is_empty() || targets.len() > 500 {
+            bail!("targets must contain 1 to 500 Cards");
+        }
+        targets
+            .iter()
+            .map(|target| {
+                let target = target.as_str().context("each target must be a string")?;
+                Ok((named_card_id(conn, target)?, Some(target)))
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        vec![(named_target_id(conn, ctx.args, "target_at")?, None)]
+    };
+    let mut seen = BTreeSet::new();
+    let mut already = Vec::new();
+    let mut additions = Vec::new();
+    for (id, target) in targets {
+        let (card, identity) = live_card(conn, &id)?;
+        check_admission(conn, &tree, &identity)?;
+        if legacy && !seen.insert(id.clone()) {
+            continue;
+        }
+        if legacy && let Some(row) = shape.coords_of_card(&id).first() {
+            let mut result = coordinate_result(
+                row,
+                &shape,
+                &card.address,
+                identity.filing_coord_id.as_deref() == Some(&row.coord_id),
+            );
+            result["already_placed"] = json!(true);
+            result["changed"] = json!(false);
+            result["applied"] = json!(true);
+            if !multiple {
+                if opt_str(ctx.args, "confirm")?.is_some() {
+                    bail!("stale plan: this Card is already placed; ask for a new plan");
+                }
+                return Ok(result);
+            }
+            result["target"] = json!(target);
+            already.push(result);
+        } else {
+            additions.push((id, card.address));
+        }
+    }
+    if additions.is_empty() {
+        if opt_str(ctx.args, "confirm")?.is_some() {
+            bail!("stale plan: these Cards are already placed; ask for a new plan");
+        }
+        return Ok(
+            json!({"applied": true, "tree": tree.handle(), "changed": false,
+            "added": [], "placed": [], "already_placed": already}),
+        );
+    }
+    let slot = slot_arg(conn, &shape, ctx.args)?;
+    coord::check_model_term_splice_guard(conn, &tree, &slot.parent, slot.edge)?;
+    let displaced = (slot.edge == EdgeKind::Direct)
+        .then(|| shape.direct.get(&slot.parent))
+        .flatten();
+    let affected = displaced.into_iter().cloned().collect();
+    let (review, decisions, missing) = gloss_review(&[&shape], &affected, ctx.args)?;
+    let ids = additions
+        .iter()
+        .map(|_| coord::new_uuid())
+        .collect::<Result<Vec<_>>>()?;
+    let mut parent = slot.parent.clone();
+    let side_start = if slot.edge == EdgeKind::Side {
+        Some(reserve_side_slots(conn, &tree, &slot, additions.len())?)
+    } else {
+        if let Some(displaced) = displaced {
+            set_parent(conn, displaced, ids.last().context("empty splice")?)?;
+        }
+        None
+    };
+    for (i, (id, (card_id, _))) in ids.iter().zip(&additions).enumerate() {
+        insert_placement(
+            conn,
+            &Placement {
+                coord_id: id.clone(),
+                tree_id: tree.tree_id.clone(),
+                host_workspace: tree.workspace,
+                card_id: card_id.clone(),
+                parent_coord_id: Some(parent.clone()),
+                edge: slot.edge,
+                slot: side_start.map(|start| start + i as u64),
+                gloss: gloss.clone(),
+            },
+        )?;
+        if slot.edge == EdgeKind::Direct {
+            parent.clone_from(id);
+        }
+    }
+    let after = shape_of(conn, &tree)?;
+    let mapping = filing_path_changes(conn, &[&shape], &[&after], &BTreeSet::new())?;
+    check_filing_mapping(conn, ctx.access, &mapping)?;
+    if !review.is_empty() || !mapping.is_empty() || opt_str(ctx.args, "confirm")?.is_some() {
+        let mut lines = vec![format!(
+            "place {} Coordinate(s) in {}",
+            additions.len(),
+            tree.handle()
+        )];
+        lines.extend(
+            additions
+                .iter()
+                .map(|(_, address)| format!("place Card {address}")),
+        );
+        append_gloss_review(&mut lines, &review);
+        append_filing_changes(&mut lines, &mapping);
+        let effects = json!({"order": additions.iter().map(|(id, address)| json!([address, id])).collect::<Vec<_>>(),
+            "displaced": displaced, "gloss_review": review, "filing_moves": mapping, "already_placed": already});
+        if let Some(plan) = ctx.confirmed(if legacy { "place" } else { "add" }, &lines, &effects)? {
+            return Ok(plan);
+        }
+    }
+    require_gloss_decisions(&missing)?;
+    apply_glosses(conn, &decisions)?;
+    apply_filing_mapping(conn, &mapping)?;
+    let added: Vec<_> = ids
+        .iter()
+        .zip(additions)
+        .map(|(id, (_, address))| {
+            coordinate_result(
+                &after.by_id[id],
+                &after,
+                mapping.get(&address).unwrap_or(&address),
+                false,
+            )
+        })
+        .collect();
+    ctx.changed = true;
+    if multiple {
+        return Ok(
+            json!({"applied": true, "tree": tree.handle(), "changed": true,
+            "added": added, "placed": added, "already_placed": already}),
+        );
+    }
+    let mut value = added.into_iter().next().context("empty splice")?;
+    value["applied"] = json!(true);
+    value["changed"] = json!(true);
+    value["already_placed"] = json!(false);
+    Ok(value)
+}
+
+pub(crate) fn ensure_native_type(card_type: CardType) -> Result<()> {
+    if !matches!(
+        card_type,
+        CardType::Idea | CardType::Event | CardType::Finding
+    ) {
+        bail!(
+            "native_structure_required: Connection trees can author Idea, Event, and Finding Cards"
+        );
+    }
+    Ok(())
+}
+
+fn allocate_native_handle(conn: &Connection, tree: &TreeRecord) -> Result<(u64, String)> {
+    let num = tree
+        .display_num
+        .context("Connection tree is missing its display number")?;
     let local = tree.next_local_seq;
-    let handle = Handle::native(tree.display_num, local);
+    let next = local
+        .checked_add(1)
+        .filter(|&n| n <= i64::MAX as u64)
+        .context("Connection handles exhausted")?;
+    conn.execute(
+        "UPDATE trees SET next_local_seq = ?2 WHERE tree_id = ?1",
+        params![tree.tree_id, next],
+    )?;
+    Ok((local, Handle::native(num, local)))
+}
+
+fn create_native(ctx: &mut Ctx) -> Result<Value> {
+    let conn = ctx.conn;
+    let tree = coord::resolve_tree(conn, arg_str(ctx.args, "tree")?)?;
+    ensure_host_writable(conn, ctx.access, &Host(tree.clone()))?;
+    let card_type = opt_str(ctx.args, "type")?
+        .map(CardType::parse)
+        .transpose()?
+        .unwrap_or(CardType::Idea);
+    ensure_native_type(card_type)?;
+    let title = opt_str(ctx.args, "title")?.unwrap_or_default();
+    let body = opt_str(ctx.args, "body")?.unwrap_or_default();
+    let shape = shape_of(conn, &tree)?;
+    let slot = slot_arg(conn, &shape, ctx.args)?;
+    let displaced = (slot.edge == EdgeKind::Direct)
+        .then(|| shape.direct.get(&slot.parent))
+        .flatten();
+    let affected = displaced.into_iter().cloned().collect();
+    let (_, decisions, missing) = gloss_review(&[&shape], &affected, ctx.args)?;
+    require_gloss_decisions(&missing)?;
+    let gloss = opt_str(ctx.args, "gloss")?
+        .map(|g| plain_line(g, "gloss", coord::GLOSS_MAX))
+        .transpose()?;
+    let (local, handle) = allocate_native_handle(conn, &tree)?;
     let text = crate::compose_card_text(title, body, "");
     let accepted = crate::gate::check_proposed(
         conn,
-        &crate::gate::Candidate::create(&handle, crate::gate::Kind::Regular, tree.workspace, &text, card_type, None),
+        &crate::gate::Candidate::create(
+            &handle,
+            crate::gate::Kind::Regular,
+            tree.workspace,
+            &text,
+            card_type,
+            None,
+        ),
     )?;
     let parsed = crate::parse_card_text(&text)?;
     let text = crate::compose_card_text(&parsed.title, &parsed.body, &parsed.reverse);
@@ -1715,715 +1518,807 @@ fn create_native(ctx: &mut Ctx) -> Result<Value> {
          VALUES(?1, NULL, 0, 0, NULL, ?2, ?3, ?4)",
         params![handle, text, tree.workspace.id(), card_type.id()],
     )?;
-    let card_id = coord::card_id_of_row(conn, conn.last_insert_rowid())?;
-    conn.execute(
-        "INSERT INTO card_handles(handle, card_id, origin_tree_id, local_seq) VALUES(?1, ?2, ?3, ?4)",
-        params![handle, card_id, tree.tree_id, local as i64],
-    )?;
-    conn.execute(
-        "UPDATE connection_trees SET next_local_seq = ?2 WHERE tree_id = ?1",
-        params![tree.tree_id, (local + 1) as i64],
-    )?;
-    let placement_id = coord::new_uuid()?;
-    insert_at_slot(
+    let row = conn.last_insert_rowid();
+    let coord_id = coord::new_uuid()?;
+    let side = if slot.edge == EdgeKind::Side {
+        Some(reserve_side_slots(conn, &tree, &slot, 1)?)
+    } else {
+        if let Some(displaced) = displaced {
+            set_parent(conn, displaced, &coord_id)?;
+        }
+        None
+    };
+    let card_id = coord::register_connection_native_tx(
         conn,
-        &shape,
-        &slot,
-        Placement {
-            placement_id: placement_id.clone(),
-            host_kind: "connection".into(),
-            host_tree_key: tree.tree_id.clone(),
-            card_id: card_id.clone(),
-            parent_id: None,
-            anchor_card_id: None,
-            edge: slot.edge,
-            ordinal: None,
-            gloss,
-        },
+        row,
+        &tree,
+        &handle,
+        local,
+        &parsed.title,
+        &coord_id,
+        &slot.parent,
+        slot.edge,
+        side,
+        gloss.as_deref(),
     )?;
-    apply_glosses(conn, &decided)?;
+    apply_glosses(conn, &decisions)?;
     crate::link_index::sync_source(conn, &handle)?;
-    let shape = validate_tree(conn, &tree)?;
+    let shape = shape_of(conn, &tree)?;
     ctx.changed = true;
-    let mut value = json!({
-        "applied": true,
-        "address": handle,
-        "handle": handle,
-        "card_id": card_id,
-        "type": card_type.id(),
-        "placement_id": placement_id,
-        "coord": shape.coord.get(&placement_id),
-        "tree": tree.handle(),
-    });
+    let mut value = coordinate_result(&shape.by_id[&coord_id], &shape, &handle, true);
+    value["applied"] = json!(true);
+    value["address"] = json!(handle);
+    value["handle"] = json!(handle);
+    value["type"] = json!(card_type.id());
+    value["card_id"] = json!(card_id);
+    value["changed"] = json!(true);
     accepted.attach(&mut value);
     Ok(value)
 }
 
-// ---------------------------------------------------------------------------------------------
-// Gloss
-// ---------------------------------------------------------------------------------------------
-
 fn edit_gloss(ctx: &mut Ctx) -> Result<Value> {
-    let (placement, host) = station_arg(ctx.conn, ctx.args, "placement_id")?;
+    let (row, host) = station_arg(ctx.conn, ctx.args)?;
     ensure_host_writable(ctx.conn, ctx.access, &host)?;
-    if placement.edge == EdgeKind::Root {
-        bail!("the root station has no positional gloss; its framing text is the root Card's body");
-    }
-    let gloss = match patch(ctx.args, "gloss")? {
-        Patch::Keep => bail!("pass `gloss` (a string) or null to clear it"),
-        Patch::Clear => None,
-        Patch::Set(g) => Some(plain_line(g, "gloss", coord::GLOSS_MAX)?),
-    };
-    if let Some(base) = ctx.args.get("base_gloss") {
-        let base = base.as_str().map(str::to_string);
-        if base != placement.gloss {
-            bail!("stale gloss: the station's gloss changed since it was read");
-        }
-    }
-    let changed = gloss != placement.gloss;
-    if changed {
-        ctx.conn.execute(
-            "UPDATE placements SET gloss = ?2 WHERE placement_id = ?1",
-            params![placement.placement_id, gloss],
-        )?;
-        ctx.changed = true;
-    }
-    Ok(json!({"placement_id": placement.placement_id, "gloss": gloss, "changed": changed}))
-}
-
-// ---------------------------------------------------------------------------------------------
-// Move a station
-// ---------------------------------------------------------------------------------------------
-
-/// Move one station inside its Connection tree. The station carries its Side branches; its old
-/// Direct continuation closes the gap (takes its old slot); at the destination a displaced Direct
-/// successor continues after it. Every station whose structural predecessor changes and that has a
-/// nonempty gloss must be reviewed (`gloss_updates`). Connections follow placement IDs and never
-/// change; no Card and no Link is written.
-fn move_station(ctx: &mut Ctx) -> Result<Value> {
-    let conn = ctx.conn;
-    let (moving, host) = station_arg(conn, ctx.args, "placement_id")?;
-    let Host::Connection(tree) = &host else {
-        return move_attachment(ctx, moving, host);
-    };
-    ensure_host_writable(conn, ctx.access, &host)?;
-    if moving.edge == EdgeKind::Root {
-        bail!("the root station does not move");
-    }
-    let shape = shape_of(conn, tree)?;
-    let destination = ctx.args.get("destination").cloned().unwrap_or_else(|| ctx.args.clone());
-    let slot = slot_arg(conn, &shape, &destination)?;
-    // The moving branch: the station and its Side branches (not its Direct continuation).
-    let mut branch: BTreeSet<String> = BTreeSet::from([moving.placement_id.clone()]);
-    for side in shape.side.get(&moving.placement_id).cloned().unwrap_or_default() {
-        branch.extend(shape.subtree(&side));
-    }
-    if branch.contains(&slot.parent) {
-        bail!("a station cannot move under itself or its own Side branches");
-    }
-    let old_parent = moving.parent_id.clone().context("non-root station without parent")?;
-    let continuation = shape.direct.get(&moving.placement_id).cloned();
-    if slot.parent == moving.placement_id {
-        bail!("a station cannot move under itself");
-    }
-    // The stations whose structural predecessor changes.
-    let mut affected = Vec::new();
-    let same_slot = slot.parent == old_parent
-        && slot.edge == moving.edge
-        && (slot.edge == EdgeKind::Direct || slot.before.is_none() && shape.side.get(&old_parent).and_then(|s| s.last()) == Some(&moving.placement_id));
-    if same_slot {
-        return Ok(json!({"applied": true, "placement_id": moving.placement_id, "coord": shape.coord.get(&moving.placement_id), "changed": false}));
-    }
-    if slot.parent != old_parent {
-        affected.push(moving.placement_id.clone());
-    }
-    if let Some(c) = &continuation {
-        affected.push(c.clone());
-    }
-    let displaced = match slot.edge {
-        EdgeKind::Direct => shape.direct.get(&slot.parent).cloned().filter(|d| d != &moving.placement_id),
-        _ => None,
-    };
-    // Moving to the Direct slot right after its own continuation's new place is fine: the
-    // continuation is counted once.
-    if let Some(d) = &displaced
-        && !affected.contains(d)
-    {
-        affected.push(d.clone());
-    }
-    let (review, decided, missing) = gloss_review(&shape, &affected, ctx.args)?;
-    let mut lines = vec![format!(
-        "move {} ({}) to {} of {}",
-        shape.coord[&moving.placement_id],
-        moving.placement_id,
-        slot.edge.id(),
-        shape.coord[&slot.parent]
-    )];
-    for r in &review {
-        lines.push(format!(
-            "review gloss of {}: {}",
-            r["coord"].as_str().unwrap_or_default(),
-            r["gloss"].as_str().unwrap_or_default()
-        ));
-    }
-    let incident = incident_edges(conn, &tree.tree_id, &branch)?;
-    lines.push(format!("{} tree connection(s) follow their stations unchanged", incident.len()));
-    let effects = json!({"moved": branch, "gloss_review": review, "connections_unchanged": incident.iter().map(|e| &e.connection_id).collect::<Vec<_>>()});
-    if let Some(plan) = ctx.confirmed("move", &lines, &effects)? {
-        return Ok(plan);
-    }
-    if !missing.is_empty() {
-        bail!("gloss review required: pass gloss_updates (a string keeps or replaces, null clears) for {}", missing.join(", "));
-    }
-    // 1. Detach the moving station: its continuation takes its old slot.
-    let mut park_ids = vec![moving.placement_id.clone()];
-    if let Some(c) = &continuation {
-        park_ids.push(c.clone());
-    }
-    if let Some(d) = &displaced
-        && !park_ids.contains(d)
-    {
-        park_ids.push(d.clone());
-    }
-    park(conn, &shape, &park_ids)?;
-    if let Some(c) = &continuation {
-        if moving.edge == EdgeKind::Side {
-            set_slot(conn, c, Some(&old_parent), EdgeKind::Side, moving.ordinal)?;
-        } else {
-            set_slot(conn, c, Some(&old_parent), EdgeKind::Direct, None)?;
-        }
-    }
-    // The moving station's own Direct slot is now free (its continuation left).
-    let shape_now = shape_of_partial(conn, tree)?;
-    // 2. Put it at the destination.
-    match slot.edge {
-        EdgeKind::Direct => {
-            let current = shape_now.direct.get(&slot.parent).cloned();
-            set_slot(conn, &moving.placement_id, Some(&slot.parent), EdgeKind::Direct, None)?;
-            if let Some(d) = displaced.or(current).filter(|d| d != &moving.placement_id) {
-                set_slot(conn, &d, Some(&moving.placement_id), EdgeKind::Direct, None)?;
-            }
-        }
-        EdgeKind::Side => {
-            let mut siblings: Vec<String> = shape_now
-                .side
-                .get(&slot.parent)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|s| s != &moving.placement_id)
-                .collect();
-            let position = match &slot.before {
-                Some(b) => siblings.iter().position(|s| s == b).context("`before` is not a sibling")?,
-                None => siblings.len(),
-            };
-            siblings.insert(position, moving.placement_id.clone());
-            park(conn, &shape_now, &siblings)?;
-            for (i, id) in siblings.iter().enumerate() {
-                set_slot(conn, id, Some(&slot.parent), EdgeKind::Side, Some(i as u64 + 1))?;
-            }
-        }
-        _ => bail!("unsupported destination"),
-    }
-    if moving.edge == EdgeKind::Side && continuation.is_none() {
-        compact_sides(conn, &tree.tree_id, &old_parent)?;
-    }
-    apply_glosses(conn, &decided)?;
-    let shape = validate_tree(conn, tree)?;
-    ctx.changed = true;
-    Ok(json!({
-        "applied": true,
-        "placement_id": moving.placement_id,
-        "coord": shape.coord.get(&moving.placement_id),
-        "coordinates": shape.order.iter().map(|id| json!({"placement_id": id, "coord": shape.coord[id]})).collect::<Vec<_>>(),
-        "gloss_reviewed": decided.keys().collect::<Vec<_>>(),
-        "connections_unchanged": incident.len(),
-        "changed": true,
-    }))
-}
-
-/// A tree shape read in the middle of a rearrangement, without the reachability check (parked
-/// stations hang off the root until they are placed).
-fn shape_of_partial(conn: &Connection, tree: &ConnTree) -> Result<TreeShape> {
-    let placements = coord::placements_of_host(conn, &tree.tree_id)?;
-    let mut by_id = BTreeMap::new();
-    let mut direct = BTreeMap::new();
-    let mut side: BTreeMap<String, Vec<(u64, String)>> = BTreeMap::new();
-    let mut root = String::new();
-    for p in placements {
-        match p.edge {
-            EdgeKind::Root => root = p.placement_id.clone(),
-            EdgeKind::Direct => {
-                direct.insert(p.parent_id.clone().unwrap_or_default(), p.placement_id.clone());
-            }
-            EdgeKind::Side => side
-                .entry(p.parent_id.clone().unwrap_or_default())
-                .or_default()
-                .push((p.ordinal.unwrap_or(0), p.placement_id.clone())),
-            EdgeKind::Attach => {}
-        }
-        by_id.insert(p.placement_id.clone(), p);
-    }
-    let side = side
-        .into_iter()
-        .map(|(k, mut v)| {
-            v.sort();
-            (k, v.into_iter().map(|(_, id)| id).collect())
-        })
-        .collect();
-    Ok(TreeShape {
-        tree: tree.clone(),
-        by_id,
-        root,
-        direct,
-        side,
-        coord: BTreeMap::new(),
-        by_coord: BTreeMap::new(),
-        order: Vec::new(),
-    })
-}
-
-/// Reorder or re-anchor one Topic-side mount (within its Topic).
-fn move_attachment(ctx: &mut Ctx, moving: Placement, host: Host) -> Result<Value> {
-    let conn = ctx.conn;
-    ensure_host_writable(conn, ctx.access, &host)?;
-    let destination = ctx.args.get("destination").cloned().unwrap_or_else(|| ctx.args.clone());
-    let anchor_at = opt_str(&destination, "anchor_at")?.context("a Topic-side mount moves to `anchor_at` (a Card of the same Topic)")?;
-    let anchor = crate::load_card(conn, anchor_at)?;
-    if TreeRole::of(&anchor) != TreeRole::Topic || crate::tree_id(&anchor.address) != host.key() {
-        bail!("a Topic-side mount moves only beside Cards of its own Topic {}", host.key());
-    }
-    let anchor_id = coord::card_id_of_row(conn, anchor.row_id)?;
-    let old_anchor = moving.anchor_card_id.clone().unwrap_or_default();
-    if let Some(b) = opt_str(&destination, "before")? {
-        let sibling = coord::resolve_station(conn, b)?;
-        if sibling.anchor_card_id.as_deref() != Some(anchor_id.as_str()) || sibling.placement_id == moving.placement_id {
-            bail!("`before` names a mount beside the destination Card");
-        }
-    }
-    let mut lines = vec![format!("move mount {} beside {}", coord::coordinate_of(conn, &moving)?, anchor.address)];
-    let (review, decision, missing) = if old_anchor != anchor_id {
-        single_gloss_review(&moving, ctx.args)?
-    } else {
-        (None, None, false)
-    };
-    if let Some(r) = &review {
-        lines.push(format!("review gloss (its anchor changes): {}", r["gloss"].as_str().unwrap_or_default()));
-    }
-    let effects = json!({"moved": [moving.placement_id], "gloss_review": review.into_iter().collect::<Vec<_>>()});
-    if let Some(plan) = ctx.confirmed("move", &lines, &effects)? {
-        return Ok(plan);
-    }
-    if missing {
-        bail!("gloss review required: pass gloss_updates for {}", moving.placement_id);
-    }
-    if let Some(gloss) = &decision {
-        conn.execute("UPDATE placements SET gloss = ?2 WHERE placement_id = ?1", params![moving.placement_id, gloss])?;
-    }
-    let mut siblings: Vec<Placement> = coord::attachments_of_anchor(conn, &anchor_id)?
-        .into_iter()
-        .filter(|s| s.placement_id != moving.placement_id)
-        .collect();
-    let position = match opt_str(&destination, "before")? {
-        Some(b) => {
-            let sibling = coord::resolve_station(conn, b)?;
-            siblings.iter().position(|s| s.placement_id == sibling.placement_id).context("`before` names a mount beside the destination Card")?
-        }
-        None => siblings.len(),
-    };
-    conn.execute(
-        "UPDATE placements SET anchor_card_id = ?2, ordinal = ?3 WHERE placement_id = ?1",
-        params![moving.placement_id, anchor_id, 9_000_000_i64],
-    )?;
-    siblings.insert(position, moving.clone());
-    for (i, s) in siblings.iter().enumerate() {
-        conn.execute("UPDATE placements SET ordinal = ?2 WHERE placement_id = ?1", params![s.placement_id, 8_000_000 + i as i64])?;
-    }
-    for (i, s) in siblings.iter().enumerate() {
-        conn.execute("UPDATE placements SET ordinal = ?2 WHERE placement_id = ?1", params![s.placement_id, i as i64 + 1])?;
-    }
-    if old_anchor != anchor_id {
-        compact_attachments(conn, &old_anchor)?;
-    }
-    if !coord::attachments_dense(conn, &anchor_id)? {
-        bail!("the mounts beside {} would not be numbered 1..N", anchor.address);
-    }
-    ctx.changed = true;
-    let moved = coord::placement(conn, &moving.placement_id)?.context("moved mount")?;
-    Ok(json!({"applied": true, "placement_id": moving.placement_id, "coord": coord::coordinate_of(conn, &moved)?, "changed": true}))
-}
-
-// ---------------------------------------------------------------------------------------------
-// Unplace (detach) a station
-// ---------------------------------------------------------------------------------------------
-
-fn unplace(ctx: &mut Ctx) -> Result<Value> {
-    let conn = ctx.conn;
-    let (station, host) = station_arg(conn, ctx.args, "placement_id")?;
-    ensure_host_writable(conn, ctx.access, &host)?;
-    let revision = coord::next_revision(conn)?;
-    let Host::Connection(tree) = &host else {
-        // A Topic-side mount is a leaf: removing it never deletes the mounted Card.
-        let lines = vec![format!(
-            "detach mount {} ({}) from Topic {}; the Card stays at its home",
-            coord::coordinate_of(conn, &station).unwrap_or_default(),
-            station.placement_id,
-            host.key()
-        )];
-        if let Some(plan) = ctx.confirmed("unplace", &lines, &json!({"removed": [station.placement_id]}))? {
-            return Ok(plan);
-        }
-        retire_placements(conn, std::slice::from_ref(&station.placement_id), revision)?;
-        conn.execute("DELETE FROM placements WHERE placement_id = ?1", [&station.placement_id])?;
-        if let Some(anchor) = &station.anchor_card_id {
-            compact_attachments(conn, anchor)?;
-        }
-        ctx.changed = true;
-        return Ok(json!({"applied": true, "removed": [station.placement_id], "changed": true}));
-    };
-    if station.edge == EdgeKind::Root {
-        bail!("the root station is the tree itself; delete the tree's root Card to remove the tree");
-    }
-    let shape = shape_of(conn, tree)?;
-    let home_here = |p: &Placement| -> Result<bool> {
-        Ok(match coord::address_of_card_id(conn, &p.card_id)? {
-            Some(address) => Handle::parse(&address).is_some_and(|h| h.tree == tree.display_num),
-            None => false,
-        })
-    };
-    if home_here(&station)? {
+    if row.edge == EdgeKind::Root {
         bail!(
-            "station {} is the home of native Card `{}`; delete the Card or promote it instead of unplacing its home station",
-            shape.coord[&station.placement_id],
-            coord::address_of_card_id(conn, &station.card_id)?.unwrap_or_default()
+            "the root Coordinate has no positional gloss; its framing text is the root Card's body"
         );
     }
-    let policy = opt_str(ctx.args, "children")?;
-    let continuation = shape.direct.get(&station.placement_id).cloned();
-    let sides = shape.side.get(&station.placement_id).cloned().unwrap_or_default();
-    let has_children = continuation.is_some() || !sides.is_empty();
-    let mut removed: Vec<String> = vec![station.placement_id.clone()];
-    let mut reattach_to: Option<String> = None;
-    let mut affected = Vec::new();
-    match (has_children, policy) {
-        (false, _) => {}
-        (true, Some("detach")) => {
-            removed = shape.subtree(&station.placement_id);
-            for id in &removed {
-                if home_here(&shape.by_id[id])? {
-                    bail!(
-                        "detaching this branch would remove the home station of native Card `{}`; reattach the children or move that Card first",
-                        coord::address_of_card_id(conn, &shape.by_id[id].card_id)?.unwrap_or_default()
-                    );
-                }
-            }
-        }
-        (true, Some("reattach")) => {
-            if let Some(target) = opt_str(ctx.args, "reattach_to")? {
-                let target = station_in(conn, &shape, target)?;
-                if shape.subtree(&station.placement_id).contains(&target.placement_id) {
-                    bail!("`reattach_to` must be outside the detached station's branch");
-                }
-                if target.edge == EdgeKind::Root {
-                    bail!("the root takes no Side successor; reattach to a top-level station");
-                }
-                reattach_to = Some(target.placement_id);
-            }
-            if reattach_to.is_none()
-                && continuation.is_none()
-                && !sides.is_empty()
-                && station.edge == EdgeKind::Direct
-                && station.parent_id.as_ref().and_then(|p| shape.by_id.get(p)).is_some_and(|p| p.edge == EdgeKind::Root)
-            {
-                bail!(
-                    "station {} has Side branches and no Direct continuation, and the root takes no Side successor: pass reattach_to (a station that should hold them) or children: \"detach\"",
-                    shape.coord[&station.placement_id]
-                );
-            }
-            affected.extend(continuation.iter().cloned());
-            affected.extend(sides.iter().cloned());
-        }
-        (true, None) => bail!("station {} has successors: pass children: \"reattach\" (they take its place) or \"detach\" (the whole branch is removed)", shape.coord[&station.placement_id]),
-        (true, Some(other)) => bail!("unknown children policy `{other}`; expected reattach or detach"),
+    let gloss = match patch(ctx.args, "gloss")? {
+        Patch::Keep => bail!("pass gloss (a string) or null to clear it"),
+        Patch::Clear => None,
+        Patch::Set(gloss) => Some(plain_line(gloss, "gloss", coord::GLOSS_MAX)?),
+    };
+    if let Some(base) = ctx.args.get("base_gloss")
+        && base.as_str() != row.gloss.as_deref()
+    {
+        bail!("stale gloss: the Coordinate's gloss changed since it was read");
     }
-    let removed_set: BTreeSet<String> = removed.iter().cloned().collect();
-    let incident = incident_edges(conn, &tree.tree_id, &removed_set)?;
-    let (review, decided, missing) = gloss_review(&shape, &affected, ctx.args)?;
-    let mut lines = vec![format!(
-        "detach {} station(s) starting at {}; the mounted Cards stay at their homes",
-        removed.len(),
-        shape.coord[&station.placement_id]
-    )];
-    for id in &removed {
-        if let Some(g) = &shape.by_id[id].gloss {
-            lines.push(format!("gloss lost with {}: {g}", shape.coord[id]));
-        }
+    ctx.changed = gloss != row.gloss;
+    if ctx.changed {
+        ctx.conn.execute(
+            "UPDATE coordinates SET gloss = ?2 WHERE coord_id = ?1",
+            params![row.coord_id, gloss],
+        )?;
     }
-    for e in &incident {
-        lines.push(format!("tree connection {} is deleted with its endpoint", e.connection_id));
-    }
-    for r in &review {
-        lines.push(format!("review gloss of {}: {}", r["coord"].as_str().unwrap_or_default(), r["gloss"].as_str().unwrap_or_default()));
-    }
-    let effects = json!({
-        "removed": removed,
-        "connections_deleted": incident.iter().map(|e| &e.connection_id).collect::<Vec<_>>(),
-        "gloss_review": review,
-    });
-    if let Some(plan) = ctx.confirmed("unplace", &lines, &effects)? {
-        return Ok(plan);
-    }
-    if !missing.is_empty() {
-        bail!("gloss review required: pass gloss_updates for {}", missing.join(", "));
-    }
-    for e in &incident {
-        conn.execute("DELETE FROM placement_edges WHERE connection_id = ?1", [&e.connection_id])?;
-    }
-    if has_children && policy == Some("reattach") {
-        let old_parent = station.parent_id.clone().context("non-root station without parent")?;
-        let mut kids: Vec<String> = Vec::new();
-        kids.extend(continuation.iter().cloned());
-        kids.extend(sides.iter().cloned());
-        park(conn, &shape, &kids)?;
-        let gone = conn.execute("DELETE FROM placements WHERE placement_id = ?1", [&station.placement_id])?;
-        if gone != 1 {
-            bail!("station {} could not be removed", station.placement_id);
-        }
-        // Re-insert the station temporarily is unnecessary: it is removed below.
-        match &reattach_to {
-            Some(target) => {
-                let existing = shape.side.get(target).map(|s| s.len()).unwrap_or(0);
-                for (i, kid) in kids.iter().enumerate() {
-                    set_slot(conn, kid, Some(target), EdgeKind::Side, Some((existing + i + 1) as u64))?;
-                }
-            }
-            None => {
-                // The Direct continuation takes the station's slot; the Side branches follow it.
-                let (first, rest): (String, Vec<String>) = match &continuation {
-                    Some(c) => (c.clone(), sides.clone()),
-                    None => {
-                        if station.edge == EdgeKind::Direct && shape.by_id[&old_parent].edge == EdgeKind::Root {
-                            bail!("the root takes no Side successor: pass reattach_to (a station that should hold these Side branches) or children: \"detach\"");
-                        }
-                        (String::new(), sides.clone())
-                    }
-                };
-                if !first.is_empty() {
-                    set_slot(conn, &first, Some(&old_parent), station.edge, station.ordinal)?;
-                    let existing = shape.side.get(&first).map(|s| s.len()).unwrap_or(0);
-                    for (i, kid) in rest.iter().enumerate() {
-                        set_slot(conn, kid, Some(&first), EdgeKind::Side, Some((existing + i + 1) as u64))?;
-                    }
-                } else {
-                    // No continuation: the Side branches take the station's place among its parent's
-                    // Side successors (or follow the parent's Side list for a Direct station).
-                    let existing = shape.side.get(&old_parent).cloned().unwrap_or_default();
-                    let mut order: Vec<String> = Vec::new();
-                    for s in existing {
-                        if s == station.placement_id {
-                            order.extend(rest.iter().cloned());
-                        } else {
-                            order.push(s);
-                        }
-                    }
-                    if station.edge == EdgeKind::Direct {
-                        order.extend(rest.iter().cloned());
-                    }
-                    park(conn, &shape, &order)?;
-                    for (i, kid) in order.iter().enumerate() {
-                        set_slot(conn, kid, Some(&old_parent), EdgeKind::Side, Some(i as u64 + 1))?;
-                    }
-                }
-            }
-        }
-        removed = vec![station.placement_id.clone()];
-        retire_placements_known(conn, &station, revision)?;
-        if station.edge == EdgeKind::Side {
-            compact_sides(conn, &tree.tree_id, &old_parent)?;
-        }
-    } else {
-        retire_placements(conn, &removed, revision)?;
-        // Delete leaves first so no remaining station points at a removed parent mid-statement.
-        for id in removed.iter().rev() {
-            conn.execute("DELETE FROM placements WHERE placement_id = ?1", [id])?;
-        }
-        if let Some(parent) = &station.parent_id
-            && station.edge == EdgeKind::Side
-        {
-            compact_sides(conn, &tree.tree_id, parent)?;
-        }
-    }
-    apply_glosses(conn, &decided)?;
-    validate_tree(conn, tree)?;
-    ctx.changed = true;
-    Ok(json!({
-        "applied": true,
-        "removed": removed,
-        "connections_deleted": incident.iter().map(|e| &e.connection_id).collect::<Vec<_>>(),
-        "changed": true,
-    }))
+    Ok(
+        json!({"coord_id": row.coord_id, "placement_id": row.coord_id, "gloss": gloss, "changed": ctx.changed}),
+    )
 }
 
-fn retire_placements_known(conn: &Connection, station: &Placement, revision: i64) -> Result<()> {
-    conn.execute(
-        "INSERT OR IGNORE INTO retired_placements(placement_id, host_tree_key, card_id, retired_at_rev) VALUES(?1, ?2, ?3, ?4)",
-        params![station.placement_id, station.host_tree_key, station.card_id, revision],
-    )?;
+fn children_of(shape: &TreeShape, id: &str) -> Vec<String> {
+    shape
+        .direct
+        .get(id)
+        .into_iter()
+        .chain(shape.side.get(id).into_iter().flatten())
+        .cloned()
+        .collect()
+}
+
+fn append_side_children(
+    conn: &Connection,
+    tree: &TreeRecord,
+    parent: &str,
+    children: &[String],
+) -> Result<()> {
+    if children.is_empty() {
+        return Ok(());
+    }
+    let mut next = side_slots(conn, parent)?
+        .last()
+        .map_or(0, |(_, slot)| *slot);
+    for id in children {
+        next = add_slots(next, 1)?;
+        set_position(conn, id, tree, parent, EdgeKind::Side, Some(next))?;
+    }
     Ok(())
 }
 
-// ---------------------------------------------------------------------------------------------
-// Rebind a Missing mount
-// ---------------------------------------------------------------------------------------------
+/// A vacated slot's Direct continuation takes its place. Side children follow that
+/// continuation, or join the old parent's Side branches when there is no continuation.
+fn reattach_children(
+    conn: &Connection,
+    shape: &TreeShape,
+    row: &Placement,
+    target: Option<&str>,
+    move_sides: bool,
+) -> Result<()> {
+    if let Some(target) = target {
+        if shape.by_id[target].edge == EdgeKind::Root
+            && !children_of(shape, &row.coord_id).is_empty()
+        {
+            bail!("the root takes no Side successor; pass a non-root reattach_to");
+        }
+        return append_side_children(
+            conn,
+            &shape.tree,
+            target,
+            &children_of(shape, &row.coord_id),
+        );
+    }
+    let old_parent = row
+        .parent_coord_id
+        .as_deref()
+        .context("non-root Coordinate has no parent")?;
+    let next = shape.direct.get(&row.coord_id);
+    if let Some(next) = next {
+        set_position(conn, next, &shape.tree, old_parent, row.edge, row.slot)?;
+    }
+    if move_sides && let Some(children) = shape.side.get(&row.coord_id) {
+        let parent = next.map(String::as_str).unwrap_or(old_parent);
+        if shape.by_id[parent].edge == EdgeKind::Root && !children.is_empty() {
+            bail!("the root takes no Side successor; pass reattach_to or choose the whole subtree");
+        }
+        if next.is_none() && row.edge == EdgeKind::Side && shape.tree.role != TreeRole::Connection {
+            if let Some((first, rest)) = children.split_first() {
+                set_position(conn, first, &shape.tree, parent, EdgeKind::Side, row.slot)?;
+                append_side_children(conn, &shape.tree, parent, rest)?;
+            }
+        } else if next.is_none() && row.edge == EdgeKind::Side {
+            let slot = Slot {
+                parent: parent.to_string(),
+                edge: EdgeKind::Side,
+                before: shape
+                    .side
+                    .get(parent)
+                    .into_iter()
+                    .flatten()
+                    .find(|&id| shape.by_id[id].slot > row.slot)
+                    .cloned(),
+                explicit: None,
+            };
+            let start = reserve_side_slots(conn, &shape.tree, &slot, children.len())?;
+            for (i, id) in children.iter().enumerate() {
+                set_position(
+                    conn,
+                    id,
+                    &shape.tree,
+                    parent,
+                    EdgeKind::Side,
+                    Some(start + i as u64),
+                )?;
+            }
+        } else {
+            append_side_children(conn, &shape.tree, parent, children)?;
+        }
+    }
+    Ok(())
+}
 
-/// Replace the Card of a Missing mount with a live Card. The station gets a fresh placement ID (the
-/// old bookmark reports removed); every incident connection needs an explicit disposition
-/// (`keep` recreates it on the new station with a fresh ID, `delete` drops it), because an old
-/// assertion never transfers silently to replacement evidence.
+fn changed_parents(before: &[&TreeShape], after: &[&TreeShape]) -> BTreeSet<String> {
+    let parents = after
+        .iter()
+        .flat_map(|shape| shape.by_id.values().map(|row| (row.coord_id.as_str(), row)))
+        .collect::<BTreeMap<_, _>>();
+    before
+        .iter()
+        .flat_map(|shape| shape.by_id.values())
+        .filter(|old| {
+            parents
+                .get(old.coord_id.as_str())
+                .is_some_and(|new| new.parent_coord_id != old.parent_coord_id)
+        })
+        .map(|row| row.coord_id.clone())
+        .collect()
+}
+
+fn move_station(ctx: &mut Ctx) -> Result<Value> {
+    let conn = ctx.conn;
+    let (moving, host) = station_arg(conn, ctx.args)?;
+    let source = &host.0;
+    if ctx.tool == "move_placement" && source.role != TreeRole::Connection {
+        bail!("move_placement is for Connection trees; use move_coordinate for other trees");
+    }
+    ensure_host_writable(conn, ctx.access, &host)?;
+    if moving.edge == EdgeKind::Root {
+        bail!("the defining root Coordinate does not move");
+    }
+    let from = shape_of(conn, source)?;
+    let destination = ctx.args.get("destination").unwrap_or(ctx.args);
+    let target = opt_str(destination, "tree")?
+        .map(|at| coord::resolve_any_tree(conn, at))
+        .transpose()?
+        .unwrap_or_else(|| source.clone());
+    let cross_tree = target.tree_id != source.tree_id;
+    if ctx.tool == "move_placement" && target.role != TreeRole::Connection {
+        bail!("move_placement is for Connection trees; use move_coordinate for other trees");
+    }
+    ensure_host_writable(conn, ctx.access, &Host(target.clone()))?;
+    let to = if cross_tree {
+        shape_of(conn, &target)?
+    } else {
+        from.clone()
+    };
+    let slot = slot_arg(conn, &to, destination)?;
+    let mode = opt_str(ctx.args, "mode")?;
+    let span_end = if mode == Some("span") {
+        let end = station_in(
+            conn,
+            &from,
+            required_alias(ctx.args, &["through_coord_id", "span_end_coord_id"])?,
+        )?;
+        if end.edge == EdgeKind::Root {
+            bail!("a move span cannot include the defining root Coordinate");
+        }
+        Some(end.coord_id)
+    } else {
+        None
+    };
+    let branch = match mode {
+        Some("subtree" | "alone" | "span") => false,
+        None => ctx.tool == "move_placement",
+        Some(other) => bail!("unknown move mode `{other}`; expected subtree, alone or span"),
+    };
+    let alone = mode == Some("alone");
+    let mut moved = BTreeSet::from([moving.coord_id.clone()]);
+    if let Some(tail) = span_end.as_ref().or(branch.then_some(&moving.coord_id)) {
+        let mut current = &moving.coord_id;
+        loop {
+            moved.insert(current.clone());
+            for child in from.side.get(current).into_iter().flatten() {
+                moved.extend(from.subtree(child));
+            }
+            if current == tail {
+                break;
+            }
+            current = from
+                .direct
+                .get(current)
+                .context("through_coord_id must be on the Direct chain starting at coord_id")?;
+        }
+    } else if !alone {
+        moved.extend(from.subtree(&moving.coord_id));
+    }
+    if moved.contains(&slot.parent)
+        || !cross_tree
+            && (span_end.is_some() || ctx.tool == "move_coordinate" && alone)
+            && from.subtree(&moving.coord_id).contains(&slot.parent)
+    {
+        bail!("coordinate cycle: cannot move a Coordinate under itself or its descendant");
+    }
+    let old_parent = moving
+        .parent_coord_id
+        .as_deref()
+        .context("non-root Coordinate has no parent")?;
+    let same_slot = !cross_tree
+        && slot.parent == old_parent
+        && slot.edge == moving.edge
+        && (slot.edge == EdgeKind::Direct
+            || slot.explicit.is_some() && slot.explicit == moving.slot
+            || slot.before.as_deref() == Some(&moving.coord_id)
+            || slot.before.is_none()
+                && slot.explicit.is_none()
+                && from.side.get(old_parent).and_then(|ids| ids.last()) == Some(&moving.coord_id));
+    if same_slot {
+        if opt_str(ctx.args, "confirm")?.is_some() {
+            bail!("stale plan: the Coordinate is already at that slot");
+        }
+        return Ok(
+            json!({"applied": true, "coord_id": moving.coord_id, "placement_id": moving.coord_id,
+            "coord": from.coord[&moving.coord_id], "changed": false}),
+        );
+    }
+    if slot.before.as_ref().is_some_and(|id| moved.contains(id)) {
+        bail!("`before` cannot name a moving Coordinate");
+    }
+    let mut moved_filings = Vec::new();
+    if cross_tree || target.role == TreeRole::Literature {
+        for id in &moved {
+            let row = &from.by_id[id];
+            let identity = coord::identity(conn, &row.card_id)?.context("unknown Card identity")?;
+            if cross_tree && identity.filing_coord_id.as_deref() == Some(id.as_str()) {
+                let card = live_card(conn, &row.card_id)?.0;
+                let (parent, edge) = if id == &moving.coord_id {
+                    (slot.parent.as_str(), slot.edge)
+                } else {
+                    (
+                        row.parent_coord_id
+                            .as_deref()
+                            .context("a moved Coordinate needs a parent")?,
+                        row.edge,
+                    )
+                };
+                check_filing_destination(conn, ctx.access, &card, &target, parent, edge)?;
+                check_literature_survivors(conn, &row.card_id, &target, &moved)?;
+                moved_filings.push(card);
+            } else if target.role == TreeRole::Literature {
+                check_admission(conn, &target, &identity)?;
+            }
+        }
+    }
+    coord::check_model_term_splice_guard(conn, &target, &slot.parent, slot.edge)?;
+    let incident = incident_edges(conn, &source.tree_id, &moved)?;
+    let boundary: Vec<&Edge> = incident
+        .iter()
+        .filter(|e| cross_tree && moved.contains(&e.from) != moved.contains(&e.to))
+        .collect();
+    let internal: Vec<&Edge> = incident
+        .iter()
+        .filter(|e| !cross_tree || moved.contains(&e.from) && moved.contains(&e.to))
+        .collect();
+
+    park(conn, &from, std::slice::from_ref(&moving.coord_id))?;
+    if branch || alone {
+        reattach_children(conn, &from, &moving, None, alone)?;
+    } else if let Some(after_through) = span_end.as_ref().and_then(|end| from.direct.get(end)) {
+        set_position(
+            conn,
+            after_through,
+            source,
+            old_parent,
+            moving.edge,
+            moving.slot,
+        )?;
+    }
+    if cross_tree {
+        for id in &moved {
+            if id != &moving.coord_id {
+                let row = &from.by_id[id];
+                set_position(
+                    conn,
+                    id,
+                    &target,
+                    row.parent_coord_id
+                        .as_deref()
+                        .context("missing branch parent")?,
+                    row.edge,
+                    row.slot,
+                )?;
+            }
+        }
+        for edge in &boundary {
+            conn.execute(
+                "DELETE FROM coordinate_edges WHERE connection_id = ?1",
+                [&edge.connection_id],
+            )?;
+        }
+        for edge in &internal {
+            conn.execute(
+                "UPDATE coordinate_edges SET tree_id = ?2 WHERE connection_id = ?1",
+                params![edge.connection_id, target.tree_id],
+            )?;
+        }
+    }
+    if slot.edge == EdgeKind::Direct {
+        let displaced = direct_child(conn, &slot.parent)?;
+        if let Some(displaced) = displaced {
+            if let Some(tail) = &span_end {
+                set_parent(conn, &displaced, tail)?;
+            } else {
+                let mut tail = moving.coord_id.clone();
+                while let Some(child) = direct_child(conn, &tail)? {
+                    tail = child;
+                }
+                set_parent(conn, &displaced, &tail)?;
+            }
+        }
+        set_position(
+            conn,
+            &moving.coord_id,
+            &target,
+            &slot.parent,
+            EdgeKind::Direct,
+            None,
+        )?;
+    } else {
+        let rank = reserve_side_slots(conn, &target, &slot, 1)?;
+        set_position(
+            conn,
+            &moving.coord_id,
+            &target,
+            &slot.parent,
+            EdgeKind::Side,
+            Some(rank),
+        )?;
+    }
+    if moving.edge == EdgeKind::Side
+        && (cross_tree || slot.parent != old_parent || slot.explicit.is_none())
+    {
+        compact_sides(conn, source, old_parent)?;
+    }
+    let after = shape_of(conn, &target)?;
+    let source_after = if cross_tree {
+        Some(shape_of(conn, source)?)
+    } else {
+        None
+    };
+    let mut before_shapes = vec![&from];
+    let mut after_shapes = vec![&after];
+    if let Some(source_after) = &source_after {
+        before_shapes.push(&to);
+        after_shapes.push(source_after);
+    }
+    let affected = changed_parents(&before_shapes, &after_shapes);
+    let (review, decisions, missing) = gloss_review(&before_shapes, &affected, ctx.args)?;
+    let mapping = filing_path_changes(conn, &before_shapes, &after_shapes, &BTreeSet::new())?;
+    check_filing_mapping(conn, ctx.access, &mapping)?;
+    let mut changes = crate::link_index::Changes::default();
+    write_filing_mapping(conn, &mapping, &mut changes)?;
+    for card in &moved_filings {
+        check_refile_gate(conn, card)?;
+    }
+    let mut lines = vec![format!(
+        "move {} to {}",
+        from.coord[&moving.coord_id], after.coord[&moving.coord_id]
+    )];
+    append_gloss_review(&mut lines, &review);
+    append_filing_changes(&mut lines, &mapping);
+    if !boundary.is_empty() {
+        lines.push(format!(
+            "{} boundary connection(s) must be deleted; pass boundary_edges: delete to approve",
+            boundary.len()
+        ));
+    }
+    let effects = json!({"moved": moved, "gloss_review": review, "filing_moves": mapping,
+        "connections_unchanged": internal.iter().map(|e| &e.connection_id).collect::<Vec<_>>(),
+        "connections_deleted": boundary.iter().map(|e| &e.connection_id).collect::<Vec<_>>()});
+    if let Some(plan) = ctx.confirmed("move", &lines, &effects)? {
+        return Ok(plan);
+    }
+    if !boundary.is_empty() && opt_str(ctx.args, "boundary_edges")? != Some("delete") {
+        bail!("cross-tree move has boundary connections; pass boundary_edges: delete");
+    }
+    require_gloss_decisions(&missing)?;
+    apply_glosses(conn, &decisions)?;
+    if !mapping.is_empty() {
+        changes.finish(conn)?;
+    }
+    let identity = coord::identity(conn, &moving.card_id)?.context("unknown Card identity")?;
+    let address = identity.last_address;
+    let is_filing = identity.filing_coord_id.as_deref() == Some(moving.coord_id.as_str());
+    let mut result = coordinate_result(&after.by_id[&moving.coord_id], &after, &address, is_filing);
+    result["applied"] = json!(true);
+    result["changed"] = json!(true);
+    result["connections_unchanged"] = json!(internal.len());
+    result["connections_deleted"] = effects["connections_deleted"].clone();
+    result["gloss_reviewed"] = json!(decisions.keys().collect::<Vec<_>>());
+    if ctx.tool == "move_placement" {
+        result["coordinates"] = json!(
+            after
+                .order
+                .iter()
+                .map(|id| json!({
+                    "coord_id": id, "placement_id": id, "coord": after.coord[id],
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
+    ctx.changed = true;
+    Ok(result)
+}
+
+fn reorder_coordinates(ctx: &mut Ctx) -> Result<Value> {
+    let conn = ctx.conn;
+    let tree = coord::resolve_any_tree(conn, arg_str(ctx.args, "tree")?)?;
+    ensure_host_writable(conn, ctx.access, &Host(tree.clone()))?;
+    let shape = shape_of(conn, &tree)?;
+    let parent = station_in(
+        conn,
+        &shape,
+        required_alias(ctx.args, &["parent_coord_id", "parent_coord", "parent"])?,
+    )?;
+    let order = ctx.args["order"]
+        .as_array()
+        .context("order must list the Side children")?
+        .iter()
+        .map(|id| {
+            Ok(station_in(
+                conn,
+                &shape,
+                id.as_str().context("order entries must name Coordinates")?,
+            )?
+            .coord_id)
+        })
+        .collect::<Result<Vec<String>>>()?;
+    let siblings = shape
+        .side
+        .get(&parent.coord_id)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if order.len() != siblings.len()
+        || order.iter().collect::<BTreeSet<_>>() != siblings.iter().collect()
+    {
+        bail!("order must name every Side child of the parent exactly once");
+    }
+    if order.as_slice() == siblings {
+        if opt_str(ctx.args, "confirm")?.is_some() {
+            bail!("stale plan: the Side children already have this order");
+        }
+        return Ok(json!({"applied": true, "changed": false, "order": order}));
+    }
+    park(conn, &shape, &order)?;
+    for (id, old) in order.iter().zip(siblings) {
+        set_position(
+            conn,
+            id,
+            &tree,
+            &parent.coord_id,
+            EdgeKind::Side,
+            shape.by_id[old].slot,
+        )?;
+    }
+    let after = shape_of(conn, &tree)?;
+    let mapping = filing_path_changes(conn, &[&shape], &[&after], &BTreeSet::new())?;
+    check_filing_mapping(conn, ctx.access, &mapping)?;
+    let mut lines = vec![format!(
+        "reorder {} Side Coordinates of {}",
+        order.len(),
+        shape.coord[&parent.coord_id]
+    )];
+    append_filing_changes(&mut lines, &mapping);
+    if let Some(plan) = ctx.confirmed(
+        "reorder",
+        &lines,
+        &json!({"order": order, "filing_moves": mapping}),
+    )? {
+        return Ok(plan);
+    }
+    apply_filing_mapping(conn, &mapping)?;
+    ctx.changed = true;
+    Ok(json!({"applied": true, "changed": true, "tree": tree.handle(), "order": order}))
+}
+
+fn unplace(ctx: &mut Ctx) -> Result<Value> {
+    let conn = ctx.conn;
+    let (row, host) = station_arg(conn, ctx.args)?;
+    ensure_host_writable(conn, ctx.access, &host)?;
+    if row.edge == EdgeKind::Root {
+        bail!("the defining root cannot be detached; use delete_card to remove the tree");
+    }
+    let tree = &host.0;
+    let shape = shape_of(conn, tree)?;
+    let subtree = shape.subtree(&row.coord_id);
+    let policy = opt_str(ctx.args, "children")?;
+    let removed = match policy {
+        Some("detach") => subtree.clone(),
+        Some("reattach") => vec![row.coord_id.clone()],
+        None if subtree.len() == 1 => vec![row.coord_id.clone()],
+        None => bail!("the Coordinate has successors: pass children: reattach or detach"),
+        Some(other) => bail!("unknown children policy `{other}`; expected reattach or detach"),
+    };
+    let reattach_to = opt_str(ctx.args, "reattach_to")?
+        .map(|target| station_in(conn, &shape, target))
+        .transpose()?;
+    if let Some(target) = &reattach_to
+        && (policy != Some("reattach") || subtree.contains(&target.coord_id))
+    {
+        bail!(
+            "reattach_to requires children: reattach and a Coordinate outside the detached branch"
+        );
+    }
+    let removed_set: BTreeSet<String> = removed.iter().cloned().collect();
+    let replacement = opt_str(ctx.args, "replacement_filing_coord_id")?
+        .map(|target| coord::resolve_coord(conn, target))
+        .transpose()?;
+    let mut refilings = Vec::new();
+    for card_id in removed
+        .iter()
+        .map(|id| &shape.by_id[id].card_id)
+        .collect::<BTreeSet<_>>()
+    {
+        let identity = coord::identity(conn, card_id)?.context("unknown Card identity")?;
+        if !identity
+            .filing_coord_id
+            .as_ref()
+            .is_some_and(|filing| removed_set.contains(filing))
+        {
+            continue;
+        }
+        let owner_workspace = identity.live_owner_workspace()?;
+        let survivors: Vec<_> = coord::coordinates_of_card(conn, card_id)?
+            .into_iter()
+            .filter(|p| p.host_workspace == owner_workspace && !removed_set.contains(&p.coord_id))
+            .map(|p| p.coord_id)
+            .collect();
+        if survivors.is_empty() {
+            bail!(
+                "cannot detach the last owner-Workspace Coordinate (home station) of Card `{}`; use delete_card to delete the Card",
+                identity.last_address
+            );
+        }
+        if let Some(replacement) = &replacement
+            && survivors.contains(&replacement.coord_id)
+        {
+            let card = live_card(conn, card_id)?.0;
+            check_refile(
+                conn,
+                ctx.access,
+                &card,
+                &identity,
+                replacement,
+                &removed_set,
+            )?;
+            refilings.push((card, replacement.clone()));
+        } else {
+            bail!(
+                "detaching the Filing Coordinate of Card `{}` requires replacement_filing_coord_id from [{}] or refile_card first",
+                identity.last_address,
+                survivors.join(", ")
+            );
+        }
+    }
+    if replacement.is_some() && refilings.is_empty() {
+        bail!("replacement_filing_coord_id is only for a Filing Coordinate being detached");
+    }
+
+    let incident = incident_edges(conn, &tree.tree_id, &removed_set)?;
+    let revision = coord::next_revision(conn)?;
+    if policy == Some("reattach") {
+        park(conn, &shape, std::slice::from_ref(&row.coord_id))?;
+        reattach_children(
+            conn,
+            &shape,
+            &row,
+            reattach_to.as_ref().map(|p| p.coord_id.as_str()),
+            true,
+        )?;
+    }
+    // Filing references are deferred until commit. Save the replacement filing pointers
+    // before removing rows, including when a surviving child is the replacement.
+    for (_, replacement) in &refilings {
+        set_filing(conn, &replacement.card_id, &replacement.coord_id)?;
+    }
+    coord::remove_coordinates_tx(conn, &removed, revision)?;
+    if row.edge == EdgeKind::Side {
+        compact_sides(
+            conn,
+            tree,
+            row.parent_coord_id.as_deref().context("missing parent")?,
+        )?;
+    }
+    let after = shape_of(conn, tree)?;
+    let affected = changed_parents(&[&shape], &[&after]);
+    let (review, decisions, missing) = gloss_review(&[&shape], &affected, ctx.args)?;
+    let excluded: BTreeSet<String> = refilings.iter().map(|(_, p)| p.card_id.clone()).collect();
+    let mut mapping = filing_path_changes(conn, &[&shape], &[&after], &excluded)?;
+    for (card, replacement) in &refilings {
+        let target = host_of(conn, replacement)?.0;
+        let target_address =
+            address_for_filing(conn, &target, &replacement.coord_id, &replacement.card_id)?;
+        if card.address != target_address {
+            mapping.insert(card.address.clone(), target_address);
+        }
+    }
+    check_filing_mapping(conn, ctx.access, &mapping)?;
+    let mut changes = crate::link_index::Changes::default();
+    write_filing_mapping(conn, &mapping, &mut changes)?;
+    for (card, _) in &refilings {
+        check_refile_gate(conn, card)?;
+    }
+    let mut lines = vec![format!(
+        "detach {} Coordinate(s) starting at {}",
+        removed.len(),
+        shape.coord[&row.coord_id]
+    )];
+    for id in &removed {
+        if let Some(gloss) = &shape.by_id[id].gloss {
+            lines.push(format!("gloss lost with {}: {gloss}", shape.coord[id]));
+        }
+    }
+    for e in &incident {
+        lines.push(format!(
+            "tree connection {} is deleted with its endpoint",
+            e.connection_id
+        ));
+    }
+    append_gloss_review(&mut lines, &review);
+    append_filing_changes(&mut lines, &mapping);
+    let effects = json!({"removed": removed, "gloss_review": review, "filing_moves": mapping,
+        "connections_deleted": incident.iter().map(|e| &e.connection_id).collect::<Vec<_>>()});
+    if let Some(plan) = ctx.confirmed(
+        if ctx.tool == "unplace" {
+            "unplace"
+        } else {
+            "detach"
+        },
+        &lines,
+        &effects,
+    )? {
+        return Ok(plan);
+    }
+    require_gloss_decisions(&missing)?;
+    apply_glosses(conn, &decisions)?;
+    if !mapping.is_empty() {
+        changes.finish(conn)?;
+    }
+    ctx.changed = true;
+    Ok(json!({"applied": true, "changed": true, "removed": removed,
+        "connections_deleted": effects["connections_deleted"], "filing_moves": mapping}))
+}
+
 fn rebind(ctx: &mut Ctx) -> Result<Value> {
     let conn = ctx.conn;
-    let (station, host) = station_arg(conn, ctx.args, "placement_id")?;
+    let (old, host) = station_arg(conn, ctx.args)?;
     ensure_host_writable(conn, ctx.access, &host)?;
-    let identity = coord::identity(conn, &station.card_id)?.context("unknown Card")?;
-    if identity.live {
-        bail!("station {} holds a live Card; only a Missing mount is rebound", station.placement_id);
+    let previous = coord::identity(conn, &old.card_id)?.context("unknown Card identity")?;
+    if previous.live || old.edge == EdgeKind::Root {
+        bail!("only a Missing non-root Coordinate can be rebound");
     }
-    let (card, card_id) = target_card(conn, ctx.args, "target_at")?;
-    let revision = coord::next_revision(conn)?;
+    let card_id = named_target_id(conn, ctx.args, "target_at")?;
+    let (card, identity) = live_card(conn, &card_id)?;
+    let tree = &host.0;
+    check_admission(conn, tree, &identity)?;
+    let shape = shape_of(conn, tree)?;
+    let children = children_of(&shape, &old.coord_id);
+    let mut affected = BTreeSet::from([old.coord_id.clone()]);
+    affected.extend(children.iter().cloned());
+    let (review, mut decisions, missing) = gloss_review(&[&shape], &affected, ctx.args)?;
+    let edges = incident_edges(conn, &tree.tree_id, &BTreeSet::from([old.coord_id.clone()]))?;
+    let dispositions = ctx
+        .args
+        .get("connection_dispositions")
+        .and_then(Value::as_object);
     let mut lines = vec![format!(
-        "rebind missing station (was `{}`: {}) to `{}`; it gets a new placement ID",
-        identity.last_address, identity.last_title, card.address
+        "rebind Missing Coordinate {} from `{}` to `{}` and issue a fresh coord_id",
+        shape.coord[&old.coord_id], previous.last_address, card.address
     )];
-    match &host {
-        Host::Connection(tree) => {
-            let shape = shape_of(conn, tree)?;
-            if shape.placement_of_card(&card_id).is_some() {
-                bail!("`{}` already has a station in {}", card.address, tree.handle());
-            }
-            let ids = BTreeSet::from([station.placement_id.clone()]);
-            let incident = incident_edges(conn, &tree.tree_id, &ids)?;
-            let dispositions = ctx.args.get("connection_dispositions").and_then(Value::as_object).cloned().unwrap_or_default();
-            let mut undecided = Vec::new();
-            for e in &incident {
-                match dispositions.get(&e.connection_id).and_then(Value::as_str) {
-                    Some("keep") | Some("delete") => {}
-                    _ => undecided.push(e.connection_id.clone()),
-                }
-                lines.push(format!("decide connection {}: keep (moves to the new Card) or delete", e.connection_id));
-            }
-            let mut affected = vec![station.placement_id.clone()];
-            affected.extend(shape.direct.get(&station.placement_id).cloned());
-            affected.extend(shape.side.get(&station.placement_id).cloned().unwrap_or_default());
-            let (review, decided, missing) = gloss_review(&shape, &affected, ctx.args)?;
-            for r in &review {
-                lines.push(format!("review gloss of {}: {}", r["coord"].as_str().unwrap_or_default(), r["gloss"].as_str().unwrap_or_default()));
-            }
-            let effects = json!({"connections": incident.iter().map(|e| &e.connection_id).collect::<Vec<_>>(), "gloss_review": review, "card_id": card_id});
-            if let Some(plan) = ctx.confirmed("rebind", &lines, &effects)? {
-                return Ok(plan);
-            }
-            if !undecided.is_empty() {
-                bail!("every incident connection needs a disposition: pass connection_dispositions {{\"<connection_id>\": \"keep\" | \"delete\"}} for {}", undecided.join(", "));
-            }
-            if !missing.is_empty() {
-                bail!("gloss review required: pass gloss_updates for {}", missing.join(", "));
-            }
-            let new_id = coord::new_uuid()?;
-            // Insert the new station in a parked slot, move children over, then take the old slot.
-            let kids: Vec<String> = shape
-                .direct
-                .get(&station.placement_id)
-                .cloned()
-                .into_iter()
-                .chain(shape.side.get(&station.placement_id).cloned().unwrap_or_default())
-                .collect();
-            insert_placement(
-                conn,
-                &Placement {
-                    placement_id: new_id.clone(),
-                    host_kind: "connection".into(),
-                    host_tree_key: tree.tree_id.clone(),
-                    card_id: card_id.clone(),
-                    parent_id: Some(shape.root.clone()),
-                    anchor_card_id: None,
-                    edge: EdgeKind::Side,
-                    ordinal: Some(9_000_000),
-                    gloss: station.gloss.clone(),
-                },
-            )?;
-            for kid in &kids {
-                let p = &shape.by_id[kid];
-                conn.execute(
-                    "UPDATE placements SET parent_id = ?2 WHERE placement_id = ?1",
-                    params![kid, new_id],
-                )?;
-                let _ = p;
-            }
-            for e in &incident {
-                let keep = dispositions.get(&e.connection_id).and_then(Value::as_str) == Some("keep");
-                conn.execute("DELETE FROM placement_edges WHERE connection_id = ?1", [&e.connection_id])?;
-                if keep {
-                    let mut moved = e.clone();
-                    moved.connection_id = coord::new_uuid()?;
-                    if moved.from == station.placement_id {
-                        moved.from = new_id.clone();
-                    }
-                    if moved.to == station.placement_id {
-                        moved.to = new_id.clone();
-                    }
-                    // A kept assertion now joins a different Card: it is a new record made by this rebind.
-                    moved.created_by = author(ctx.access).to_string();
-                    moved.created_at_rev = revision;
-                    moved.updated_by = author(ctx.access).to_string();
-                    moved.updated_at_rev = revision;
-                    normalize_edge(&mut moved)?;
-                    insert_edge(conn, &moved)?;
-                }
-            }
-            retire_placements_known(conn, &station, revision)?;
-            conn.execute("DELETE FROM placements WHERE placement_id = ?1", [&station.placement_id])?;
-            set_slot(conn, &new_id, station.parent_id.as_deref(), station.edge, station.ordinal)?;
-            let mut decided = decided;
-            if let Some(g) = decided.remove(&station.placement_id) {
-                decided.insert(new_id.clone(), g);
-            }
-            apply_glosses(conn, &decided)?;
-            let shape = validate_tree(conn, tree)?;
-            ctx.changed = true;
-            Ok(json!({"applied": true, "placement_id": new_id, "replaces": station.placement_id, "coord": shape.coord.get(&new_id), "card_id": card_id, "changed": true}))
-        }
-        Host::Topic { topic, .. } => {
-            if coord::placements_of_host(conn, topic)?.iter().any(|p| p.card_id == card_id) {
-                bail!("`{}` is already mounted in Topic {topic}", card.address);
-            }
-            if TreeRole::of(&card) == TreeRole::Topic && crate::tree_id(&card.address) == topic {
-                bail!("`{}` already has its home in Topic {topic}; a Topic-side mount brings a Card from outside", card.address);
-            }
-            let (review, decision, missing) = single_gloss_review(&station, ctx.args)?;
-            if let Some(r) = &review {
-                lines.push(format!("review gloss (the Card changes): {}", r["gloss"].as_str().unwrap_or_default()));
-            }
-            let effects = json!({"card_id": card_id, "gloss_review": review.into_iter().collect::<Vec<_>>()});
-            if let Some(plan) = ctx.confirmed("rebind", &lines, &effects)? {
-                return Ok(plan);
-            }
-            if missing {
-                bail!("gloss review required: pass gloss_updates for {}", station.placement_id);
-            }
-            let new_id = coord::new_uuid()?;
-            retire_placements_known(conn, &station, revision)?;
-            conn.execute("DELETE FROM placements WHERE placement_id = ?1", [&station.placement_id])?;
-            let mut p = station.clone();
-            p.placement_id = new_id.clone();
-            p.card_id = card_id.clone();
-            if let Some(gloss) = decision {
-                p.gloss = gloss;
-            }
-            insert_placement(conn, &p)?;
-            ctx.changed = true;
-            Ok(json!({"applied": true, "placement_id": new_id, "replaces": station.placement_id, "card_id": card_id, "changed": true}))
-        }
+    for edge in &edges {
+        lines.push(format!(
+            "decide connection {}: keep or delete",
+            edge.connection_id
+        ));
     }
+    append_gloss_review(&mut lines, &review);
+    let effects = json!({"coord_id": old.coord_id, "card_id": card_id, "gloss_review": review,
+        "connections": edges.iter().map(|e| &e.connection_id).collect::<Vec<_>>()});
+    if let Some(plan) = ctx.confirmed("rebind", &lines, &effects)? {
+        return Ok(plan);
+    }
+    require_gloss_decisions(&missing)?;
+    let kept = edges
+        .into_iter()
+        .map(|edge| {
+            match dispositions
+                .and_then(|d| d.get(&edge.connection_id))
+                .and_then(Value::as_str)
+            {
+                Some("keep") => Ok(Some(edge)),
+                Some("delete") => Ok(None),
+                _ => bail!(
+                    "pass connection_dispositions with keep or delete for {}",
+                    edge.connection_id
+                ),
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let revision = coord::next_revision(conn)?;
+    let coord_id = coord::new_uuid()?;
+    for child in &children {
+        set_parent(conn, child, &coord_id)?;
+    }
+    coord::remove_coordinates_tx(conn, std::slice::from_ref(&old.coord_id), revision)?;
+    let rebind = Placement {
+        coord_id: coord_id.clone(),
+        card_id,
+        gloss: decisions
+            .remove(&old.coord_id)
+            .unwrap_or_else(|| old.gloss.clone()),
+        ..old.clone()
+    };
+    insert_placement(conn, &rebind)?;
+    for mut edge in kept.into_iter().flatten() {
+        edge.connection_id = coord::new_uuid()?;
+        if edge.from == old.coord_id {
+            edge.from.clone_from(&coord_id);
+        } else {
+            edge.to.clone_from(&coord_id);
+        }
+        edge.created_by = author(ctx.access).to_string();
+        edge.updated_by = edge.created_by.clone();
+        edge.created_at_rev = revision;
+        edge.updated_at_rev = revision;
+        normalize_edge(&mut edge)?;
+        insert_edge(conn, &edge)?;
+    }
+    apply_glosses(conn, &decisions)?;
+    let after = shape_of(conn, tree)?;
+    let mut result = coordinate_result(&rebind, &after, &card.address, false);
+    result["applied"] = json!(true);
+    result["changed"] = json!(true);
+    result["replaces"] = json!(old.coord_id);
+    ctx.changed = true;
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2433,11 +2328,19 @@ fn rebind(ctx: &mut Ctx) -> Result<Value> {
 fn connect(ctx: &mut Ctx) -> Result<Value> {
     let conn = ctx.conn;
     let tree = coord::resolve_tree(conn, arg_str(ctx.args, "tree")?)?;
-    let host = Host::Connection(tree.clone());
+    let host = Host(tree.clone());
     ensure_host_writable(conn, ctx.access, &host)?;
     let shape = shape_of(conn, &tree)?;
-    let from = station_in(conn, &shape, arg_str(ctx.args, "from_placement_id").or_else(|_| arg_str(ctx.args, "from"))?)?;
-    let to = station_in(conn, &shape, arg_str(ctx.args, "to_placement_id").or_else(|_| arg_str(ctx.args, "to"))?)?;
+    let from = station_in(
+        conn,
+        &shape,
+        required_alias(ctx.args, &["from_coord_id", "from_placement_id", "from"])?,
+    )?;
+    let to = station_in(
+        conn,
+        &shape,
+        required_alias(ctx.args, &["to_coord_id", "to_placement_id", "to"])?,
+    )?;
     let directed = match opt_str(ctx.args, "direction")?.unwrap_or("neutral") {
         "neutral" => false,
         "directed" => true,
@@ -2447,10 +2350,12 @@ fn connect(ctx: &mut Ctx) -> Result<Value> {
     let mut edge = Edge {
         connection_id: coord::new_uuid()?,
         tree_id: tree.tree_id.clone(),
-        from: from.placement_id,
-        to: to.placement_id,
+        from: from.coord_id,
+        to: to.coord_id,
         directed,
-        label: opt_str(ctx.args, "relation_label")?.map(|l| plain_line(l, "relation_label", coord::LABEL_MAX)).transpose()?,
+        label: opt_str(ctx.args, "relation_label")?
+            .map(|l| plain_line(l, "relation_label", coord::LABEL_MAX))
+            .transpose()?,
         kind: opt_str(ctx.args, "relation_kind")?.map(str::to_string),
         note: opt_str(ctx.args, "note")?.map(plain_note).transpose()?,
         created_by: author(ctx.access).to_string(),
@@ -2480,13 +2385,17 @@ fn connect(ctx: &mut Ctx) -> Result<Value> {
 fn edit_connection(ctx: &mut Ctx) -> Result<Value> {
     let conn = ctx.conn;
     let id = arg_str(ctx.args, "connection_id")?;
-    let mut edge = edge_by_id(conn, id)?.with_context(|| format!("connection `{id}` does not exist"))?;
+    let mut edge =
+        edge_by_id(conn, id)?.with_context(|| format!("connection `{id}` does not exist"))?;
     let tree = coord::tree_by_id(conn, &edge.tree_id)?.context("connection of a deleted tree")?;
-    ensure_host_writable(conn, ctx.access, &Host::Connection(tree.clone()))?;
+    ensure_host_writable(conn, ctx.access, &Host(tree.clone()))?;
     if let Some(base) = ctx.args.get("base_updated_at_rev").and_then(Value::as_i64)
         && base != edge.updated_at_rev
     {
-        bail!("stale connection: it changed at revision {} after it was read", edge.updated_at_rev);
+        bail!(
+            "stale connection: it changed at revision {} after it was read",
+            edge.updated_at_rev
+        );
     }
     let before = edge.clone();
     match opt_str(ctx.args, "direction")? {
@@ -2518,23 +2427,33 @@ fn edit_connection(ctx: &mut Ctx) -> Result<Value> {
     }
     normalize_edge(&mut edge)?;
     let shape = shape_of(conn, &tree)?;
-    let same = edge.directed == before.directed && edge.from == before.from && edge.to == before.to && edge.label == before.label && edge.kind == before.kind && edge.note == before.note;
+    let same = edge.directed == before.directed
+        && edge.from == before.from
+        && edge.to == before.to
+        && edge.label == before.label
+        && edge.kind == before.kind
+        && edge.note == before.note;
     if same {
         let mut value = edge_value(conn, &shape, &edge)?;
         value["changed"] = json!(false);
         return Ok(value);
     }
     if is_blank(&edge)
-        && edges_of_tree(conn, &tree.tree_id)?
-            .iter()
-            .any(|e| e.connection_id != edge.connection_id && is_blank(e) && e.from == edge.from && e.to == edge.to)
+        && edges_of_tree(conn, &tree.tree_id)?.iter().any(|e| {
+            e.connection_id != edge.connection_id
+                && is_blank(e)
+                && e.from == edge.from
+                && e.to == edge.to
+        })
     {
-        bail!("conflict: this pair already has a blank connection; delete this one instead of clearing it");
+        bail!(
+            "conflict: this pair already has a blank connection; delete this one instead of clearing it"
+        );
     }
     edge.updated_by = author(ctx.access).to_string();
     edge.updated_at_rev = coord::next_revision(conn)?;
     conn.execute(
-        "UPDATE placement_edges SET from_placement_id = ?2, to_placement_id = ?3, direction = ?4, relation_label = ?5,
+        "UPDATE coordinate_edges SET from_coord_id = ?2, to_coord_id = ?3, direction = ?4, relation_label = ?5,
              relation_kind = ?6, note = ?7, updated_by = ?8, updated_at_rev = ?9 WHERE connection_id = ?1",
         params![
             edge.connection_id,
@@ -2557,16 +2476,23 @@ fn edit_connection(ctx: &mut Ctx) -> Result<Value> {
 fn delete_connection(ctx: &mut Ctx) -> Result<Value> {
     let conn = ctx.conn;
     let id = arg_str(ctx.args, "connection_id")?;
-    let edge = edge_by_id(conn, id)?.with_context(|| format!("connection `{id}` does not exist"))?;
+    let edge =
+        edge_by_id(conn, id)?.with_context(|| format!("connection `{id}` does not exist"))?;
     let tree = coord::tree_by_id(conn, &edge.tree_id)?.context("connection of a deleted tree")?;
-    ensure_host_writable(conn, ctx.access, &Host::Connection(tree.clone()))?;
+    ensure_host_writable(conn, ctx.access, &Host(tree.clone()))?;
     let shape = shape_of(conn, &tree)?;
     let value = edge_value(conn, &shape, &edge)?;
-    let lines = vec![format!("delete tree connection: {}", value["sentence"].as_str().unwrap_or_default())];
+    let lines = vec![format!(
+        "delete tree connection: {}",
+        value["sentence"].as_str().unwrap_or_default()
+    )];
     if let Some(plan) = ctx.confirmed("delete", &lines, &json!({"connection": value}))? {
         return Ok(plan);
     }
-    conn.execute("DELETE FROM placement_edges WHERE connection_id = ?1", [id])?;
+    conn.execute(
+        "DELETE FROM coordinate_edges WHERE connection_id = ?1",
+        [id],
+    )?;
     ctx.changed = true;
     Ok(json!({"applied": true, "deleted": id, "changed": true}))
 }
@@ -2577,17 +2503,27 @@ fn delete_connection(ctx: &mut Ctx) -> Result<Value> {
 
 fn extract(ctx: &mut Ctx) -> Result<Value> {
     let conn = ctx.conn;
-    let source = coord::resolve_tree(conn, arg_str(ctx.args, "source_tree")?)?;
+    let source = coord::resolve_any_tree(conn, arg_str(ctx.args, "source_tree")?)?;
     let shape = shape_of(conn, &source)?;
-    let top = station_in(conn, &shape, arg_str(ctx.args, "root_placement_id")?)?;
+    let top = station_in(
+        conn,
+        &shape,
+        required_alias(ctx.args, &["root_coord_id", "root_placement_id"])?,
+    )?;
     if top.edge == EdgeKind::Root {
         bail!("extract a branch below the root; the root is the tree itself");
     }
-    let selection = shape.subtree(&top.placement_id);
+    let selection = shape.subtree(&top.coord_id);
     let selected: BTreeSet<String> = selection.iter().cloned().collect();
     let edges = edges_of_tree(conn, &source.tree_id)?;
-    let internal: Vec<&Edge> = edges.iter().filter(|e| selected.contains(&e.from) && selected.contains(&e.to)).collect();
-    let crossing: Vec<&Edge> = edges.iter().filter(|e| selected.contains(&e.from) != selected.contains(&e.to)).collect();
+    let internal: Vec<&Edge> = edges
+        .iter()
+        .filter(|e| selected.contains(&e.from) && selected.contains(&e.to))
+        .collect();
+    let crossing: Vec<&Edge> = edges
+        .iter()
+        .filter(|e| selected.contains(&e.from) != selected.contains(&e.to))
+        .collect();
     let workspace = match opt_str(ctx.args, "workspace")? {
         Some(w) => Workspace::parse(w)?,
         None => source.workspace,
@@ -2595,16 +2531,30 @@ fn extract(ctx: &mut Ctx) -> Result<Value> {
     ctx.access.ensure_writable(workspace)?;
     // The new root has no meaning either (D2): its title is optional.
     let title = opt_str(ctx.args, "title")?.unwrap_or_default();
-    let named = if title.trim().is_empty() { "an untitled Connection tree".to_string() } else { format!("a new Connection tree \"{}\"", title.trim()) };
+    let named = if title.trim().is_empty() {
+        "an untitled Connection tree".to_string()
+    } else {
+        format!("a new Connection tree \"{}\"", title.trim())
+    };
     let mut lines = vec![format!(
         "copy {} station(s) from {} (starting at {}) into {named}; the original tree is unchanged",
         selection.len(),
         source.handle(),
-        shape.coord[&top.placement_id]
+        shape.coord[&top.coord_id]
     )];
-    lines.push(format!("{} internal connection(s) are copied with fresh IDs", internal.len()));
+    lines.push(format!(
+        "{} internal connection(s) are copied with fresh IDs",
+        internal.len()
+    ));
     for e in &crossing {
-        lines.push(format!("boundary connection {} stays in {} only", e.connection_id, source.handle()));
+        lines.push(format!(
+            "boundary connection {} stays in {} only",
+            e.connection_id,
+            source.handle()
+        ));
+    }
+    if top.gloss.is_some() {
+        lines.push("the copied top station starts without its source gloss".to_string());
     }
     let effects = json!({
         "stations": selection,
@@ -2614,9 +2564,19 @@ fn extract(ctx: &mut Ctx) -> Result<Value> {
     if let Some(plan) = ctx.confirmed("extract", &lines, &effects)? {
         return Ok(plan);
     }
-    let created = create_tree_tx(conn, ctx.access, workspace, title, "", opt_str(ctx.args, "purpose")?)?;
+    let created = create_tree_tx(
+        conn,
+        ctx.access,
+        workspace,
+        title,
+        "",
+        opt_str(ctx.args, "purpose")?,
+    )?;
     let new_tree = coord::resolve_tree(conn, created["tree"].as_str().unwrap_or_default())?;
-    let new_root = created["root_placement_id"].as_str().unwrap_or_default().to_string();
+    let new_root = created["root_placement_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let mut map: BTreeMap<String, String> = BTreeMap::new();
     for id in &selection {
         map.insert(id.clone(), coord::new_uuid()?);
@@ -2624,23 +2584,27 @@ fn extract(ctx: &mut Ctx) -> Result<Value> {
     // Insert in outline order so every parent exists first.
     for id in &selection {
         let p = &shape.by_id[id];
-        let (parent, edge, ordinal) = if id == &top.placement_id {
-            (Some(new_root.clone()), EdgeKind::Direct, None)
+        let (parent, edge, ordinal, gloss) = if id == &top.coord_id {
+            (Some(new_root.clone()), EdgeKind::Direct, None, None)
         } else {
-            (p.parent_id.as_ref().map(|parent| map[parent].clone()), p.edge, p.ordinal)
+            (
+                p.parent_coord_id.as_ref().map(|parent| map[parent].clone()),
+                p.edge,
+                p.slot,
+                p.gloss.clone(),
+            )
         };
         insert_placement(
             conn,
             &Placement {
-                placement_id: map[id].clone(),
-                host_kind: "connection".into(),
-                host_tree_key: new_tree.tree_id.clone(),
+                coord_id: map[id].clone(),
+                tree_id: new_tree.tree_id.clone(),
+                host_workspace: new_tree.workspace,
                 card_id: p.card_id.clone(),
-                parent_id: parent,
-                anchor_card_id: None,
+                parent_coord_id: parent,
                 edge,
-                ordinal,
-                gloss: if id == &top.placement_id { None } else { p.gloss.clone() },
+                slot: ordinal,
+                gloss,
             },
         )?;
     }
@@ -2656,156 +2620,719 @@ fn extract(ctx: &mut Ctx) -> Result<Value> {
         normalize_edge(&mut copy)?;
         insert_edge(conn, &copy)?;
     }
-    validate_tree(conn, &new_tree)?;
+    shape_of(conn, &new_tree)?;
     ctx.changed = true;
     Ok(json!({
         "applied": true,
         "tree": new_tree.handle(),
         "tree_id": new_tree.tree_id,
         "stations": map,
+        "coordinates": map,
         "boundary_connections": crossing.iter().map(|e| &e.connection_id).collect::<Vec<_>>(),
         "changed": true,
     }))
 }
 
 // ---------------------------------------------------------------------------------------------
-// Promote a native Card into a Topic tree (move_home)
-// ---------------------------------------------------------------------------------------------
+// Refiling, deletion, and tree readers
+
+fn address_for_filing(
+    conn: &Connection,
+    tree: &TreeRecord,
+    id: &str,
+    card_id: &str,
+) -> Result<String> {
+    if tree.role != TreeRole::Connection {
+        let row = coord::coordinate(conn, id)?.context("destination Coordinate is missing")?;
+        return coord::coordinate_path(conn, &row);
+    }
+    // The schema grants one permanent handle per Card. A previously issued handle continues to
+    // identify the Card, even when its Filing Coordinate is in another Connection tree.
+    if let Some(handle) = conn
+        .query_row(
+            "SELECT handle FROM card_handles WHERE card_id = ?1",
+            [card_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        return Ok(handle);
+    }
+    let tree = coord::tree_by_id(conn, &tree.tree_id)?.context("destination tree is missing")?;
+    let (local, handle) = allocate_native_handle(conn, &tree)?;
+    conn.execute(
+        "INSERT INTO card_handles(handle, card_id, origin_tree_id, local_seq) VALUES(?1, ?2, ?3, ?4)",
+        params![handle, card_id, tree.tree_id, local],
+    )?;
+    Ok(handle)
+}
+
+/// Compute filing renames only for Coordinates that survive the edit.
+fn filing_path_changes(
+    conn: &Connection,
+    before: &[&TreeShape],
+    after: &[&TreeShape],
+    excluded: &BTreeSet<String>,
+) -> Result<BTreeMap<String, String>> {
+    let origins: BTreeMap<_, _> = before
+        .iter()
+        .flat_map(|&shape| shape.by_id.keys().map(move |id| (id.as_str(), shape)))
+        .collect();
+    let mut mapping = BTreeMap::new();
+    for shape in after {
+        for (id, row) in &shape.by_id {
+            let Some(old_shape) = origins.get(id.as_str()) else {
+                continue;
+            };
+            if excluded.contains(&row.card_id)
+                || (old_shape.tree.tree_id == shape.tree.tree_id
+                    && (shape.tree.role == TreeRole::Connection
+                        || old_shape.coord[id] == shape.coord[id]))
+            {
+                continue;
+            }
+            let identity = coord::identity(conn, &row.card_id)?.context("unknown Card identity")?;
+            if identity.filing_coord_id.as_deref() != Some(id.as_str()) {
+                continue;
+            }
+            let new = if shape.tree.role == TreeRole::Connection {
+                address_for_filing(conn, &shape.tree, id, &row.card_id)?
+            } else {
+                shape.coord[id].clone()
+            };
+            if identity.last_address != new {
+                mapping.insert(identity.last_address, new);
+            }
+        }
+    }
+    Ok(mapping)
+}
+
+fn literal_rewrites(mapping: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    mapping
+        .iter()
+        .filter(|(old, _)| !coord::is_handle(old))
+        .map(|(old, new)| (old.clone(), new.clone()))
+        .collect()
+}
+
+pub(crate) fn check_filing_mapping(
+    conn: &Connection,
+    access: Access,
+    mapping: &BTreeMap<String, String>,
+) -> Result<()> {
+    if mapping.is_empty() {
+        return Ok(());
+    }
+    let rewrite = literal_rewrites(mapping);
+    access.ensure_link_rewrites_allowed(conn, &rewrite)?;
+    crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Mapping(&rewrite))?;
+    crate::coord_lock::ensure_moves_allowed(conn, mapping.keys())?;
+    for (old, new) in mapping {
+        let card = crate::load_card(conn, old)?;
+        access.ensure_writable(card.workspace)?;
+        if coord::is_handle(old) {
+            crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Edit(card.row_id))?;
+            if !coord::is_handle(new) {
+                crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::CreateAt(new))?;
+            }
+        }
+        if mapping.contains_key(new) {
+            continue;
+        }
+        match coord::canonical(conn, new)? {
+            Some(address) if &address == old => continue,
+            Some(_) => bail!("the new filing address `{new}` is occupied"),
+            None => {}
+        }
+        if crate::link_index::ready(conn)
+            && !crate::link_index::rewrite_sources(conn, [new])?.is_empty()
+        {
+            bail!("the new filing address `{new}` would capture an existing Broken link");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn append_filing_changes(lines: &mut Vec<String>, mapping: &BTreeMap<String, String>) {
+    lines.extend(
+        mapping
+            .iter()
+            .map(|(old, new)| format!("filing address: {old} -> {new}")),
+    );
+}
+
+/// Re-key the Card cache and Link index after the Coordinate topology has already been written.
+/// In particular, native handles remain literal targets even when the old cache address changes.
+pub(crate) fn write_filing_mapping(
+    conn: &Connection,
+    mapping: &BTreeMap<String, String>,
+    changes: &mut crate::link_index::Changes,
+) -> Result<()> {
+    if mapping.is_empty() {
+        return Ok(());
+    }
+    let rewrite = literal_rewrites(mapping);
+    let indexed = crate::link_index::ready(conn);
+    let handles: BTreeSet<_> = mapping
+        .keys()
+        .filter(|old| coord::is_handle(old))
+        .cloned()
+        .collect();
+    let sources = if indexed {
+        crate::link_index::rewrite_sources(conn, rewrite.keys())?
+    } else {
+        BTreeSet::new()
+    };
+    changes.drop_sources(conn, &handles)?;
+    // Stage by immutable row ID so overlapping source and destination addresses cannot collide.
+    let mut rows = Vec::new();
+    for (old, new) in mapping {
+        let card = crate::load_card(conn, old)?;
+        conn.execute(
+            "UPDATE cards SET location = ?2 WHERE row_id = ?1",
+            params![card.row_id, format!("__moving__{old}")],
+        )?;
+        rows.push((card.row_id, new));
+    }
+    for (row, new) in rows {
+        conn.execute(
+            "UPDATE cards SET location = ?2 WHERE row_id = ?1",
+            params![row, new],
+        )?;
+        conn.execute(
+            "UPDATE card_identity SET last_address = ?2 WHERE card_row = ?1 AND last_address <> ?2",
+            params![row, new],
+        )?;
+    }
+    let affected = if indexed {
+        sources
+            .iter()
+            .map(|source| crate::load_card(conn, mapping.get(source).unwrap_or(source)))
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        crate::load_cards(conn)?
+    };
+    changes.renamed(conn, &rewrite)?;
+    for card in affected {
+        let text = crate::replace_link_locations(&card.text, &rewrite)?;
+        if text != card.text {
+            conn.execute(
+                "UPDATE cards SET text = ?2 WHERE row_id = ?1",
+                params![card.row_id, text],
+            )?;
+            changes.rewrote(&card.address);
+        }
+    }
+    for old in &handles {
+        changes.resync(conn, &mapping[old])?;
+    }
+    crate::spread::follow(conn, mapping, &BTreeSet::new())
+}
+
+fn apply_filing_mapping(conn: &Connection, mapping: &BTreeMap<String, String>) -> Result<()> {
+    if !mapping.is_empty() {
+        let mut changes = crate::link_index::Changes::default();
+        write_filing_mapping(conn, mapping, &mut changes)?;
+        changes.finish(conn)?;
+    }
+    Ok(())
+}
+
+fn set_filing(conn: &Connection, card_id: &str, coord_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE card_identity SET filing_coord_id = ?2 WHERE card_id = ?1",
+        params![card_id, coord_id],
+    )?;
+    Ok(())
+}
+
+/// Validate filing authority and structure before changing the outline. The Write Gate runs
+/// against the final staged addresses once the entire filing mapping is in place.
+fn check_filing_destination(
+    conn: &Connection,
+    access: Access,
+    card: &crate::Card,
+    dest_tree: &TreeRecord,
+    dest_parent_coord_id: &str,
+    dest_edge: EdgeKind,
+) -> Result<()> {
+    let card_id = coord::card_id_of_row(conn, card.row_id)?;
+    let identity = coord::identity(conn, &card_id)?.context("unknown Card identity")?;
+    if dest_tree.workspace != card.workspace
+        || dest_tree.workspace != identity.live_owner_workspace()?
+    {
+        bail!("a Filing Coordinate must stay within the Card's owner Workspace");
+    }
+    let source = filing_row(conn, &identity)?;
+    if source.edge == EdgeKind::Root || dest_edge == EdgeKind::Root {
+        bail!("a defining Tree root cannot be refiled");
+    }
+    ensure_host_writable(conn, access, &host_of(conn, &source)?)?;
+    ensure_host_writable(conn, access, &Host(dest_tree.clone()))?;
+    if dest_tree.role == TreeRole::Connection {
+        ensure_native_type(card.card_type)?;
+    } else if dest_tree.role == TreeRole::Literature && source.tree_id != dest_tree.tree_id {
+        bail!(
+            "MC3: Literature tree `{}` accepts only its own filed Cards",
+            dest_tree.handle()
+        );
+    }
+    coord::check_model_term_splice_guard(conn, dest_tree, dest_parent_coord_id, dest_edge)?;
+    crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Edit(card.row_id))?;
+    crate::coord_lock::ensure_card_not_pinned(conn, &card_id, "pinned-move")
+}
+
+fn check_literature_survivors(
+    conn: &Connection,
+    card_id: &str,
+    dest_tree: &TreeRecord,
+    leaving: &BTreeSet<String>,
+) -> Result<()> {
+    for row in coord::coordinates_of_card(conn, card_id)? {
+        if row.tree_id == dest_tree.tree_id || leaving.contains(&row.coord_id) {
+            continue;
+        }
+        let tree = host_of(conn, &row)?.0;
+        if tree.role == TreeRole::Literature {
+            let hint = if row.edge == EdgeKind::Root {
+                "the defining root cannot leave that tree"
+            } else {
+                "move the Filing Coordinate or detach the remaining occurrence first"
+            };
+            bail!(
+                "MC3: this filing change would leave a foreign Card in Literature tree `{}`; {hint}",
+                tree.handle()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn check_refile(
+    conn: &Connection,
+    access: Access,
+    card: &crate::Card,
+    identity: &coord::Identity,
+    target: &Placement,
+    removed: &BTreeSet<String>,
+) -> Result<()> {
+    if target.card_id != identity.card_id {
+        bail!("the replacement Filing Coordinate must hold the same Card");
+    }
+    let from = filing_row(conn, identity)?;
+    if from.edge == EdgeKind::Root {
+        bail!("a defining Tree root cannot be refiled");
+    }
+    let destination = host_of(conn, target)?;
+    let parent = target
+        .parent_coord_id
+        .as_deref()
+        .context("the Filing Coordinate needs a parent")?;
+    check_filing_destination(conn, access, card, &destination.0, parent, target.edge)?;
+    if from.tree_id != target.tree_id {
+        check_literature_survivors(conn, &identity.card_id, &destination.0, removed)?;
+    }
+    Ok(())
+}
+
+fn check_refile_gate(conn: &Connection, before: &crate::Card) -> Result<crate::gate::Accepted> {
+    let current = card_by_row(conn, before.row_id)?;
+    let mut candidate = crate::gate::Candidate::edit(
+        &current,
+        &current.text,
+        current.card_type,
+        current.facet.clone(),
+        current.emphasis,
+        current.level,
+        current.hub_level,
+        current.form,
+    );
+    candidate.before = Some(before.clone());
+    crate::gate::check_proposed(conn, &candidate)
+}
+
+fn finish_refile(
+    ctx: &mut Ctx,
+    card: &crate::Card,
+    identity: &coord::Identity,
+    target: &Placement,
+    word: &str,
+) -> Result<Value> {
+    let conn = ctx.conn;
+    let tree = host_of(conn, target)?.0;
+    let address = address_for_filing(conn, &tree, &target.coord_id, &identity.card_id)?;
+    let mapping = if address == card.address {
+        BTreeMap::new()
+    } else {
+        BTreeMap::from([(card.address.clone(), address.clone())])
+    };
+    check_filing_mapping(conn, ctx.access, &mapping)?;
+    set_filing(conn, &identity.card_id, &target.coord_id)?;
+    let mut changes = crate::link_index::Changes::default();
+    write_filing_mapping(conn, &mapping, &mut changes)?;
+    let accepted = check_refile_gate(conn, card)?;
+    let mut lines = vec![format!("refile `{}` at `{}`", card.address, address)];
+    append_filing_changes(&mut lines, &mapping);
+    // The destination path is stable across a promotion preview and apply, even if a fresh
+    // Coordinate UUID must be allocated to fill it.
+    let path = coord::coordinate_path(conn, target)?;
+    let effects = json!({"card_id": identity.card_id, "from_coord_id": identity.filing_coord_id,
+        "destination": path, "filing_moves": mapping});
+    if let Some(plan) = ctx.confirmed(word, &lines, &effects)? {
+        return Ok(plan);
+    }
+    if !mapping.is_empty() {
+        changes.finish(conn)?;
+    }
+    ctx.changed = true;
+    let mut result = json!({"applied": true, "changed": true, "card_id": identity.card_id,
+        "coord_id": target.coord_id, "placement_id": target.coord_id, "filing_coord_id": target.coord_id,
+        "coord": path, "home_address": address, "address": address, "from": card.address, "to": address,
+        "tree": tree.handle(), "is_filing": true});
+    accepted.attach(&mut result);
+    Ok(result)
+}
+
+fn refile(ctx: &mut Ctx) -> Result<Value> {
+    let card_id = named_target_id(ctx.conn, ctx.args, "at")?;
+    let (card, identity) = live_card(ctx.conn, &card_id)?;
+    let target = coord::resolve_coord(ctx.conn, arg_str(ctx.args, "to_coord_id")?)?;
+    check_refile(
+        ctx.conn,
+        ctx.access,
+        &card,
+        &identity,
+        &target,
+        &BTreeSet::new(),
+    )?;
+    if identity.filing_coord_id.as_deref() == Some(&target.coord_id) {
+        if opt_str(ctx.args, "confirm")?.is_some() {
+            bail!("stale plan: the Card is already filed at that Coordinate");
+        }
+        return Ok(
+            json!({"applied": true, "changed": false, "card_id": card_id,
+            "filing_coord_id": target.coord_id, "coord_id": target.coord_id, "placement_id": target.coord_id,
+            "address": card.address, "home_address": card.address, "is_filing": true}),
+        );
+    }
+    finish_refile(ctx, &card, &identity, &target, "refile")
+}
 
 fn promote(ctx: &mut Ctx) -> Result<Value> {
     let conn = ctx.conn;
-    let (card, card_id) = target_card(conn, ctx.args, "at")?;
-    let handle = Handle::parse(&card.address).filter(|h| h.local.is_some()).with_context(|| {
-        format!("`{}` is not a native Card of a Connection tree; only `~n#k` Cards are promoted", card.address)
-    })?;
-    let tree = coord::tree_by_num(conn, handle.tree)?.context("the Card's Connection tree no longer exists")?;
-    ctx.access.ensure_writable(card.workspace)?;
-    crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Edit(card.row_id))?;
-    crate::coord_lock::ensure_card_not_pinned(conn, &card_id, "pinned-move")?;
-    let to = arg_str(ctx.args, "to").or_else(|_| arg_str(ctx.args, "target"))?;
-    if !crate::is_valid_regular_location(to) || TreeRole::of_address(to) != TreeRole::Topic {
-        bail!("promote to a free Regular Location of a Topic tree, such as `3/6` or `3/2|b`");
+    let card_id = named_target_id(conn, ctx.args, "at")?;
+    let (card, identity) = live_card(conn, &card_id)?;
+    let source = filing_row(conn, &identity)?;
+    if host_of(conn, &source)?.0.role != TreeRole::Connection || source.edge == EdgeKind::Root {
+        bail!("only a native Connection Card can be promoted");
     }
+    let to = required_alias(ctx.args, &["to", "target"])?;
+    if !crate::is_valid_regular_location(to) || TreeRole::of_address(to) != TreeRole::Topic {
+        bail!("promote to a Regular Coordinate of a Topic tree, such as `3/6` or `3/2|b`");
+    }
+    let tree = coord::resolve_any_tree(conn, crate::tree_id(to))?;
     if let Some(topic) = opt_str(ctx.args, "destination_topic")?
-        && crate::tree_id(to) != topic.trim_end_matches("/0")
+        && coord::resolve_any_tree(conn, topic)?.tree_id != tree.tree_id
     {
         bail!("`{to}` is not in Topic {topic}");
     }
-    if crate::location_exists(conn, to)? {
-        bail!("`{to}` is taken; promote to a free Location");
-    }
-    let parent = crate::parent_location(to).context("no parent Location")?;
-    if !crate::location_exists(conn, &parent)? {
-        bail!("`{to}` needs its predecessor `{parent}` to exist");
-    }
-    let topic_root = crate::tree_root_address(crate::tree_id(to));
-    let destination_workspace = crate::workspace::tree_workspace(conn, &topic_root)?;
-    if destination_workspace != card.workspace {
-        bail!("promotion stays inside one Workspace: `{}` is {} and Topic {} is {}", card.address, card.workspace, crate::tree_id(to), destination_workspace);
-    }
-    crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::CreateAt(to))?;
-    let topic = crate::tree_id(to).to_string();
-    let attached = coord::placements_of_host(conn, &topic)?.into_iter().find(|p| p.card_id == card_id);
-    let mut lines = vec![
-        format!("move the home of `{}` from Connection tree {} to Topic Location `{to}`", card.address, tree.handle()),
-        format!("`[[{}]]` keeps resolving to the same Card; its station in {} and its connections stay", card.address, tree.handle()),
-    ];
-    if let Some(a) = &attached {
-        lines.push(format!("the Topic-side mount {} of this Card is removed (a Topic tree holds a Card once)", coord::coordinate_of(conn, a)?));
-        if opt_str(ctx.args, "duplicate_resolution")? != Some("detach") {
-            bail!("conflict: Topic {topic} already mounts this Card at {}; pass duplicate_resolution: \"detach\" to remove that mount in the same promotion", coord::coordinate_of(conn, a)?);
+    let shape = shape_of(conn, &tree)?;
+    let target = if let Some(id) = shape.by_coord.get(to) {
+        shape.by_id[id].clone()
+    } else {
+        let parent = crate::parent_location(to).context("no predecessor for the destination")?;
+        let parent = station_in(conn, &shape, &parent)?;
+        let last = crate::last_segment(to);
+        let (edge, slot) = if last.bytes().all(|byte| byte.is_ascii_digit()) {
+            (EdgeKind::Direct, None)
+        } else {
+            (EdgeKind::Side, Some(crate::side_label_to_number(last)))
+        };
+        coord::check_model_term_splice_guard(conn, &tree, &parent.coord_id, edge)?;
+        let target = Placement {
+            coord_id: coord::new_uuid()?,
+            tree_id: tree.tree_id.clone(),
+            host_workspace: tree.workspace,
+            card_id: card_id.clone(),
+            parent_coord_id: Some(parent.coord_id),
+            edge,
+            slot,
+            gloss: None,
+        };
+        check_refile(
+            conn,
+            ctx.access,
+            &card,
+            &identity,
+            &target,
+            &BTreeSet::new(),
+        )?;
+        insert_placement(conn, &target)?;
+        if coord::coordinate_path(conn, &target)? != to {
+            bail!("the requested destination does not match its derived Coordinate path");
         }
-    }
-    let effects = json!({"card_id": card_id, "from": card.address, "to": to});
-    if let Some(plan) = ctx.confirmed("promote", &lines, &effects)? {
-        return Ok(plan);
-    }
-    // The gate checks the Card in its final Topic context.
-    let candidate = crate::gate::Candidate {
-        address: to.to_string(),
-        ..crate::gate::Candidate::edit(&card, &card.text, card.card_type, card.facet.clone(), card.emphasis, card.level, card.hub_level, card.form)
+        target
     };
-    let accepted = crate::gate::check_proposed(conn, &candidate)?;
-    if let Some(a) = attached {
-        retire_placements_known(conn, &a, coord::next_revision(conn)?)?;
-        conn.execute("DELETE FROM placements WHERE placement_id = ?1", [&a.placement_id])?;
-        if let Some(anchor) = &a.anchor_card_id {
-            compact_attachments(conn, anchor)?;
-        }
+    check_refile(
+        conn,
+        ctx.access,
+        &card,
+        &identity,
+        &target,
+        &BTreeSet::new(),
+    )?;
+    let mut value = finish_refile(ctx, &card, &identity, &target, "promote")?;
+    if value["applied"] == true {
+        value["handle"] = json!(card.address);
+        value["destination_tree"] = json!(tree.handle());
+        value["tree"] = json!(host_of(conn, &source)?.0.handle());
     }
-    conn.execute("UPDATE cards SET location = ?2 WHERE row_id = ?1", params![card.row_id, to])?;
-    crate::spread::follow(conn, &BTreeMap::from([(card.address.clone(), to.to_string())]), &BTreeSet::new())?;
-    // The Card is re-keyed as a Link source; authored targets that spell `~7#4` stay as written.
-    crate::link_index::source_rekeyed(conn, &card.address, to)?;
-    validate_tree(conn, &tree)?;
-    ctx.changed = true;
-    let mut value = json!({
-        "applied": true,
-        "card_id": card_id,
-        "address": to,
-        "handle": card.address,
-        "tree": tree.handle(),
-        "changed": true,
-    });
-    accepted.attach(&mut value);
     Ok(value)
 }
 
-// ---------------------------------------------------------------------------------------------
-// Reads
-// ---------------------------------------------------------------------------------------------
+fn delete_card(ctx: &mut Ctx) -> Result<Value> {
+    crate::ops::delete_identity_tx(
+        ctx.conn,
+        ctx.access,
+        ctx.args,
+        &mut |word, lines, effects| {
+            confirm_plan(
+                ctx.conn,
+                ctx.tool,
+                ctx.args,
+                ctx.revision,
+                word,
+                lines,
+                effects,
+            )
+        },
+    )
+    .map(|mut value| {
+        ctx.changed = value["applied"] == true;
+        if ctx.changed {
+            value["plan_hash"] = ctx.args["plan_hash"].clone();
+        }
+        value
+    })
+}
+
+pub(crate) struct IdentityDeleteCoordinates {
+    pub(crate) filing_moves: BTreeMap<String, String>,
+    pub(crate) removed: BTreeSet<String>,
+    pub(crate) missing: Vec<Placement>,
+    pub(crate) gloss_review: Vec<Value>,
+    pub(crate) missing_gloss: Vec<String>,
+}
+
+/// Stage the removal of every occurrence of the Card in its owner Workspace.
+pub(crate) fn remove_coordinates_for_identity_delete(
+    conn: &Connection,
+    access: Access,
+    identity: &coord::Identity,
+    args: &Value,
+) -> Result<IdentityDeleteCoordinates> {
+    let detach = match opt_str(args, "children")? {
+        Some("detach") => true,
+        None | Some("reattach") => false,
+        Some(other) => bail!("unknown children policy `{other}`; expected reattach or detach"),
+    };
+    let owner = identity.live_owner_workspace()?;
+    let (owned, missing): (Vec<_>, Vec<_>) = coord::coordinates_of_card(conn, &identity.card_id)?
+        .into_iter()
+        .partition(|row| row.host_workspace == owner);
+    let mut by_tree: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for row in owned {
+        if row.edge == EdgeKind::Root {
+            bail!(
+                "cannot delete a defining root by Card identity; delete or empty the tree explicitly"
+            );
+        }
+        by_tree.entry(row.tree_id).or_default().insert(row.coord_id);
+    }
+    let mut planned = Vec::new();
+    let mut removed = BTreeSet::new();
+    for (tree_id, mut ids) in by_tree {
+        let host = Host(coord::tree_by_id(conn, &tree_id)?.context("Coordinate host is missing")?);
+        crate::scope::ensure_literature_host_allowed(host.0.role, &host.0.public_key)?;
+        ensure_host_writable(conn, access, &host)?;
+        let before = shape_of(conn, &host.0)?;
+        if detach {
+            // Ancestors precede their children. Expand overlapping subtrees in one pass.
+            for id in &before.order {
+                if before.by_id[id]
+                    .parent_coord_id
+                    .as_ref()
+                    .is_some_and(|parent| ids.contains(parent))
+                {
+                    ids.insert(id.clone());
+                }
+            }
+        }
+        removed.extend(ids.iter().cloned());
+        planned.push((before, ids));
+    }
+    if detach {
+        for (shape, ids) in &planned {
+            for id in ids {
+                let row = &shape.by_id[id];
+                if row.card_id == identity.card_id {
+                    continue;
+                }
+                let card = coord::identity(conn, &row.card_id)?.context("unknown Card identity")?;
+                if card.filing_coord_id.as_deref() != Some(id.as_str()) {
+                    continue;
+                }
+                let owner = card.live_owner_workspace()?;
+                let survives =
+                    coord::coordinates_of_card(conn, &row.card_id)?
+                        .iter()
+                        .any(|other| {
+                            other.host_workspace == owner && !removed.contains(&other.coord_id)
+                        });
+                if !survives {
+                    bail!(
+                        "cannot detach the last owner-Workspace Coordinate of Card `{}`; use children: reattach",
+                        card.last_address
+                    );
+                }
+                bail!(
+                    "detaching would remove the Filing Coordinate of Card `{}`; refile that Card first or use children: reattach",
+                    card.last_address
+                );
+            }
+        }
+    }
+
+    let revision = coord::next_revision(conn)?;
+    let mut after = Vec::new();
+    for (shape, ids) in &planned {
+        if detach {
+            coord::remove_coordinates_tx(conn, &ids.iter().cloned().collect::<Vec<_>>(), revision)?;
+        } else {
+            // Outline order visits ancestors before descendants. Process it backward so
+            // another occurrence of this Card is never reattached as a surviving child.
+            for id in shape.order.iter().rev().filter(|id| ids.contains(*id)) {
+                reattach_identity_delete_children(conn, shape, &shape.by_id[id])?;
+                coord::remove_coordinates_tx(conn, std::slice::from_ref(id), revision)?;
+            }
+        }
+        let side_parents: BTreeSet<_> = ids
+            .iter()
+            .map(|id| &shape.by_id[id])
+            .filter(|row| row.edge == EdgeKind::Side)
+            .filter_map(|row| row.parent_coord_id.as_deref())
+            .filter(|parent| !ids.contains(*parent))
+            .collect();
+        for parent in side_parents {
+            compact_sides(conn, &shape.tree, parent)?;
+        }
+        after.push(shape_of(conn, &shape.tree)?);
+    }
+    let before: Vec<_> = planned.iter().map(|(shape, _)| shape).collect();
+    let after: Vec<_> = after.iter().collect();
+    let affected = changed_parents(&before, &after);
+    let (gloss_review, decisions, missing_gloss) = gloss_review(&before, &affected, args)?;
+    apply_glosses(conn, &decisions)?;
+    let excluded = BTreeSet::from([identity.card_id.clone()]);
+    let filing_moves = filing_path_changes(conn, &before, &after, &excluded)?;
+    Ok(IdentityDeleteCoordinates {
+        filing_moves,
+        removed,
+        missing,
+        gloss_review,
+        missing_gloss,
+    })
+}
+
+fn reattach_identity_delete_children(
+    conn: &Connection,
+    shape: &TreeShape,
+    row: &Placement,
+) -> Result<()> {
+    let tree = &shape.tree;
+    let parent = row
+        .parent_coord_id
+        .as_deref()
+        .context("cannot delete a defining root by Card identity")?;
+    park(conn, shape, std::slice::from_ref(&row.coord_id))?;
+    let successor = direct_child(conn, &row.coord_id)?;
+    let sides: Vec<_> = side_slots(conn, &row.coord_id)?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    if let Some(successor) = &successor {
+        set_position(conn, successor, tree, parent, row.edge, row.slot)?;
+    }
+    if parent == shape.root {
+        // A defining root takes only a Direct child. Its surviving Direct child
+        // hosts the Side branches, or the first Side branch becomes Direct.
+        if let Some(successor) = successor {
+            append_side_children(conn, tree, &successor, &sides)?;
+        } else if let Some((first, rest)) = sides.split_first() {
+            set_position(conn, first, tree, parent, EdgeKind::Direct, None)?;
+            append_side_children(conn, tree, first, rest)?;
+        }
+    } else {
+        append_side_children(conn, tree, parent, &sides)?;
+    }
+    Ok(())
+}
 
 fn read(conn: &Connection, access: Access, tool: &str, args: &Value) -> Result<Value> {
     match tool {
         "list_connection_trees" => list_trees(conn, access, args),
         "get_connection_tree" => get_tree(conn, access, args),
-        "list_placements" => list_placements(conn, access, args),
+        "get_tree_coordinates" => {
+            let tree = coord::resolve_any_tree(conn, arg_str(args, "tree")?)?;
+            tree_page(conn, access, args, &tree)
+        }
+        "list_placements" | "list_coordinates" => {
+            list_coordinates(conn, access, args, tool == "list_placements")
+        }
         "list_connections" => list_connections(conn, args),
-        "get_dependencies" => crate::dependencies::get(conn, args),
         "list_side_mounts" => list_side_mounts(conn, access, args),
-        other => bail!("unknown Connection tree read `{other}`"),
+        "get_dependencies" => crate::dependencies::get(conn, args),
+        _ => bail!("unknown Coordinate tool `{tool}`"),
     }
+}
+
+pub(crate) fn root_title(conn: &Connection, tree: &ConnTree) -> Result<(String, bool)> {
+    let address = coord::address_of_card_id(conn, &tree.root_card_id)?
+        .with_context(|| format!("the root Card of {} is missing", tree.handle()))?;
+    let card = crate::load_card(conn, &address)?;
+    let title = crate::parse_card_text(&card.text)?.title;
+    if tree.role == TreeRole::Connection && title == tree.handle() {
+        return Ok((String::new(), true));
+    }
+    Ok((title, false))
 }
 
 pub(crate) fn tree_summary(conn: &Connection, access: Access, tree: &ConnTree) -> Result<Value> {
     let (title, untitled) = root_title(conn, tree)?;
-    let (stations, native): (i64, i64) = conn.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN c.location = ?2 OR c.location LIKE ?3 THEN 1 ELSE 0 END), 0)
-         FROM placements p
-         LEFT JOIN card_identity i ON i.card_id = p.card_id AND i.status = 'live'
-         LEFT JOIN cards c ON c.row_id = i.card_row
-         WHERE p.host_tree_key = ?1 AND p.edge <> 'root'",
-        params![tree.tree_id, tree.handle(), format!("~{}#%", tree.display_num)],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    let missing: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM placements p JOIN card_identity i ON i.card_id = p.card_id
-         WHERE p.host_tree_key = ?1 AND i.status = 'retired'",
+    let (total, distinct, native, mounted, missing): (i64, i64, i64, i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COUNT(DISTINCT c.card_id),
+            COUNT(CASE WHEN c.edge <> 'root' AND i.filing_coord_id = c.coord_id THEN 1 END),
+            COUNT(CASE WHEN c.edge <> 'root' AND i.filing_coord_id IS NOT c.coord_id THEN 1 END),
+            COUNT(CASE WHEN i.status = 'retired' THEN 1 END)
+         FROM coordinates AS c JOIN card_identity AS i ON i.card_id = c.card_id
+         WHERE c.tree_id = ?1",
         [&tree.tree_id],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     )?;
     let connections: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM placement_edges WHERE tree_id = ?1",
+        "SELECT COUNT(*) FROM coordinate_edges WHERE tree_id = ?1",
         [&tree.tree_id],
         |r| r.get(0),
     )?;
-    let host = Host::Connection(tree.clone());
     Ok(json!({
-        "tree": tree.handle(),
-        "tree_id": tree.tree_id,
-        "title": title,
-        "untitled": untitled,
-        "workspace": tree.workspace.id(),
-        "purpose": tree.purpose,
-        "root_card_id": tree.root_card_id,
-        "mounted": stations - native,
-        "native": native,
-        "missing": missing,
-        "connections": connections,
+        "tree": tree.handle(), "tree_id": tree.tree_id, "title": title, "untitled": untitled,
+        "role": tree.role.id(), "workspace": tree.workspace.id(), "purpose": tree.purpose,
+        "root_card_id": tree.root_card_id, "mounted": mounted, "native": native, "missing": missing,
+        "connections": connections, "distinct_cards": distinct, "total_coordinates": total,
         "locked": crate::coord_lock::host_locked(conn, &tree.tree_id)?,
-        "can_edit_tree": can_edit_host(conn, access, &host)?,
-        "created_at": tree.created_at,
-        "counts": format!("{} mounted · {} native · {} connections", stations - native, native, connections),
+        "can_edit_tree": can_edit_host(conn, access, &Host(tree.clone()))?, "created_at": tree.created_at,
+        "counts": format!("{mounted} mounted · {native} native · {connections} connections"),
     }))
 }
 
@@ -2818,27 +3345,26 @@ fn list_trees(conn: &Connection, access: Access, args: &Value) -> Result<Value> 
     let filter = opt_str(args, "query")?.map(str::to_lowercase);
     let mut out = Vec::new();
     for tree in coord::trees(conn)? {
-        if workspace.is_some_and(|w| w != tree.workspace) {
-            continue;
-        }
-        if let Some(p) = purpose
-            && tree.purpose.as_deref() != Some(p)
+        if workspace.is_some_and(|w| w != tree.workspace)
+            || purpose.is_some_and(|p| tree.purpose.as_deref() != Some(p))
         {
             continue;
         }
-        // The text filter reads the handle, the root's title and the purpose before any count is
-        // made, so a filtered list of many trees counts only the trees it answers.
         if let Some(q) = &filter {
             let (title, _) = root_title(conn, &tree)?;
-            let hay = format!("{} {} {}", tree.handle(), title, tree.purpose.as_deref().unwrap_or_default()).to_lowercase();
-            if !hay.contains(q.as_str()) {
+            let haystack = format!(
+                "{} {} {}",
+                tree.handle(),
+                title,
+                tree.purpose.as_deref().unwrap_or_default()
+            )
+            .to_lowercase();
+            if !haystack.contains(q.as_str()) {
                 continue;
             }
         }
         out.push(tree_summary(conn, access, &tree)?);
     }
-    // `number` (the default) keeps the order of the handles; `recent` puts the newest tree first
-    // (handles are never reused, so the highest number is the newest).
     match opt_str(args, "sort")? {
         None | Some("number") => {}
         Some("recent") => out.reverse(),
@@ -2847,168 +3373,494 @@ fn list_trees(conn: &Connection, access: Access, args: &Value) -> Result<Value> 
     Ok(json!({"trees": out, "archive_revision": crate::link_index::revision(conn)?}))
 }
 
-/// One Connection tree: its root, its stations in outline order (bounded by `limit`/`cursor`), and
-/// its connections. A mounted tree root is one portal station; nothing of its home tree is read.
 pub(crate) fn get_tree(conn: &Connection, access: Access, args: &Value) -> Result<Value> {
     let tree = coord::resolve_tree(conn, arg_str(args, "tree")?)?;
-    let shape = shape_of(conn, &tree)?;
-    let host = Host::Connection(tree.clone());
+    tree_page(conn, access, args, &tree)
+}
+
+fn tree_page(conn: &Connection, access: Access, args: &Value, tree: &TreeRecord) -> Result<Value> {
+    let shape = shape_of(conn, tree)?;
+    let host = Host(tree.clone());
     let editable = can_edit_host(conn, access, &host)?;
     let revision = crate::link_index::revision(conn)?;
-    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(500).clamp(1, 5000) as usize;
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(500)
+        .clamp(1, 5000) as usize;
     let start = match opt_str(args, "cursor")? {
         Some(cursor) => {
             let (rev, offset) = cursor.split_once(':').context("invalid cursor")?;
             if rev.parse::<u64>().ok() != Some(revision) {
-                bail!("stale cursor: the tree changed since the first page; read it again from the start");
+                bail!(
+                    "stale cursor: the tree changed since the first page; read it again from the start"
+                );
             }
             offset.parse::<usize>().context("invalid cursor")?
         }
         None => 0,
     };
+    let mut repeats = BTreeMap::new();
+    for row in shape.by_id.values() {
+        *repeats.entry(row.card_id.as_str()).or_insert(0) += 1;
+    }
     let mut stations = Vec::new();
     for id in shape.order.iter().skip(start).take(limit) {
-        stations.push(station_value(conn, access, &host, editable, &shape.by_id[id], &shape.coord[id])?);
+        let row = &shape.by_id[id];
+        stations.push(station_value(
+            conn,
+            access,
+            &host,
+            editable,
+            row,
+            &shape.coord[id],
+            repeats[row.card_id.as_str()],
+        )?);
     }
-    let next = (start + limit < shape.order.len()).then(|| format!("{revision}:{}", start + limit));
-    let mut value = tree_summary(conn, access, &tree)?;
+    let end = start.saturating_add(limit);
+    let next = (end < shape.order.len()).then(|| format!("{revision}:{end}"));
+    let mut value = tree_summary(conn, access, tree)?;
+    value["root_coord_id"] = json!(shape.root);
     value["root_placement_id"] = json!(shape.root);
+    value["coordinates"] = json!(stations);
     value["placements"] = json!(stations);
+    value["total_coordinates"] = json!(shape.order.len());
     value["total_placements"] = json!(shape.order.len());
     value["next_cursor"] = json!(next);
-    if args.get("include_connections").and_then(Value::as_bool).unwrap_or(true) {
-        value["connections"] = json!(edges_of_tree(conn, &tree.tree_id)?
-            .iter()
-            .map(|e| edge_value(conn, &shape, e))
-            .collect::<Result<Vec<_>>>()?);
-    }
     value["archive_revision"] = json!(revision);
+    if args
+        .get("include_connections")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        value["connections"] = json!(
+            edges_of_tree(conn, &tree.tree_id)?
+                .iter()
+                .map(|e| edge_value(conn, &shape, e))
+                .collect::<Result<Vec<_>>>()?
+        );
+    } else {
+        value
+            .as_object_mut()
+            .expect("tree summary is an object")
+            .remove("connections");
+    }
+    if tree.role != TreeRole::Connection {
+        let (elsewhere, crossings) = projections(conn, &shape)?;
+        value["elsewhere"] = elsewhere;
+        value["crossings"] = crossings;
+    }
     Ok(value)
 }
 
-/// Every tree a Card stands in: its home and each station (Connection trees and Topic-side mounts).
-pub(crate) fn list_placements(conn: &Connection, access: Access, args: &Value) -> Result<Value> {
-    let card_id = match opt_str(args, "card_id")? {
-        Some(id) => id.to_string(),
-        None => {
-            let at = arg_str(args, "at")?;
-            if coord::is_coordinate(at) || coord::place_bookmark(at).is_some() {
-                coord::resolve_station(conn, at)?.card_id
-            } else {
-                coord::card_id_of(conn, at)?
-            }
+fn list_coordinates(
+    conn: &Connection,
+    access: Access,
+    args: &Value,
+    legacy_placements: bool,
+) -> Result<Value> {
+    let card_id = named_target_id(conn, args, "at")?;
+    let identity = coord::identity(conn, &card_id)?
+        .with_context(|| format!("Card `{card_id}` does not exist"))?;
+    let coordinates = coord::coordinates_of_card(conn, &card_id)?;
+    let mut shapes = BTreeMap::new();
+    let mut repeats = BTreeMap::new();
+    for row in &coordinates {
+        *repeats.entry(row.tree_id.as_str()).or_insert(0) += 1;
+        if !shapes.contains_key(&row.tree_id) {
+            let host = host_of(conn, row)?;
+            let editable = can_edit_host(conn, access, &host)?;
+            let shape = shape_of(conn, &host.0)?;
+            shapes.insert(row.tree_id.clone(), (host, editable, shape));
         }
-    };
-    let identity = coord::identity(conn, &card_id)?.with_context(|| format!("Card `{card_id}` does not exist"))?;
-    let mut stations = Vec::new();
-    for p in coord::placements_of_card(conn, &card_id)? {
-        let host = host_of(conn, &p)?;
-        let editable = can_edit_host(conn, access, &host)?;
-        let coord_text = coord::coordinate_of(conn, &p)?;
-        stations.push(station_value(conn, access, &host, editable, &p, &coord_text)?);
     }
+    let mut stations = Vec::new();
+    for row in &coordinates {
+        let (host, editable, shape) = &shapes[&row.tree_id];
+        stations.push(station_value(
+            conn,
+            access,
+            host,
+            *editable,
+            row,
+            &shape.coord[&row.coord_id],
+            repeats[row.tree_id.as_str()],
+        )?);
+    }
+    stations.sort_by(|a, b| a["coord"].as_str().cmp(&b["coord"].as_str()));
+    let placements: Vec<_> = stations
+        .iter()
+        .filter(|station| {
+            !legacy_placements
+                || station["is_filing"] == false
+                || station["tree_role"] == TreeRole::Connection.id()
+        })
+        .collect();
     let handle: Option<String> = conn
-        .query_row("SELECT handle FROM card_handles WHERE card_id = ?1", [&card_id], |r| r.get(0))
+        .query_row(
+            "SELECT handle FROM card_handles WHERE card_id = ?1",
+            [&card_id],
+            |r| r.get(0),
+        )
         .optional()?;
+    let home = identity.live.then_some(&identity.last_address);
+    let role = if identity.live {
+        Some(host_of(conn, &filing_row(conn, &identity)?)?.0.role.id())
+    } else {
+        None
+    };
     Ok(json!({
-        "card_id": card_id,
-        "status": if identity.live { "live" } else { "retired" },
-        "home": if identity.live { coord::address_of_card_id(conn, &card_id)? } else { None },
-        "home_role": if identity.live { coord::address_of_card_id(conn, &card_id)?.map(|a| TreeRole::of_address(&a).id()) } else { None },
-        "last_address": identity.last_address,
-        "title": identity.last_title,
-        "handle": handle,
-        "placements": stations,
-        "archive_revision": crate::link_index::revision(conn)?,
+        "card_id": card_id, "status": if identity.live { "live" } else { "retired" }, "home": home,
+        "home_role": role, "last_address": identity.last_address, "title": identity.last_title,
+        "handle": handle, "filing_coord_id": identity.filing_coord_id, "coordinates": stations,
+        "placements": placements, "places": stations.len(), "archive_revision": crate::link_index::revision(conn)?,
     }))
 }
 
-/// The connections of one Connection tree, or those of one station (incoming, outgoing, neutral).
-pub(crate) fn list_connections(conn: &Connection, args: &Value) -> Result<Value> {
-    let tree = coord::resolve_tree(conn, arg_str(args, "tree")?)?;
-    let shape = shape_of(conn, &tree)?;
-    let focus = match opt_str(args, "placement_id")? {
-        Some(p) => Some(station_in(conn, &shape, p)?.placement_id),
-        None => None,
+fn station_value(
+    conn: &Connection,
+    access: Access,
+    host: &Host,
+    editable: bool,
+    row: &Placement,
+    path: &str,
+    repeats: usize,
+) -> Result<Value> {
+    let identity =
+        coord::identity(conn, &row.card_id)?.context("Coordinate names an unknown Card")?;
+    let is_filing = identity.filing_coord_id.as_deref() == Some(row.coord_id.as_str());
+    let origin = match (row.edge, is_filing, host.0.role) {
+        (EdgeKind::Root, _, TreeRole::Connection) | (_, true, TreeRole::Connection) => "native",
+        (EdgeKind::Root, _, _) => "root",
+        (_, true, _) => "filing",
+        (_, false, TreeRole::Connection) => "mount",
+        _ => "secondary",
     };
+    let places: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM coordinates WHERE card_id = ?1",
+        [&row.card_id],
+        |r| r.get(0),
+    )?;
+    let mut value = json!({
+        "coord_id": row.coord_id, "placement_id": row.coord_id, "coord": path,
+        "card_id": row.card_id, "edge": row.edge.id(), "parent_coord_id": row.parent_coord_id,
+        "parent_id": row.parent_coord_id, "slot": row.slot, "ordinal": row.slot, "gloss": row.gloss,
+        "host": host.label(), "tree": host.0.handle(), "tree_id": host.key(), "tree_role": host.0.role.id(),
+        "host_workspace": host.workspace().id(), "can_edit_coordinate": editable, "can_edit_placement": editable,
+        "bookmark": format!("place:{}", row.coord_id), "is_filing": is_filing, "origin": origin,
+        "places": places, "repeat_count": repeats, "home_address": identity.last_address,
+        "home_workspace": identity.owner_workspace.map(Workspace::id),
+    });
+    if let Some(card_row) = identity.card_row.filter(|_| identity.live) {
+        let card = card_by_row(conn, card_row)?;
+        let filing = filing_row(conn, &identity)?;
+        let home = if filing.tree_id == row.tree_id {
+            host.0.clone()
+        } else {
+            host_of(conn, &filing)?.0
+        };
+        let parsed = crate::parse_card_text(&card.text)?;
+        value["status"] = json!("live");
+        value["home_role"] = json!(home.role.id());
+        value["title"] = json!(parsed.title);
+        value["excerpt"] = json!(crate::ops::excerpt(&parsed.body));
+        value["type"] = json!(card.card_type.id());
+        value["can_edit_card"] = json!(
+            can_edit_card(conn, access, &card)
+                && !crate::coord_lock::host_locked(conn, &home.tree_id)?
+        );
+        value["citation"] = json!(format!(
+            "[[{}]]",
+            citation_address(conn, &row.card_id, &card.address)?
+        ));
+        if filing.edge == EdgeKind::Root && row.edge != EdgeKind::Root {
+            let cards: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM coordinates AS p JOIN card_identity AS i ON i.filing_coord_id = p.coord_id
+                 WHERE p.tree_id = ?1",
+                [&home.tree_id], |r| r.get(0),
+            )?;
+            value["portal"] =
+                json!({"tree": home.handle(), "role": home.role.id(), "cards": cards});
+        }
+    } else {
+        value["status"] = json!("missing");
+        value["title"] = json!(identity.last_title);
+        value["home_role"] = json!(TreeRole::of_address(&identity.last_address).id());
+        value["excerpt"] = json!("");
+        value["type"] = Value::Null;
+        value["citation"] = Value::Null;
+        value["can_edit_card"] = json!(false);
+    }
+    if let Some(drift) = crate::coord_lock::drift(conn, &row.coord_id)? {
+        value["drift"] = drift;
+    }
+    Ok(value)
+}
+
+pub(crate) fn list_connections(conn: &Connection, args: &Value) -> Result<Value> {
+    let tree = coord::resolve_any_tree(conn, arg_str(args, "tree")?)?;
+    let shape = shape_of(conn, &tree)?;
+    let focus = alias(args, &["coord_id", "placement_id"])?
+        .map(|id| station_in(conn, &shape, id))
+        .transpose()?;
+    let edges = edges_of_tree(conn, &tree.tree_id)?;
+    let labels = edges
+        .iter()
+        .filter_map(|e| e.label.as_deref())
+        .collect::<BTreeSet<_>>();
+    let mut value = json!({"tree": tree.handle(), "archive_revision": crate::link_index::revision(conn)?, "labels": labels});
+    if let Some(row) = focus {
+        value["coord_id"] = json!(row.coord_id);
+        value["placement_id"] = json!(row.coord_id);
+        let by_direction = incident_values(conn, &shape, &edges, &row.coord_id)?;
+        for key in ["incoming", "outgoing", "neutral"] {
+            value[key] = by_direction[key].clone();
+        }
+    } else {
+        value["connections"] = json!(
+            edges
+                .iter()
+                .map(|edge| edge_value(conn, &shape, edge))
+                .collect::<Result<Vec<_>>>()?
+        );
+    }
+    Ok(value)
+}
+
+fn incident_values(
+    conn: &Connection,
+    shape: &TreeShape,
+    edges: &[Edge],
+    coord_id: &str,
+) -> Result<Value> {
     let mut incoming = Vec::new();
     let mut outgoing = Vec::new();
     let mut neutral = Vec::new();
-    let mut all = Vec::new();
-    for e in edges_of_tree(conn, &tree.tree_id)? {
-        let value = edge_value(conn, &shape, &e)?;
-        match &focus {
-            None => all.push(value),
-            Some(f) if &e.from != f && &e.to != f => {}
-            Some(f) => {
-                if !e.directed {
-                    neutral.push(value);
-                } else if &e.from == f {
-                    outgoing.push(value);
-                } else {
-                    incoming.push(value);
-                }
-            }
+    for edge in edges
+        .iter()
+        .filter(|e| e.from == coord_id || e.to == coord_id)
+    {
+        let value = edge_value(conn, shape, edge)?;
+        if !edge.directed {
+            neutral.push(value);
+        } else if edge.from == coord_id {
+            outgoing.push(value);
+        } else {
+            incoming.push(value);
         }
     }
-    let mut value = json!({"tree": tree.handle(), "archive_revision": crate::link_index::revision(conn)?});
-    match focus {
-        Some(f) => {
-            value["placement_id"] = json!(f);
-            value["incoming"] = json!(incoming);
-            value["outgoing"] = json!(outgoing);
-            value["neutral"] = json!(neutral);
-            // Labels already used in this tree, for suggestion.
-        }
-        None => value["connections"] = json!(all),
+    Ok(json!({"incoming": incoming, "outgoing": outgoing, "neutral": neutral}))
+}
+
+pub(crate) fn station_context(conn: &Connection, access: Access, row: &Placement) -> Result<Value> {
+    let host = host_of(conn, row)?;
+    let shape = shape_of(conn, &host.0)?;
+    let editable = can_edit_host(conn, access, &host)?;
+    let repeats = shape.coords_of_card(&row.card_id).len();
+    let mut value = station_value(
+        conn,
+        access,
+        &host,
+        editable,
+        row,
+        &shape.coord[&row.coord_id],
+        repeats,
+    )?;
+    value["parent"] = json!(
+        row.parent_coord_id
+            .as_ref()
+            .map(|id| json!({"coord_id": id, "placement_id": id, "coord": shape.coord[id]}))
+    );
+    let edges = edges_of_tree(conn, host.key())?;
+    if host.0.role == TreeRole::Connection || !edges.is_empty() {
+        value["connections"] = incident_values(conn, &shape, &edges, &row.coord_id)?;
     }
-    let labels: BTreeSet<String> = edges_of_tree(conn, &tree.tree_id)?.into_iter().filter_map(|e| e.label).collect();
-    value["labels"] = json!(labels);
     Ok(value)
 }
 
-/// The station context of a Card read through a coordinate: added to `get_card` answers.
-pub(crate) fn station_context(conn: &Connection, access: Access, station: &Placement) -> Result<Value> {
-    let host = host_of(conn, station)?;
-    let editable = can_edit_host(conn, access, &host)?;
-    let coord_text = coord::coordinate_of(conn, station)?;
-    let mut value = station_value(conn, access, &host, editable, station, &coord_text)?;
-    if let Host::Connection(tree) = &host {
-        let shape = shape_of(conn, tree)?;
-        let parent = station.parent_id.as_ref().and_then(|p| shape.by_id.get(p));
-        value["parent"] = json!(parent.map(|p| json!({"placement_id": p.placement_id, "coord": shape.coord.get(&p.placement_id)})));
-        let mut incoming = Vec::new();
-        let mut outgoing = Vec::new();
-        let mut neutral = Vec::new();
-        for e in edges_of_tree(conn, &tree.tree_id)? {
-            if e.from != station.placement_id && e.to != station.placement_id {
+pub(crate) fn list_side_mounts(conn: &Connection, _access: Access, args: &Value) -> Result<Value> {
+    Ok(
+        json!({"at": arg_str(args, "at")?, "mounts": [], "retired": true,
+        "archive_revision": crate::link_index::revision(conn)?}),
+    )
+}
+
+struct PlaneOccurrence {
+    coord_id: String,
+    tree_id: String,
+    card_id: String,
+    address: String,
+    is_filing: bool,
+}
+
+pub(crate) fn tree_coordinates(conn: &Connection, tree: &str) -> Result<(Value, Value)> {
+    if !coord::installed(conn) {
+        return Ok((json!({}), json!({})));
+    }
+    let tree = coord::resolve_any_tree(conn, tree)?;
+    projections(conn, &shape_of(conn, &tree)?)
+}
+
+fn projections(conn: &Connection, plane: &TreeShape) -> Result<(Value, Value)> {
+    let mut stmt = conn.prepare_cached(
+        "WITH plane_cards AS (SELECT DISTINCT card_id FROM coordinates WHERE tree_id = ?1)
+         SELECT c.coord_id, c.tree_id, c.card_id, i.last_address, i.filing_coord_id = c.coord_id
+         FROM plane_cards AS p JOIN card_identity AS i ON i.card_id = p.card_id AND i.status = 'live'
+         JOIN coordinates AS c ON c.card_id = p.card_id",
+    )?;
+    let occurrences = stmt
+        .query_map([&plane.tree.tree_id], |r| {
+            Ok(PlaneOccurrence {
+                coord_id: r.get(0)?,
+                tree_id: r.get(1)?,
+                card_id: r.get(2)?,
+                address: r.get(3)?,
+                is_filing: r.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let visible_cards: BTreeSet<_> = occurrences.iter().map(|row| row.card_id.as_str()).collect();
+    let mut targets: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for id in &plane.order {
+        let card_id = plane.by_id[id].card_id.as_str();
+        if visible_cards.contains(card_id) {
+            targets.entry(card_id).or_default().push(id);
+        }
+    }
+    let mut shapes = BTreeMap::new();
+    for occurrence in &occurrences {
+        if occurrence.tree_id != plane.tree.tree_id && !shapes.contains_key(&occurrence.tree_id) {
+            let tree = coord::tree_by_id(conn, &occurrence.tree_id)?
+                .context("Coordinate host is missing")?;
+            shapes.insert(occurrence.tree_id.clone(), shape_of(conn, &tree)?);
+        }
+    }
+    let elsewhere = elsewhere_of(plane, &occurrences, &targets, &shapes);
+    let crossings = crossings_of(conn, &occurrences, &targets, &shapes)?;
+    Ok((elsewhere, crossings))
+}
+
+fn elsewhere_of(
+    plane: &TreeShape,
+    occurrences: &[PlaneOccurrence],
+    targets: &BTreeMap<&str, Vec<&str>>,
+    shapes: &BTreeMap<String, TreeShape>,
+) -> Value {
+    let mut elsewhere: BTreeMap<&str, Vec<Value>> = BTreeMap::new();
+    for occurrence in occurrences {
+        let shape = if occurrence.tree_id == plane.tree.tree_id {
+            if occurrence.is_filing || targets[occurrence.card_id.as_str()].len() == 1 {
                 continue;
             }
-            let v = edge_value(conn, &shape, &e)?;
-            if !e.directed {
-                neutral.push(v);
-            } else if e.from == station.placement_id {
-                outgoing.push(v);
-            } else {
-                incoming.push(v);
-            }
-        }
-        value["connections"] = json!({"incoming": incoming, "outgoing": outgoing, "neutral": neutral});
+            plane
+        } else {
+            &shapes[&occurrence.tree_id]
+        };
+        let id = &occurrence.coord_id;
+        elsewhere.entry(&occurrence.address).or_default().push(json!({
+            "coord_id": id, "placement_id": id, "coord": shape.coord[id], "host": shape.tree.root_address(),
+            "tree": shape.tree.handle(), "tree_id": shape.tree.tree_id, "tree_role": shape.tree.role.id(),
+            "is_filing": occurrence.is_filing, "gloss": shape.by_id[id].gloss,
+        }));
     }
-    Ok(value)
+    for rows in elsewhere.values_mut() {
+        rows.sort_by(|a, b| a["coord"].as_str().cmp(&b["coord"].as_str()));
+    }
+    json!(elsewhere)
 }
 
-/// The Topic-side mounts beside one Topic home Card, in order (`3/2+1`, `3/2+2`, …).
-pub(crate) fn list_side_mounts(conn: &Connection, access: Access, args: &Value) -> Result<Value> {
-    let at = arg_str(args, "at")?;
-    let card = crate::load_card(conn, at)?;
-    let card_id = coord::card_id_of_row(conn, card.row_id)?;
-    let mut mounts = Vec::new();
-    for p in coord::attachments_of_anchor(conn, &card_id)? {
-        let host = host_of(conn, &p)?;
-        let editable = can_edit_host(conn, access, &host)?;
-        let coord_text = coord::coordinate_of(conn, &p)?;
-        mounts.push(station_value(conn, access, &host, editable, &p, &coord_text)?);
+fn crossings_of(
+    conn: &Connection,
+    occurrences: &[PlaneOccurrence],
+    targets: &BTreeMap<&str, Vec<&str>>,
+    shapes: &BTreeMap<String, TreeShape>,
+) -> Result<Value> {
+    let mut hosts: BTreeMap<&str, BTreeMap<&str, &PlaneOccurrence>> = BTreeMap::new();
+    for row in occurrences {
+        if shapes
+            .get(&row.tree_id)
+            .is_some_and(|shape| shape.tree.role == TreeRole::Connection)
+        {
+            hosts
+                .entry(row.tree_id.as_str())
+                .or_default()
+                .insert(row.coord_id.as_str(), row);
+        }
     }
-    Ok(json!({"at": card.address, "mounts": mounts, "archive_revision": crate::link_index::revision(conn)?}))
+    let mut crossings = serde_json::Map::new();
+    for (tree_id, in_plane) in hosts {
+        let shape = &shapes[tree_id];
+        let mut stations = Vec::new();
+        let mut lines = Vec::new();
+        let mut exits_by_coord: BTreeMap<&str, usize> = BTreeMap::new();
+        let outside = |id: &str| id != shape.root && !in_plane.contains_key(id);
+        // Parent paths are visited before their children. Carry the nearest in-plane
+        // ancestor and first edge through outside Coordinates in one traversal.
+        let mut ancestors: BTreeMap<&str, (&str, EdgeKind, usize)> = BTreeMap::new();
+        for id in shape.order.iter().map(String::as_str) {
+            let row = &shape.by_id[id];
+            if let Some(parent) = row.parent_coord_id.as_deref() {
+                let ancestor = if in_plane.contains_key(parent) {
+                    Some((parent, row.edge, 0))
+                } else {
+                    ancestors
+                        .get(parent)
+                        .map(|&(ancestor, edge, hops)| (ancestor, edge, hops + 1))
+                };
+                if let Some(ancestor) = ancestor {
+                    ancestors.insert(id, ancestor);
+                }
+            }
+            let Some(station) = in_plane.get(id) else {
+                continue;
+            };
+            stations.push(json!({
+                "coord_id": id, "placement_id": id, "coord": shape.coord[id],
+                "card_id": station.card_id, "address": station.address,
+                "target_coord_ids": targets[station.card_id.as_str()],
+            }));
+            if let Some(&(from, edge, hops)) = ancestors.get(id) {
+                lines.push(json!({
+                    "kind": "structure", "from": in_plane[from].address, "to": station.address,
+                    "from_coord_id": from, "to_coord_id": id, "from_placement_id": from, "to_placement_id": id,
+                    "from_coord": shape.coord[from], "to_coord": shape.coord[id], "edge": edge.id(), "hops": hops,
+                }));
+            }
+            let exits = row.parent_coord_id.as_deref().is_some_and(outside) as usize
+                + shape.direct.get(id).is_some_and(|child| outside(child)) as usize
+                + shape.side.get(id).map_or(0, |children| {
+                    children.iter().filter(|child| outside(child)).count()
+                });
+            exits_by_coord.insert(id, exits);
+        }
+        for edge in edges_of_tree(conn, tree_id)? {
+            let from = edge.from.as_str();
+            let to = edge.to.as_str();
+            match (in_plane.get(from), in_plane.get(to)) {
+                (Some(a), Some(b)) => lines.push(json!({
+                    "kind": "connection", "from": a.address, "to": b.address,
+                    "from_coord_id": from, "to_coord_id": to, "from_placement_id": from, "to_placement_id": to,
+                    "from_coord": shape.coord[from], "to_coord": shape.coord[to],
+                    "direction": if edge.directed { "directed" } else { "neutral" },
+                    "relation_label": edge.label, "relation_kind": edge.kind, "connection_id": edge.connection_id,
+                })),
+                (Some(a), None) if outside(to) => *exits_by_coord.entry(a.coord_id.as_str()).or_default() += 1,
+                (None, Some(b)) if outside(from) => *exits_by_coord.entry(b.coord_id.as_str()).or_default() += 1,
+                _ => {}
+            }
+        }
+        let mut exits: BTreeMap<&str, usize> = BTreeMap::new();
+        for (&id, &count) in &exits_by_coord {
+            if count > 0 {
+                *exits.entry(in_plane[id].address.as_str()).or_default() += count;
+            }
+        }
+        let (title, untitled) = root_title(conn, &shape.tree)?;
+        crossings.insert(shape.tree.handle(), json!({
+            "tree": shape.tree.handle(), "tree_id": tree_id, "title": title, "untitled": untitled,
+            "workspace": shape.tree.workspace.id(), "stations": stations, "lines": lines,
+            "exits": exits, "exits_by_coord": exits_by_coord,
+        }));
+    }
+    Ok(Value::Object(crossings))
 }

@@ -74,7 +74,7 @@ pub(crate) fn move_plan(
         bail!("invalid move location `{destination}`");
     }
     crate::ensure_same_tree_kind_boundary(&card.address, destination)?;
-    let locations = all_locations(conn)?;
+    let locations = all_locations(conn, &[&card.address, destination])?;
     if let Target::Before(before) = target
         && !locations.contains(before)
     {
@@ -103,7 +103,7 @@ pub(crate) fn insert_plan(conn: &Connection, before: &str) -> Result<InsertPlan>
     if crate::is_tree_root(&card) {
         bail!("cannot insert before a tree root; insert before its Direct successor instead");
     }
-    let locations = all_locations(conn)?;
+    let locations = all_locations(conn, &[&card.address])?;
     let mapping = make_room(&locations, &card.address, 1)?;
     let rewritten_links = crate::count_rewritten_links(conn, &mapping)?;
     Ok(InsertPlan {
@@ -125,7 +125,7 @@ pub(crate) fn insert_side_plan(conn: &Connection, before: &str) -> Result<Insert
     let label = crate::immediate_side_label(&card.address, &parent).with_context(|| {
         format!("`{before}` is not a Side successor of `{parent}`; name the Side child the new Card takes the place of")
     })?;
-    let locations = all_locations(conn)?;
+    let locations = all_locations(conn, &[&card.address])?;
     let mapping = shift_later_siblings(&locations, &parent, crate::side_label_to_number(&label))?;
     let rewritten_links = crate::count_rewritten_links(conn, &mapping)?;
     Ok(InsertPlan {
@@ -184,7 +184,7 @@ pub(crate) fn apply_insert_plan(
     term_name: Option<&str>,
     text: &str,
 ) -> Result<crate::gate::Accepted> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let accepted = apply_insert_plan_tx(&tx, plan, card_type, part, term_name, text)?;
     tx.commit()?;
     Ok(accepted)
@@ -226,7 +226,22 @@ pub(crate) fn apply_insert_plan_into(
     crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::CreateAt(&plan.location))?;
     // The Card that will be stored: Links to Cards that move are rewritten first, so the check reads
     // the exact committed text.
-    let text = crate::replace_link_locations(text, &plan.mapping)?;
+    let original = crate::parse_card_text(text)?;
+    crate::link::LinkBody::for_rendering(&original.body).reject_secondary_coordinates(conn)?;
+    let authored = crate::filing_link_mapping(conn, &plan.mapping)?;
+    let text = crate::replace_link_locations(text, &authored)?;
+    let coord_id = if plan.mapping.values().any(|path| {
+        crate::parent_location(path).as_deref() == Some(plan.location.as_str())
+    }) {
+        let id = crate::coord::new_uuid()?;
+        crate::apply_location_mapping_with_insert_tx(
+            conn, &plan.mapping, changes, Some((&plan.location, &id)),
+        )?;
+        Some(id)
+    } else {
+        crate::apply_location_mapping_tx(conn, &plan.mapping, changes)?;
+        None
+    };
     let accepted = crate::gate::check_proposed(
         conn,
         &crate::gate::Candidate::create(
@@ -239,7 +254,7 @@ pub(crate) fn apply_insert_plan_into(
         )
         .with_term(term_name),
     )?;
-    crate::apply_location_mapping_tx(conn, &plan.mapping, changes)?;
+    let parsed = crate::parse_card_text(&text)?;
     conn.execute(
         "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, term_name)
          VALUES(?1, NULL, 0, 0, NULL, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -253,12 +268,27 @@ pub(crate) fn apply_insert_plan_into(
             term_name
         ],
     )?;
+    let row_id = conn.last_insert_rowid();
+    if let Some(id) = coord_id {
+        crate::coord::register_regular_card_at_tx(
+            conn, row_id, &plan.location, workspace, &parsed.title, &id,
+        )?;
+    } else {
+        crate::coord::register_regular_card_tx(
+            conn, row_id, &plan.location, workspace, &parsed.title,
+        )?;
+    }
     changes.resync(conn, &plan.location)?;
     Ok(accepted)
 }
 
-fn all_locations(conn: &Connection) -> Result<BTreeSet<String>> {
-    crate::addresses(conn)
+fn all_locations(conn: &Connection, involved: &[&str]) -> Result<BTreeSet<String>> {
+    let mut locations = crate::addresses(conn)?;
+    let keys: BTreeSet<_> = involved.iter().map(|address| crate::tree_id(address)).collect();
+    for key in keys {
+        locations.extend(crate::coord::occupied_paths_in_tree(conn, key)?);
+    }
+    Ok(locations)
 }
 
 /// `root` and every Location below it by parent Location, inside `locations`.
@@ -427,7 +457,7 @@ pub(crate) fn span_plan(
     }
     crate::ensure_same_tree_kind_boundary(&card.address, destination)?;
     crate::workspace::ensure_same_workspace(conn, &card.address, destination)?;
-    let locations = all_locations(conn)?;
+    let locations = all_locations(conn, &[&card.address, destination])?;
     let mapping = layout_with(&locations, &card.address, target, Detach::Span(through))?;
     if mapping.is_empty() {
         bail!("`{from}` is already there; nothing moves");
@@ -466,37 +496,56 @@ fn finished(locations: &BTreeSet<String>, moves: BTreeMap<String, String>) -> Re
 /// (S5, #233). The list names every current Side child exactly once.
 pub(crate) fn reorder_side(
     locations: &BTreeSet<String>,
+    occupied: &BTreeSet<String>,
     parent: &str,
     order: &[String],
 ) -> Result<BTreeMap<String, String>> {
+    let is_side_child = |path: &str| {
+        crate::parent_location(path).as_deref() == Some(parent)
+            && crate::immediate_side_label(path, parent).is_some()
+    };
     let current = locations
         .iter()
-        .filter(|location| crate::parent_location(location).as_deref() == Some(parent))
-        .filter(|location| crate::immediate_side_label(location, parent).is_some())
+        .filter(|location| is_side_child(location))
         .cloned()
         .collect::<BTreeSet<_>>();
     let listed = order.iter().cloned().collect::<BTreeSet<_>>();
     if listed.len() != order.len() || listed != current {
         return Err(mismatch(&listed, &current));
     }
+    let slots = if occupied.iter().any(|path| is_side_child(path) && !current.contains(path)) {
+        let mut slots: Vec<_> = current
+            .iter()
+            .filter_map(|path| crate::immediate_side_label(path, parent))
+            .map(|label| crate::side_label_to_number(&label))
+            .collect();
+        slots.sort_unstable();
+        slots
+    } else {
+        (1..=order.len() as u64).collect()
+    };
     let mut moves = BTreeMap::new();
-    for (index, child) in order.iter().enumerate() {
-        let to = format!("{parent}|{}", crate::number_to_side_label(index as u64 + 1));
-        moves.extend(shift(locations, child, &to)?);
+    for (child, slot) in order.iter().zip(slots) {
+        let to = format!("{parent}|{}", crate::number_to_side_label(slot));
+        moves.extend(shift(occupied, child, &to)?);
     }
-    finished(locations, moves)
+    finished(occupied, moves)
 }
 
 /// Put the spans of the Direct chain after `parent` in the listed order, each Card with its Side
 /// successors (S5, #233). The spans cover the whole chain, each Card once.
 pub(crate) fn reorder_direct(
     locations: &BTreeSet<String>,
+    occupied: &BTreeSet<String>,
     parent: &str,
     spans: &[(String, String)],
 ) -> Result<BTreeMap<String, String>> {
     let mut chain = Vec::new();
     let mut next = crate::direct_successor(parent)?;
-    while locations.contains(&next) {
+    while occupied.contains(&next) {
+        if !locations.contains(&next) {
+            bail!("the Direct chain contains a Secondary Coordinate at `{next}`; use move_coordinate or reorder_coordinates");
+        }
         chain.push(next.clone());
         next = crate::direct_successor(&next)?;
     }
@@ -526,16 +575,16 @@ pub(crate) fn reorder_direct(
     let mut place = crate::direct_successor(parent)?;
     for card in &listed {
         // The Card with its Side successors, without the Cards after it on the chain.
-        let mut branch = subtree(locations, card);
+        let mut branch = subtree(occupied, card);
         if let Ok(after) = crate::direct_successor(card) {
-            for later in subtree(locations, &after) {
+            for later in subtree(occupied, &after) {
                 branch.remove(&later);
             }
         }
         moves.extend(shift(&branch, card, &place)?);
         place = crate::direct_successor(&place)?;
     }
-    finished(locations, moves)
+    finished(occupied, moves)
 }
 
 fn layout_with(
@@ -971,7 +1020,7 @@ mod tests {
     fn reordering_side_successors_moves_each_with_its_branch() {
         let locations = set(&["3/0", "3/1", "3/1|a", "3/1|a|1", "3/1|b", "3/1|c", "3/1|c|a", "3/1|d", "3/2"]);
         let order = ["3/1|d", "3/1|c", "3/1|b", "3/1|a"].map(String::from);
-        let mapping = reorder_side(&locations, "3/1", &order).unwrap();
+        let mapping = reorder_side(&locations, &locations, "3/1", &order).unwrap();
         assert_eq!(
             pairs(&mapping),
             [
@@ -989,12 +1038,32 @@ mod tests {
     #[test]
     fn a_reorder_list_must_name_every_child_once() {
         let locations = set(&["3/0", "3/1", "3/1|a", "3/1|b", "3/1|c"]);
-        let missing = reorder_side(&locations, "3/1", &["3/1|b", "3/1|a"].map(String::from)).unwrap_err().to_string();
+        let missing = reorder_side(&locations, &locations, "3/1", &["3/1|b", "3/1|a"].map(String::from)).unwrap_err().to_string();
         assert!(missing.contains("reorder_set_mismatch") && missing.contains("missing: [3/1|c]"), "{missing}");
-        let extra = reorder_side(&locations, "3/1", &["3/1|c", "3/1|b", "3/1|a", "3/2"].map(String::from)).unwrap_err().to_string();
+        let extra = reorder_side(&locations, &locations, "3/1", &["3/1|c", "3/1|b", "3/1|a", "3/2"].map(String::from)).unwrap_err().to_string();
         assert!(extra.contains("extra: [3/2]"), "{extra}");
-        let twice = reorder_side(&locations, "3/1", &["3/1|c", "3/1|c", "3/1|b", "3/1|a"].map(String::from)).unwrap_err().to_string();
+        let twice = reorder_side(&locations, &locations, "3/1", &["3/1|c", "3/1|c", "3/1|b", "3/1|a"].map(String::from)).unwrap_err().to_string();
         assert!(twice.contains("reorder_set_mismatch"), "{twice}");
+    }
+
+    #[test]
+    fn reorder_leaves_secondary_side_slots_and_refuses_mixed_direct_chains() {
+        let locations = set(&["3/0", "3/1", "3/1|a", "3/1|c", "3/3"]);
+        let mut occupied = locations.clone();
+        occupied.extend(["3/1|b", "3/1|a|a", "3/2"].map(String::from));
+
+        let order = ["3/1|c", "3/1|a"].map(String::from);
+        let mapping = reorder_side(&locations, &occupied, "3/1", &order).unwrap();
+        assert_eq!(
+            pairs(&mapping),
+            [("3/1|a", "3/1|c"), ("3/1|a|a", "3/1|c|a"), ("3/1|c", "3/1|a")],
+        );
+
+        let spans = [("3/1", "3/1")].map(|(from, through)| (from.to_string(), through.to_string()));
+        let error = reorder_direct(&locations, &occupied, "3/0", &spans)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("3/2") && error.contains("reorder_coordinates"), "{error}");
     }
 
     /// S5 (#233): reordering the spans of a Direct chain keeps each Card's Side successors with it.
@@ -1002,7 +1071,7 @@ mod tests {
     fn reordering_the_spans_of_a_chain_keeps_each_cards_branch() {
         let locations = set(&["3/0", "3/1", "3/2", "3/2|a", "3/3", "3/4", "3/4|a"]);
         let spans = [("3/3", "3/4"), ("3/1", "3/2")].map(|(a, b)| (a.to_string(), b.to_string()));
-        let mapping = reorder_direct(&locations, "3/0", &spans).unwrap();
+        let mapping = reorder_direct(&locations, &locations, "3/0", &spans).unwrap();
         assert_eq!(
             pairs(&mapping),
             [
@@ -1015,7 +1084,7 @@ mod tests {
             ]
         );
         let short = [("3/3", "3/4"), ("3/1", "3/1")].map(|(a, b)| (a.to_string(), b.to_string()));
-        let error = reorder_direct(&locations, "3/0", &short).unwrap_err().to_string();
+        let error = reorder_direct(&locations, &locations, "3/0", &short).unwrap_err().to_string();
         assert!(error.contains("missing: [3/2]"), "{error}");
     }
 }

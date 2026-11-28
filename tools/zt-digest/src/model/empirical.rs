@@ -808,4 +808,46 @@ mod tests {
         let faults = plan_faults(&plan(), Some(&weird_tables)).join("\n");
         assert!(faults.contains("unresolved cell"), "{faults}");
     }
+
+    #[test]
+    fn s7_empirical_skeletons_include_intuition_leads_data_start_and_limits_anchor() {
+        let resolve = |id: &str| -> Result<String> { Ok(format!("K/5|c|{}", id.to_lowercase())) };
+        let mut p = plan();
+        p["parts"].as_array_mut().unwrap().extend([
+            json!({"id": "SM", "line": "side", "of": "D", "facet": "样本：核心样本", "title": "样本：高管样本", "spec": "筛选规则"}),
+            json!({"id": "MS", "line": "side", "of": "D", "facet": "测量：社交技能", "title": "测量：指标构造", "spec": "构造"}),
+            json!({"id": "DS", "line": "side", "of": "D", "facet": "描述：统计特征", "title": "描述：均值与方差", "spec": "描述"}),
+            json!({"id": "H1", "line": "main", "facet": "假说：规模效应", "title": "假说：大企业更需社交技能", "spec": "预测", "tests": ["K/2|a|a|1|a"]}),
+            json!({"id": "LM", "line": "off", "facet": "局限", "title": "局限：样本覆盖范围", "spec": "局限"}),
+        ]);
+        let parts = p["parts"].as_array().unwrap();
+
+        // Main-line blocks Data, Hypothesis, Design, and baseline Spec must carry **直觉**.
+        let data_skel = skeleton(&parts[0], &p, &[], &resolve, None).unwrap();
+        assert!(data_skel.contains("**直觉**\n待写"), "数据 skeleton must include **直觉**: {data_skel}");
+        assert!(data_skel.contains("**起点**"), "数据 skeleton should include **起点**: {data_skel}");
+
+        let design_skel = skeleton(&parts[2], &p, &[], &resolve, None).unwrap();
+        assert!(design_skel.contains("**直觉**\n待写"), "设计 skeleton must include **直觉**: {design_skel}");
+
+        let base_spec_skel = skeleton(&parts[4], &p, &[], &resolve, None).unwrap();
+        assert!(base_spec_skel.contains("**直觉**\n待写"), "规格：基准 skeleton must include **直觉**: {base_spec_skel}");
+
+        let var_spec_skel = skeleton(&parts[5], &p, &[], &resolve, None).unwrap();
+        assert!(!var_spec_skel.contains("**直觉**"), "variant spec does not need **直觉**: {var_spec_skel}");
+
+        let hyp_skel = skeleton(&parts[12], &p, &[], &resolve, None).unwrap();
+        assert!(hyp_skel.contains("**直觉**\n待写"), "假说 skeleton must include **直觉**: {hyp_skel}");
+
+        // Data-tree children (样本, 测量, 描述) must carry **起点** with a dependency link.
+        for idx in [9, 10, 11] {
+            let sk = skeleton(&parts[idx], &p, &[], &resolve, None).unwrap();
+            assert!(sk.contains("**起点**\n- 依赖 [[K/5|c|d]]"), "data child {} must include **起点**: {sk}", parts[idx]["facet"]);
+        }
+
+        // Off-spine 局限 must carry a plain refers anchor (not 依赖) so loose == 0.
+        let lim_skel = skeleton(&parts[13], &p, &[], &resolve, None).unwrap();
+        assert!(lim_skel.contains("见设计 [[K/5|c|g]]"), "empirical 局限 must pre-populate plain design anchor: {lim_skel}");
+        assert!(!lim_skel.contains("依赖"), "局限 anchor must be plain refers, not rests-on: {lim_skel}");
+    }
 }

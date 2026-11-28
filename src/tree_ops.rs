@@ -221,8 +221,10 @@ fn reorder_tx(conn: &Connection, access: Access, args: &Value, changes: &mut Cha
     let card = crate::load_card(conn, &parent)?;
     access.ensure_writable(card.workspace)?;
     let locations = crate::addresses(conn)?;
+    let mut occupied = crate::coord::occupied_paths_in_tree(conn, crate::tree_id(&card.address))?;
+    occupied.extend(locations.iter().cloned());
     let mapping = match (args.get("side"), args.get("direct")) {
-        (Some(side), None) => crate::place::reorder_side(&locations, &card.address, &strings(side, "side")?)?,
+        (Some(side), None) => crate::place::reorder_side(&locations, &occupied, &card.address, &strings(side, "side")?)?,
         (None, Some(direct)) => {
             let spans = direct
                 .as_array()
@@ -237,14 +239,14 @@ fn reorder_tx(conn: &Connection, access: Access, args: &Value, changes: &mut Cha
                     }
                 })
                 .collect::<Result<Vec<_>>>()?;
-            crate::place::reorder_direct(&locations, &card.address, &spans)?
+            crate::place::reorder_direct(&locations, &occupied, &card.address, &spans)?
         }
         _ => bail!("reorder takes exactly one of `side` (Side successors) or `direct` (spans of the Direct chain)"),
     };
     if mapping.is_empty() {
         bail!("the Cards are already in this order; nothing moves");
     }
-    access.ensure_link_rewrites_allowed(conn, &mapping)?;
+    access.ensure_link_rewrites_allowed(conn, &crate::filing_link_mapping(conn, &mapping)?)?;
     let plan = crate::MovePlan {
         rewritten_links: crate::count_rewritten_links(conn, &mapping)?,
         mapping,

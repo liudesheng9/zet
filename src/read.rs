@@ -1,7 +1,7 @@
 //! Per-request Card projections. Bodies and domain calculations remain authoritative.
 use crate::{Access, Card, ops::Snapshot};
 use anyhow::{Context, Result, bail};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -57,14 +57,15 @@ impl TermLinks {
     }
 }
 
-pub(crate) fn text_value(
+fn text_value(
     card: &Card,
+    tree: &str,
     lock: &crate::tree_lock::LockView,
     term_links: TermLinks,
 ) -> Result<Value> {
     let parsed = crate::parse_card_text(&card.text)?;
     let mut value = json!({
-        "address":card.address,"tree":crate::tree_id(&card.address),
+        "address":card.address,"tree":tree,
         "workspace":card.workspace.id(),
         "writable":lock.writable_for(card.row_id, Access::Agent, card.workspace),
         "kind":crate::ops::kind(card),"type":card.card_type.id(),
@@ -92,7 +93,7 @@ pub(crate) fn card_value(snapshot: &Snapshot, at: &str, term_links: TermLinks) -
         .by_address
         .get(at)
         .with_context(|| format!("card `{at}` does not exist"))?;
-    let mut value = text_value(card, snapshot.lock(), term_links)?;
+    let mut value = text_value(card, snapshot.filing_tree(card), snapshot.lock(), term_links)?;
     if let Some(literature_type) = snapshot.literature_type(card) {
         value["literature_type"] = json!(literature_type);
     }
@@ -114,6 +115,17 @@ fn existing(conn: &Connection, at: &str) -> Result<bool> {
     )?)
 }
 
+/// A Connection handle keeps its original prefix when the Card files into a different tree.
+fn filing_tree_key(conn: &Connection, row: i64) -> Result<Option<String>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT t.public_key FROM card_identity i
+         JOIN coordinates f ON f.coord_id = i.filing_coord_id
+         JOIN trees t ON t.tree_id = f.tree_id
+         WHERE i.card_row = ?1 AND i.status = 'live'",
+    )?;
+    Ok(stmt.query_row([row], |r| r.get(0)).optional()?)
+}
+
 /// Cheap authored-body/index facts for scoped clients, without model or hub
 /// projections and without fetching a whole tree to recover its summaries. The
 /// caller passes the Lock view of the same read, so a lean read and a full read
@@ -124,7 +136,13 @@ pub(crate) fn text_facts(
     lock: &crate::tree_lock::LockView,
     term_links: TermLinks,
 ) -> Result<Value> {
-    let mut value = text_value(card, lock, term_links)?;
+    let filed = if card.address.starts_with('~') && crate::coord::installed(conn) {
+        filing_tree_key(conn, card.row_id)?
+    } else {
+        None
+    };
+    let tree = filed.as_deref().unwrap_or_else(|| crate::tree_id(&card.address));
+    let mut value = text_value(card, tree, lock, term_links)?;
     // The excerpt is derived from the body this read returns, so a projected read previews the same
     // visible prose it names (S12-AC03).
     value["excerpt"] = json!(crate::ops::excerpt(
@@ -485,7 +503,16 @@ fn context(conn: &Connection, addresses: &[String], models: bool) -> Result<Snap
     let rows = cards.iter().map(|card| card.row_id).collect::<Vec<_>>();
     let lock = crate::tree_lock::LockView::read(conn, Some(&rows))?;
     let revision = crate::link_index::revision(conn)?;
+    let mut filing_trees = BTreeMap::new();
+    if crate::coord::installed(conn) {
+        for card in cards.iter().filter(|card| card.address.starts_with('~')) {
+            if let Some(tree) = filing_tree_key(conn, card.row_id)? {
+                filing_trees.insert(card.row_id, tree);
+            }
+        }
+    }
     Ok(Snapshot::from_cards_aliased(cards, lock, revision, crate::coord::aliases(conn)?)?
+        .with_filing_trees(filing_trees)
         .with_literature_types(crate::literature::stored_types(conn)?))
 }
 
@@ -547,26 +574,32 @@ pub(crate) fn model(root: &Path, at: &str) -> Result<Value> {
     Ok(model)
 }
 
-/// The Card address a read names, and the station when it names one: a coordinate (`~7/2`,
-/// `3/2+1`) or `place:<uuid>` reads the Card standing there; a promoted Card's handle reads it at
-/// its current address. A station whose Card was deleted is refused with its last address.
+/// Resolve a Card citation or an explicit Coordinate. Ordinary filing addresses keep the
+/// Card read surface; secondary paths, UUIDs and bookmarks carry occurrence context.
 pub(crate) fn read_address(
     conn: &Connection,
     at: &str,
 ) -> Result<(String, Option<crate::coord::Placement>)> {
-    if crate::coord::is_coordinate(at) || crate::coord::place_bookmark(at).is_some() {
-        let station = crate::coord::resolve_station(conn, at)?;
-        let identity = crate::coord::identity(conn, &station.card_id)?.context("unknown Card")?;
-        let Some(address) = crate::coord::address_of_card_id(conn, &station.card_id)? else {
-            bail!(
-                "missing mount: the Card at `{at}` was deleted at its home (last `{}`: {})",
-                identity.last_address,
-                identity.last_title
-            );
-        };
-        return Ok((address, Some(station)));
+    use crate::coord;
+    let explicit = coord::is_uuid(at) || coord::is_coordinate(at) || coord::place_bookmark(at).is_some();
+    let coordinate = if explicit {
+        Some(coord::resolve_coord(conn, at)?)
+    } else if let Some(address) = coord::canonical(conn, at)? {
+        return Ok((address, None));
+    } else if coord::installed(conn) && !coord::is_handle(at) {
+        coord::resolve_coord(conn, at).ok()
+    } else {
+        None
+    };
+    let Some(coordinate) = coordinate else {
+        return Ok((at.to_string(), None));
+    };
+    let identity = coord::identity(conn, &coordinate.card_id)?.context("unknown Card")?;
+    if !identity.live {
+        bail!("missing mount (Missing Coordinate): the Card at `{at}` was deleted (last `{}`: {})",
+            identity.last_address, identity.last_title);
     }
-    Ok((crate::coord::canonical(conn, at)?.unwrap_or_else(|| at.to_string()), None))
+    Ok((identity.last_address, Some(coordinate)))
 }
 
 pub(crate) fn card(root: &Path, at: &str, term_links: TermLinks) -> Result<Value> {
@@ -583,7 +616,9 @@ pub(crate) fn card(root: &Path, at: &str, term_links: TermLinks) -> Result<Value
         attach_term_facts(&tx, &mut result, card)?;
     }
     if let Some(station) = station {
-        result["station"] = crate::connection::station_context(&tx, crate::Access::Agent, &station)?;
+        let coordinate = crate::connection::station_context(&tx, crate::Access::Agent, &station)?;
+        result["station"] = coordinate.clone();
+        result["coordinate"] = coordinate;
     }
     log_large_context(
         root,
@@ -714,6 +749,18 @@ pub(crate) fn cards(
 }
 
 fn tree_addresses(conn: &Connection, tree: &str) -> Result<Vec<String>> {
+    if crate::coord::installed(conn) {
+        let record = crate::coord::resolve_any_tree(conn, tree)?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT i.last_address
+             FROM coordinates AS c JOIN card_identity AS i ON i.filing_coord_id = c.coord_id
+             WHERE c.tree_id = ?1",
+        )?;
+        let mut addresses = stmt.query_map([&record.tree_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        addresses.sort_by(|a, b| crate::model::address_order(a, b));
+        return Ok(addresses);
+    }
     let root = crate::tree_root_address(tree);
     if !existing(conn, &root)? {
         anyhow::bail!("tree `{tree}` does not exist");
@@ -736,7 +783,12 @@ fn tree_addresses(conn: &Connection, tree: &str) -> Result<Vec<String>> {
 pub(crate) fn tree(root: &Path, tree: &str, bodies: bool, term_links: TermLinks) -> Result<Value> {
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
-    let tree = crate::tree_id(tree);
+    let named_tree = if crate::coord::is_uuid(tree) {
+        crate::coord::resolve_any_tree(&tx, tree)?.handle()
+    } else {
+        crate::tree_id(tree).to_string()
+    };
+    let tree = named_tree.as_str();
     let addresses = tree_addresses(&tx, tree)?;
     let snapshot = context(&tx, &addresses, false)?;
     let root_address = crate::tree_root_address(tree);
@@ -745,6 +797,7 @@ pub(crate) fn tree(root: &Path, tree: &str, bodies: bool, term_links: TermLinks)
     for at in &addresses {
         let card = &snapshot.by_address[at];
         let mut value = snapshot.summary(card);
+        value["tree"] = json!(tree);
         value["excerpt"] = json!(term_links.project(value["excerpt"].as_str().unwrap_or_default()));
         if bodies {
             value["body"] = json!(term_links.project(&snapshot.parsed[at].body));
@@ -784,10 +837,17 @@ pub(crate) fn titles(
     )?;
     let mut titles = Vec::new();
     let mut title_rows = Vec::new();
+    let coordinates_installed = crate::coord::installed(&tx);
     for row in rows {
         let (at, text, workspace, card_type, facet, row_id) = row?;
         let parsed = crate::parse_card_text(&text).with_context(|| format!("Card `{at}`"))?;
-        titles.push(json!({"address":at,"tree":crate::tree_id(&at),"workspace":workspace,"type":card_type,"facet":facet,"title":parsed.title,"restatement":crate::entry::is_restatement_entry(&parsed.body)}));
+        let filed = if coordinates_installed && at.starts_with('~') {
+            filing_tree_key(&tx, row_id)?
+        } else {
+            None
+        };
+        let tree = filed.as_deref().unwrap_or_else(|| crate::tree_id(&at));
+        titles.push(json!({"address":at,"tree":tree,"workspace":workspace,"type":card_type,"facet":facet,"title":parsed.title,"restatement":crate::entry::is_restatement_entry(&parsed.body)}));
         title_rows.push(row_id);
     }
     drop(statement);
@@ -860,9 +920,30 @@ pub(crate) fn trees(
         let tree = crate::tree_id(&at);
         let lower = format!("{tree}/");
         let upper = format!("{tree}0");
-        // A Connection tree's home members are its root and its native Cards `~n#k`.
-        let (lower, upper) = if tree.starts_with('~') { (format!("{tree}#"), format!("{tree}$")) } else { (lower, upper) };
-        let (count,events,findings,models,terms):(u64,u64,u64,u64,u64)=tx.query_row("SELECT COUNT(*),COALESCE(SUM(card_type='event' AND model_facet IS NULL),0),COALESCE(SUM(card_type='finding' AND model_facet IS NULL),0),COALESCE(SUM(card_type='model' AND model_facet IS NULL),0),COALESCE(SUM(card_type='term'),0) FROM cards WHERE (location>=?1 AND location<?2) OR citation_key=?3 OR location=?3",rusqlite::params![lower,upper,tree],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+        let tally = |r: &rusqlite::Row<'_>| -> rusqlite::Result<(u64, u64, u64, u64, u64)> {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        };
+        let (count, events, findings, models, terms) = if tree.starts_with('~') && crate::coord::installed(&tx) {
+            tx.query_row(
+                "SELECT COUNT(*), COUNT(CASE WHEN c.card_type='event' THEN 1 END),
+                    COUNT(CASE WHEN c.card_type='finding' THEN 1 END),
+                    COUNT(CASE WHEN c.card_type='model' AND c.model_facet IS NULL THEN 1 END),
+                    COUNT(CASE WHEN c.card_type='term' THEN 1 END)
+                 FROM trees AS t JOIN coordinates AS p ON p.tree_id=t.tree_id
+                 JOIN card_identity AS i ON i.filing_coord_id=p.coord_id
+                 JOIN cards AS c ON c.row_id=i.card_row WHERE t.public_key=?1",
+                [tree], tally,
+            )?
+        } else {
+            let (lower, upper) = if tree.starts_with('~') { (format!("{tree}#"), format!("{tree}$")) } else { (lower, upper) };
+            tx.query_row(
+                "SELECT COUNT(*), COALESCE(SUM(card_type='event' AND model_facet IS NULL),0),
+                    COALESCE(SUM(card_type='finding' AND model_facet IS NULL),0),
+                    COALESCE(SUM(card_type='model' AND model_facet IS NULL),0), COALESCE(SUM(card_type='term'),0)
+                 FROM cards WHERE (location>=?1 AND location<?2) OR citation_key=?3 OR location=?3",
+                rusqlite::params![lower, upper, tree], tally,
+            )?
+        };
         trees.push(json!({"tree":tree,"root":at,"workspace":card.workspace.id(),"kind":crate::ops::zone(&card),"literature_type":if card.is_lit {Some(crate::literature::stored_type(&tx,card.row_id)?.id())} else {None},"title":parsed.title,"excerpt":crate::ops::excerpt(&parsed.body),"count":count,"events":events,"findings":findings,"models":models,"terms":terms,"locked":lock.is_locked(card.row_id)}));
     }
     tx.commit()?;
@@ -1062,7 +1143,8 @@ fn hub_read(conn: &Connection) -> Result<HubRead> {
     drop(query);
     let revision = crate::link_index::revision(conn)?;
     let lock = crate::tree_lock::LockView::read(conn, None)?;
-    let snapshot = Snapshot::from_cards_aliased(cards, lock, revision, crate::coord::aliases(conn)?)?;
+    let snapshot = Snapshot::from_cards_aliased(cards, lock, revision, crate::coord::aliases(conn)?)?
+        .with_filing_trees(Snapshot::load_filing_trees(conn)?);
     let mut query = conn.prepare(
         "SELECT source,target FROM links GROUP BY source,target ORDER BY source,MIN(ord)",
     )?;

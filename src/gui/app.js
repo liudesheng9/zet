@@ -271,6 +271,9 @@
     features: ZtFeatures.read(null),
     nodes: [],            // every Card summary, for link completion and the sky
     byAddress: new Map(), // address -> Card summary
+    byCoordId: new Map(), // Coordinate ID -> occurrence in the active tree
+    coordinatesByCard: new Map(), // Canonical address -> active-tree occurrences
+    activeCoordId: null, // Explicit Topic or Literature bookmark
     inboundOf: new Map(), // address -> addresses of the Cards that link it with an ordinary Link
     termInboundOf: new Map(), // address -> addresses of the Cards that reach it with a Term use
     childrenOf: new Map(), // address -> summaries of its Direct and Side successors
@@ -890,7 +893,7 @@
   // --------------------------------------------------------------- commands
   // Same vocabulary and availability as the terminal Session.
   const COMMANDS = [
-    ['go [<target>]', 'go to a Location, Citation key or handle (~7#4); a coordinate (~7/2, 3/2+1), place:<id> or ~7 opens a station; bare go returns to ROOT', 'always'],
+    ['go [<target>]', 'go to a Location, Citation key, handle (~7#4), Coordinate, or place:<id>; bare go returns to ROOT', 'always'],
     ['root', 'return to ROOT', 'always'],
     ['ws [<workspace>]', 'list workspaces, or switch to the human or agent workspace ROOT', 'always'],
     ['up', 'go to the parent card; a tree root goes to ROOT', 'card'],
@@ -965,6 +968,9 @@
         if (!rest.length) return go(null);
         if (/^(place:|~)/.test(rest[0]) || /\+\d+$/.test(rest[0])) return go(rest[0]);
         if (!state.nodes.some((node) => node.address === rest[0])) {
+          const listed = await connApi(PORTABLE ? 'list_placements' : 'list_coordinates', { at: rest[0] }).catch(() => null);
+          const occurrence = coordinateRows(listed).find((p) => p.coord === rest[0]);
+          if (occurrence) return openStation(coordId(occurrence));
           await refresh();
           if (!state.nodes.some((node) => node.address === rest[0])) {
             throw new Error(`target \`${rest[0]}\` does not exist`);
@@ -973,6 +979,10 @@
         return go(rest[0]);
       case 'up':
         if (rest.length) throw new Error('usage: up');
+        if (state.activeCoordId || state.conn?.station) {
+          const parent = coordParent(currentCoordinate() || {});
+          return parent ? openStation(parent) : go(null);
+        }
         return state.pointer ? go(parentOf(state.pointer)) : undefined;
       case 'ls':
         if (!state.pointer) { openRail(true); return; }
@@ -1075,6 +1085,71 @@
   // reorganized tree never sends the reader to another Card. The page writes as the owner through
   // `/api/connection` with the MCP tool names; a plan answer asks for its confirmation word.
   const CONN = window.ZtConnections;
+  const coordId = (row) => row?.coord_id || row?.placement_id;
+  const coordParent = (row) => row.parent_coord_id ?? row.parent_id;
+  const coordinateRows = (answer) => answer?.coordinates || answer?.placements || [];
+  const currentCoordinate = () => state.conn?.station || state.byCoordId.get(state.activeCoordId || state.tree?.byCoord?.get(state.card?.address));
+  const missingCoordinate = () => {
+    const row = state.byCoordId.get(state.activeCoordId);
+    return row?.status === 'missing' ? row : null;
+  };
+
+  // The layout helper orders Side paths by their letter slots. Once ordered, the lens uses IDs.
+  function coordinateOutline(tree) {
+    const outline = ZtLayout.outline(tree.mapCards || tree.cards, tree.root);
+    if (!tree.byCoord) return outline;
+    const key = (path) => tree.byCoord.get(path) || path;
+    const rekey = (map, value) => new Map(Array.from(map, ([at, item]) => [key(at), value(item)]));
+    return {
+      root: key(outline.root), order: outline.order.map(key),
+      kids: rekey(outline.kids, (kids) => kids.map(key)), up: rekey(outline.up, key),
+      depth: rekey(outline.depth, (n) => n), size: rekey(outline.size, (n) => n),
+      card: rekey(outline.card, (c) => ({
+        ...c, parent: key(c.parent), links: c.links.map(key),
+        kinds: Object.fromEntries(Object.entries(c.kinds || {}).map(([at, kind]) => [key(at), kind])),
+        term_use_targets: (c.term_use_targets || []).map(key),
+      })),
+    };
+  }
+
+  function setMapTree(tree) {
+    state.tree = tree;
+    state.byCoordId = tree?.byId || new Map();
+    state.coordinatesByCard = new Map();
+    for (const row of state.byCoordId.values()) {
+      if (!state.coordinatesByCard.has(row.home_address)) state.coordinatesByCard.set(row.home_address, []);
+      state.coordinatesByCard.get(row.home_address).push(row);
+    }
+    state.outline = tree ? coordinateOutline(tree) : null;
+  }
+
+  function cardMap(tree) {
+    if (!tree.coordinates?.length) return tree;
+    const rows = CONN.outline(tree.coordinates);
+    const byId = new Map(rows.map((s) => [coordId(s), s]));
+    const byCoord = new Map(rows.map((s) => [s.coord, coordId(s)]));
+    const byHome = new Map();
+    const summaries = new Map(tree.cards.map((card) => [card.address, card]));
+    for (const s of rows) {
+      if (s.status === 'missing') continue;
+      if (s.isFiling || !byHome.has(s.home_address)) byHome.set(s.home_address, s.coord);
+    }
+    const mapCards = rows.map((s) => {
+      const card = s.status === 'missing' ? null : summaries.get(s.home_address) || tree.coordinate_cards?.[s.home_address];
+      const links = (card?.links || []).map((at) => byHome.get(at) || at);
+      const kinds = Object.fromEntries(Object.entries(card?.kinds || {}).map(([at, kind]) => [byHome.get(at) || at, kind]));
+      return {
+        title: s.title, excerpt: '', inbound: 0, ...card,
+        address: s.coord, homeAddress: s.home_address, coordinate: s, edge: s.edge,
+        parent: byId.get(coordParent(s))?.coord || null, links, kinds,
+        term_use_targets: (card?.term_use_targets || []).map((at) => byHome.get(at) || at),
+      };
+    });
+    const coordEdges = (tree.connections || []).map((edge) => ({
+      ...edge, from: byId.get(coordId(edge.from))?.coord, to: byId.get(coordId(edge.to))?.coord,
+    })).filter((edge) => edge.from && edge.to);
+    return { ...tree, root: rows.find((s) => s.edge === 'root')?.coord || tree.root, mapCards, byId, byCoord, byHome, coordEdges };
+  }
 
   async function connApi(tool, args) {
     return api('connection', { tool, args: args || {} });
@@ -1137,28 +1212,43 @@
   const stationLoads = { begin: () => pointerLoads.begin(), isLatest: (seq) => pointerLoads.isLatest(seq) };
   async function loadStation(parsed) {
     const seq = stationLoads.begin();
+    if (pointerAbort) pointerAbort.abort();
     let treeName = null;
     let stationId = null;
     if (parsed.kind === 'place') {
-      const listed = await connApi('list_placements', { at: 'place:' + parsed.value });
+      const listed = await connApi(PORTABLE ? 'list_placements' : 'list_coordinates', { at: 'place:' + parsed.value });
       // A late answer after another move is dropped before it can navigate.
       if (!stationLoads.isLatest(seq)) return;
-      const here = (listed.placements || []).find((p) => p.placement_id === parsed.value);
-      if (!here) throw new Error('placement removed: this station no longer exists');
-      if (!/^~/.test(here.host)) {
-        // A Topic-side mount opens the Topic Card it stands beside, its tab marked, as everywhere.
-        state.markMount = here.placement_id;
-        state.markAnchor = here.coord.split('+')[0];
-        go(state.markAnchor);
+      const here = coordinateRows(listed).find((p) => coordId(p) === parsed.value);
+      if (!here) throw new Error('Coordinate removed: this location no longer exists');
+      if ((here.tree_role || CONN.roleOf(here.host)) !== 'connection') {
+        const host = here.tree || CONN.treeOf(here.host);
+        const tree = state.tree?.tree === host && state.tree.archive_revision === listed.archive_revision
+          ? state.tree : cardMap(await api('tree?id=' + enc(host)));
+        if (!stationLoads.isLatest(seq)) return;
+        if (tree.byId && !tree.byId.has(parsed.value)) throw new Error('Coordinate removed: this location no longer exists');
+        const card = here.status !== 'missing' ? await api('card?at=' + enc(here.home_address)) : null;
+        if (!stationLoads.isLatest(seq)) return;
+        setMapTree(tree);
+        state.conn = null;
+        state.activeCoordId = parsed.value;
+        state.pointer = card?.address || here.coord || tree.root;
+        state.card = card;
+        state.homeExtras = card ? { address: card.address, places: listed } : null;
+        state.excursion = null;
+        if (tree.workspace && tree.workspace !== state.workspace) setWorkspace(tree.workspace);
+        showPending(null);
+        renderAll();
         return;
       }
-      treeName = here.host;
-      stationId = here.placement_id;
+      treeName = here.tree || here.host;
+      stationId = coordId(here);
     } else {
       treeName = parsed.value.split('/')[0];
     }
     // The whole tree in one read (a page of 5,000 stations), so a bookmark to any station opens.
     const tree = await connApi('get_connection_tree', { tree: treeName, limit: 5000 });
+    let rows = [...coordinateRows(tree)];
     if (!stationLoads.isLatest(seq)) return;
     // A tree past 5,000 stations comes in pages: read them all, so any station opens. A write
     // between two pages makes the cursor stale: the read starts again, once.
@@ -1170,29 +1260,39 @@
         if (attempt++ || !/stale cursor/.test(String(error.message || error))) throw error;
         const fresh = await connApi('get_connection_tree', { tree: treeName, limit: 5000 });
         Object.assign(tree, fresh);
+        rows = [...coordinateRows(fresh)];
         continue;
       }
       if (!stationLoads.isLatest(seq)) return;
-      tree.placements.push(...(more.placements || []));
+      rows.push(...coordinateRows(more));
       tree.next_cursor = more.next_cursor;
     }
+    tree.coordinates = tree.placements = rows;
     if (parsed.kind === 'conn') {
       const coord = parsed.value.includes('/') ? parsed.value : `${tree.tree}/0`;
-      const found = tree.placements.find((p) => p.coord === coord);
+      const found = rows.find((p) => p.coord === coord);
       if (!found) throw new Error(`no station at ${coord}`);
-      stationId = found.placement_id;
+      stationId = coordId(found);
       history.replaceState(history.state, '', CONN.stationHash(stationId));
     }
-    const station = tree.placements.find((p) => p.placement_id === stationId);
+    const station = rows.find((p) => coordId(p) === stationId);
+    if (!station) throw new Error('Coordinate removed: this location no longer exists');
     let card = null;
-    if (station && station.status === 'live') card = await api('card?at=' + enc(station.home_address));
-    const placesOf = station && station.status === 'live' ? await connApi('list_placements', { card_id: station.card_id }).catch(() => null) : null;
+    if (station.status === 'live') card = await api('card?at=' + enc(station.home_address));
+    const placesOf = station.status === 'live'
+      ? await connApi(PORTABLE ? 'list_placements' : 'list_coordinates', { card_id: station.card_id }).catch(() => null) : null;
     if (!stationLoads.isLatest(seq)) return;
     state.excursion = null;
-    state.conn = { tree, stationId, station, places: placesOf, overlay: state.conn ? state.conn.overlay : false, companion: null, lens: null };
+    state.activeCoordId = null;
+    state.pointer = null;
+    const treeMap = CONN.mapTree(tree);
+    const focusCard = CONN.focusCard(treeMap, station.coord);
+    state.conn = { tree, map: treeMap, focusCard, stationId, station, places: placesOf, companion: null, lens: null };
+    setMapTree(treeMap);
     state.card = card;
     // The station view stands in its host tree's Workspace, whatever the mounted Card's home is.
     if (tree.workspace && tree.workspace !== state.workspace) setWorkspace(tree.workspace);
+    showPending(null);
     renderAll();
   }
 
@@ -1243,22 +1343,24 @@
     return known ? `${known.title} (${tree})` : tree;
   }
 
-  /**
-   * Every coordinate of a Card, in the order every card head shows them: its home first, then the
-   * place being read (a station), then the others by coordinate. Each names its tree, whether it is
-   * the home, whether it is where the reader is now, and the station or mount it stands for.
-   */
+  /** The filing location, the open Coordinate, and every other occurrence of this Card. */
   function cardCoordinates(card) {
-    const conn = state.conn;
-    const station = conn && conn.station;
-    const places = conn
-      ? (conn.places && conn.places.placements) || (station ? [{ ...station, host: conn.tree.tree }] : [])
-      : (card && state.homeExtras && state.homeExtras.address === card.address && state.homeExtras.places && state.homeExtras.places.placements) || [];
-    const all = [];
-    if (card) all.push({ coord: card.address, tree: CONN.treeOf(card.address), home: true, current: !station });
-    for (const p of places) {
-      if (card && p.coord === card.address) continue;
-      all.push({ coord: p.coord, tree: CONN.treeOf(p.host), home: false, current: !!station && p.placement_id === station.placement_id, placement_id: p.placement_id, gloss: p.gloss });
+    const station = currentCoordinate();
+    const listed = state.conn?.places || (state.homeExtras?.address === card?.address ? state.homeExtras?.places : null);
+    const known = new Map();
+    if (card) {
+      for (const p of state.tree?.elsewhere?.[card.address] || []) known.set(coordId(p) || p.coord, p);
+      for (const p of state.coordinatesByCard.get(card.address) || []) known.set(coordId(p) || p.coord, p);
+    }
+    if (station) known.set(coordId(station), station);
+    for (const p of coordinateRows(listed)) known.set(coordId(p) || p.coord, p);
+    const all = [...known.values()].map((p) => ({
+      ...p, id: coordId(p), tree: p.tree || CONN.treeOf(p.host || p.coord),
+      home: p.is_filing ?? (card?.address === p.coord || (p.origin === 'native' || p.origin === 'root')),
+      current: station ? coordId(p) === coordId(station) : p.coord === card?.address,
+    }));
+    if (card && !all.some((p) => p.home)) {
+      all.push({ coord: card.address, tree: CONN.treeOf(card.address), home: true, current: !station });
     }
     const rank = (c) => (c.home ? 0 : c.current ? 1 : 2);
     return all.sort((a, b) => rank(a) - rank(b) || a.coord.localeCompare(b.coord));
@@ -1278,11 +1380,10 @@
   }
 
   /**
-   * The stamps on a card's head: one per coordinate. The stamp copies its coordinate; the small ↗
-   * beside every stamp but the current one shows the Card in that tree. One gesture per object.
+   * The Card head stamps its filing and current locations. The Inspector lists the other locations.
    */
   function coordinateHead(card) {
-    const list = cardCoordinates(card);
+    const list = cardCoordinates(card).filter((c) => c.current || c.home);
     return h('span', { class: 'stamps', id: 'coord-stamps' }, ...list.map((c) => h('span', { class: 'place' }, coordinateStamp(c), c.current ? null : openTab(c))));
   }
 
@@ -1300,16 +1401,79 @@
     slot.replaceWith(coordinateHead(card));
   }
 
-  /** Open the Card at one of its coordinates: its home (from a station, with a way back), a station,
-   *  or a mount beside a Topic Card (that Card opens, its tab for this mount marked). */
+  /** Open the exact Coordinate, with a way back when leaving a Connection station for its filing. */
   function openPlace(c) {
     // An explicit switch of tree shows the tree.
     if (state.mode !== 'map') setMode('map');
-    if (c.home) return state.conn && state.conn.station ? excursion(state.conn.station) : go(c.coord);
-    if (CONN.roleOf(c.tree) === 'connection') return openStation(c.placement_id);
-    state.markMount = c.placement_id;
-    state.markAnchor = c.coord.split('+')[0];
-    return go(state.markAnchor);
+    if (c.home && state.conn?.station && c.tree !== state.conn.tree.tree) return excursion(state.conn.station);
+    return c.id ? openStation(c.id) : go(c.coord);
+  }
+
+  async function addCoordinateHere(s) {
+    const value = await promptValue('Add coordinate here', 'Card address, Citation key, or handle:', state.card?.address || '');
+    if (!value?.trim()) return;
+    const edge = s.edge === 'root' ? 'direct'
+      : await promptValue('Choose a position', `Type "direct" to place it after ${s.coord}, or "side" for a Side branch.`, 'side');
+    if (edge === null) return;
+    const position = edge.trim().toLowerCase();
+    if (position !== 'direct' && position !== 'side') throw new Error('Enter direct or side.');
+    const answer = await connWrite('Add coordinate here', 'add_coordinate', {
+      target_at: value.trim(), tree: s.tree || s.host || state.tree.tree, parent_coord_id: coordId(s), edge: position,
+    });
+    if (answer) openStation(coordId(answer));
+  }
+
+  async function detachCoordinate(s, current, replacements) {
+    const args = { coord_id: coordId(s), children: 'reattach' };
+    if (current?.home) {
+      const value = await promptValue('Choose the new Filing Coordinate', replacements.map((p) => p.coord).join('\n'), replacements[0].coord);
+      if (value === null) return;
+      const replacement = replacements.find((p) => p.coord === value.trim());
+      if (!replacement) throw new Error('Choose one of the listed Coordinates.');
+      args.replacement_filing_coord_id = replacement.id;
+    }
+    const answer = await connWrite('Remove this coordinate', 'detach_coordinate', args);
+    if (!answer) return;
+    const filing = args.replacement_filing_coord_id || cardCoordinates(state.card).find((p) => p.home)?.id;
+    if (filing && filing !== coordId(s)) openStation(filing);
+    else if (coordParent(s)) openStation(coordParent(s));
+    else go(null);
+  }
+
+  async function refileHere(s) {
+    const answer = await connWrite('Refile here', 'refile_card', { card_id: s.card_id, to_coord_id: coordId(s) });
+    if (answer) openStation(coordId(s));
+  }
+
+  function coordinateInspector(card) {
+    const coords = cardCoordinates(card);
+    const s = currentCoordinate();
+    const current = coords.find((p) => p.current);
+    const others = coords.filter((p) => !p.current);
+    const filing = coords.find((p) => p.home);
+    const writable = (p) => p?.can_edit_coordinate ?? p?.can_edit_placement;
+    const hostWorkspace = s?.host_workspace || (state.conn?.tree || state.tree)?.workspace;
+    const canEdit = !PORTABLE && writable(s);
+    const replacements = others.filter((p) => p.id && writable(p) && p.host_workspace === card?.workspace);
+    const canRefile = canEdit && card && current && !current.home && filing?.edge !== 'root'
+      && hostWorkspace === card.workspace && current.can_edit_card !== false;
+    const canDetach = canEdit && current && s.edge !== 'root' && (!current.home || replacements.length);
+    if (!others.length && !canEdit) return null;
+    return h('section', { class: 'coordinate-inspector' },
+      others.length ? h('details', {},
+        h('summary', { class: 'section-label', text: `Also at… · ${others.length}` }),
+        h('ul', { class: 'coordinate-list' }, others.map((p) => h('li', {},
+          h('button', { type: 'button', class: 'chip', title: p.gloss || treeName(p.tree), onclick: () => openPlace(p) },
+            h('span', { class: 'addr', text: p.coord })),
+          h('span', { class: 'coordinate-role', text: p.home ? 'Filing' : 'Secondary' }),
+        ))),
+      ) : null,
+      canEdit ? h('div', { class: 'actions' },
+        actionButton('Add coordinate here', null, () => addCoordinateHere(s)),
+        canDetach ? actionButton('Remove this coordinate', null, () => detachCoordinate(s, current, replacements)) : null,
+        canRefile ? actionButton('Refile here', null, () => refileHere(s)) : null,
+      ) : null,
+    );
   }
 
   /** The station's note: the curator's pencil line under the title, as the Map shows it. */
@@ -1376,7 +1540,6 @@
       ['Copy station bookmark', async () => { if (await copyText(`place:${s.placement_id}`)) toast('station bookmark copied'); }],
       live && state.card && !PORTABLE ? ['New Connection tree from this Card', () => treeFromCard(state.card)] : null,
       root && live && state.card && !untitledRoot(state.card) && !PORTABLE ? ['Clear title', () => clearRootTitle(state.card), false, editHost ? null : readOnly] : null,
-      ['Unplace from this tree', () => unplaceStation(s), true, editHost && !root && s.origin !== 'native' ? null : root ? 'The root stays' : s.origin === 'native' ? 'A Card written here is deleted at home, not unplaced' : readOnly],
     ].filter(Boolean);
     return [
       actionButton('Connect', null, () => connectDialog(), editHost ? { title: 'Record a connection from this station to another station of the tree' } : off(readOnly)),
@@ -1425,17 +1588,34 @@
     return button;
   }
 
-  /** A station whose Card was deleted at home: the same card, empty, keeping its place. */
-  function missingStationCard() {
-    const s = state.conn.station;
+  /** A Missing Coordinate keeps its place, gloss and successors after its Card is deleted. */
+  function missingStationCard(s = state.conn?.station) {
     if (!s) return [h('div', { class: 'welcome' }, h('p', { text: 'This station no longer exists.' }))];
+    const conn = state.conn;
+    const previous = s.home_address || s.last_address;
+    const children = conn ? [] : [...state.byCoordId.values()].filter((p) => coordParent(p) === coordId(s));
+    const canRepair = !PORTABLE && s.edge !== 'root' && (s.can_edit_coordinate ?? s.can_edit_placement);
     return [h('article', { class: 'card missing-station' },
       h('header', { class: 'card-head' },
-        h('div', { class: 'card-meta' }, h('span', { class: 'kind-tag', text: 'Missing mount' }), coordinateHead(null)),
-        h('h1', { class: 'title' }, s.title || s.home_address),
-        stationNote()),
-      h('div', { class: 'md' }, h('p', { class: 'empty', text: `Its Card ${s.home_address} was deleted at home. The station keeps its place, its note and its connections: rebind it to another Card, or unplace it.` }))),
-    h('div', { class: 'card-tools' }, connectionChips(), h('div', { class: 'actions' }, ...stationTreeActions()))];
+        h('div', { class: 'card-meta' }, h('span', { class: 'kind-tag', text: conn ? 'Missing mount' : 'Missing Coordinate' }), coordinateHead(null)),
+        h('h1', { class: 'title' }, s.title || s.last_title || previous || s.coord),
+        conn ? stationNote() : s.gloss ? h('p', { class: 'station-note', text: s.gloss }) : null),
+      h('div', { class: 'md' }, h('p', { class: 'empty', text: `Its Card ${previous} was deleted at home.` }))),
+    conn
+      ? h('div', { class: 'card-tools' }, connectionChips(), h('div', { class: 'actions' }, ...stationTreeActions()))
+      : h('div', { class: 'card-tools' },
+        children.length ? h('section', {},
+          h('div', { class: 'section-label', text: 'Child Coordinates' }),
+          h('ul', { class: 'coordinate-list' }, children.map((p) => h('li', {},
+            h('a', { class: 'chip', href: CONN.stationHash(coordId(p)), title: p.gloss || p.title },
+              h('span', { class: 'addr', text: p.coord }), h('span', { class: 't', text: p.title || p.last_title || '' })),
+          ))),
+        ) : null,
+        canRepair ? h('div', { class: 'actions' },
+          actionButton('Rebind', null, () => rebindStation(s)),
+          actionButton('Detach', null, () => detachCoordinate(s)),
+        ) : null,
+      )];
   }
 
   /** Connect this station to another one: the far station, the direction, a word, a kind, a note. */
@@ -1527,29 +1707,30 @@
   }
 
   async function unplaceStation(s) {
-    const hasChildren = (state.conn.tree.placements || []).some((p) => p.parent_id === s.placement_id);
-    const args = { placement_id: s.placement_id };
+    const hasChildren = coordinateRows(state.conn.tree).some((p) => coordParent(p) === coordId(s));
+    const args = { coord_id: coordId(s) };
     if (hasChildren) {
       const policy = await promptValue(`Unplace ${s.coord}`, 'It has successors: type "reattach" (they take its place) or "detach" (the whole branch goes):', 'reattach');
       if (!policy) return;
       args.children = policy.trim();
     }
-    const answer = await connWrite(`Unplace ${s.coord}`, 'unplace', args);
-    if (answer) openStation(s.parent_id || state.conn.tree.root_placement_id);
+    const answer = await connWrite(`Unplace ${s.coord}`, 'detach_coordinate', args);
+    if (answer) openStation(coordParent(s) || state.conn.tree.root_coord_id || state.conn.tree.root_placement_id);
   }
 
   async function rebindStation(s) {
+    const tree = state.conn?.tree || state.tree;
     const target = await promptValue(`Rebind ${s.coord}`, 'The live Card that should stand here instead:', '');
-    if (!target) return;
-    const tree = state.conn.tree;
-    const incident = (tree.connections || []).filter((c) => c.from.placement_id === s.placement_id || c.to.placement_id === s.placement_id);
+    if (!target?.trim()) return;
+    const id = coordId(s);
+    const incident = (tree.connections || []).filter((c) => coordId(c.from) === id || coordId(c.to) === id);
     const dispositions = {};
     for (const c of incident) {
       const keep = await confirmPlan('Connection of the missing Card', [CONN.sentence(c), 'Type `keep` to recreate it on the new Card; cancel to delete it.'], 'keep');
       dispositions[c.connection_id] = keep ? 'keep' : 'delete';
     }
-    const answer = await connWrite(`Rebind ${s.coord}`, 'rebind_placement', { placement_id: s.placement_id, target_at: target.trim(), connection_dispositions: dispositions });
-    if (answer) openStation(answer.placement_id);
+    const answer = await connWrite(`Rebind ${s.coord}`, 'rebind_coordinate', { coord_id: id, target_at: target.trim(), connection_dispositions: dispositions });
+    if (answer) openStation(coordId(answer));
   }
 
   async function promoteNative(s) {
@@ -1734,70 +1915,25 @@
     if (state.overview && !state.card && !state.conn && state.mode === 'map') renderDesk();
   }
 
-  /** At a home Card: the trees it also stands in, and the Topic-side mounts beside a Topic Card. */
+  /** Load the full Coordinate list when the Reader opens a Card from its canonical address. */
   function homeExtras(card) {
-    const extras = state.homeExtras && state.homeExtras.address === card.address ? state.homeExtras : null;
-    if (!extras) {
-      state.homeExtras = { address: card.address, places: null, shelf: null };
-      Promise.all([
-        connApi('list_placements', { at: card.address }).catch(() => null),
-        connApi('list_side_mounts', { at: card.address }).catch(() => null),
-      ]).then(([places, shelf]) => {
-        if (!state.card || state.card.address !== card.address) return;
-        state.homeExtras = { address: card.address, places, shelf };
+    if (state.homeExtras?.address !== card.address) {
+      const loading = { address: card.address, places: null };
+      state.homeExtras = loading;
+      connApi(PORTABLE ? 'list_placements' : 'list_coordinates', { at: card.address }).catch(() => null).then((places) => {
+        if (state.homeExtras !== loading || state.card?.address !== card.address || state.conn) return;
+        loading.places = places;
         const slot = document.querySelector('#home-extras');
         if (slot) slot.replaceWith(homeExtras(card));
         const stamps = document.querySelector('#coord-stamps');
         if (stamps) fillCoords(stamps, card);
-        // The Map tucks the Topic-side mounts behind this Card: each peeks out on the card stock of
-        // the tree it comes from, apart from the Card's own `|a` branches.
-        const mounts = shelf && shelf.mounts ? shelf.mounts : [];
-        const node = document.querySelector(`.node[data-address="${CSS.escape(card.address)}"]`);
-        if (node && mounts.length && !node.querySelector('.beside-tabs')) node.append(besideTabs(card.address, mounts));
       });
     }
-    const shelf = extras && extras.shelf && extras.shelf.mounts ? extras.shelf.mounts : [];
-    // The Cards beside this one read like its Links: one chip each, on its tree's colour.
-    const besideChip = (m) => {
-      const tree = CONN.treeOf(m.home_address);
-      const role = CONN.roleOf(tree);
-      return h('button', {
-        class: 'chip beside-chip' + (m.status === 'missing' ? ' broken' : '') + (state.markMount === m.placement_id ? ' marked' : ''), type: 'button',
-        style: `--tree-h:${CONN.treeHue(tree, role)};--coord-h:${CONN.treeHue(CONN.treeOf(m.coord), 'topic')}`,
-        title: `${m.coord} · ${m.home_address}${m.gloss ? '\n✎ ' + m.gloss : ''}`,
-        onclick: () => (m.status === 'live' ? go(m.home_address) : toast('Missing mount: its Card was deleted at home', 'warn')),
-      }, h('span', { class: 'addr', text: '+' + m.coord.split('+').pop() }), h('span', { class: 't', text: m.status === 'missing' ? 'missing' : m.title }));
-    };
     return h('div', { id: 'home-extras', class: 'home-extras' },
-      shelf.length ? [h('div', { class: 'section-label', text: `Beside this Card · ${shelf.length}` }), h('div', { class: 'chips' }, shelf.map(besideChip))] : null,
+      coordinateInspector(card),
       state.lensHome && state.lensHome.focus.address === card.address ? lensPane(state.lensHome) : null,
       state.companionHome ? companionPane(state.companionHome) : null,
     );
-  }
-
-  /** The Topic-side mounts of a Map card, tucked behind its right edge: three tabs and a +N. */
-  function besideTabs(anchor, mounts) {
-    const marked = mounts.find((m) => m.placement_id === state.markMount);
-    const shown = marked && mounts.indexOf(marked) >= 3 ? [...mounts.slice(0, 2), marked] : mounts.slice(0, 3);
-    const tab = (m) => {
-      const tree = CONN.treeOf(m.home_address);
-      const role = CONN.roleOf(tree);
-      const missing = m.status === 'missing';
-      return h('span', {
-        class: 'beside-tab ' + role + (missing ? ' missing' : '') + (state.markMount === m.placement_id ? ' marked' : ''), role: 'button', tabindex: '0',
-        style: `--tree-h:${CONN.treeHue(tree, role)};--coord-h:${CONN.treeHue(CONN.treeOf(m.coord), 'topic')}`,
-        title: `${m.coord} · ${missing ? 'missing: ' : ''}${m.home_address} · ${m.title}${m.gloss ? ' — ' + m.gloss : ''}`,
-        onclick: (event) => { event.stopPropagation(); if (missing) toast('Missing mount: its Card was deleted at home', 'warn'); else go(m.home_address); },
-      }, h('b', { text: '+' + m.coord.split('+').pop() }), m.title);
-    };
-    return h('span', { class: 'beside-tabs', 'aria-label': `${mounts.length} Topic-side mount(s) beside ${anchor}` },
-      ...shown.map(tab),
-      mounts.length > shown.length ? h('span', {
-        class: 'beside-tab more', role: 'button', tabindex: '0', title: 'Every Card beside this one is listed under the Card in the reader',
-        onclick: (event) => { event.stopPropagation(); const row = document.querySelector('#home-extras'); if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' }); },
-        onkeydown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); event.currentTarget.click(); } },
-        text: `+${mounts.length - shown.length} more`,
-      }) : null);
   }
 
   /** Whether the reader stands at a station of a Connection tree. */
@@ -1816,18 +1952,21 @@
     if (name === 'n') return mountHere();
     if (root) throw new Error(name === 'b' ? 'The root takes no Side branch' : 'The root stays');
     if (name === 'b') return mountHere(undefined, true);
-    if (s.origin === 'native') throw new Error('A Card written here is deleted at home, not unplaced');
+    if (s.is_filing ?? s.origin === 'native') throw new Error('Use the Reader to choose a replacement Filing Coordinate.');
     return unplaceStation(s);
   }
 
   // --------------------------------------------------------------- routing
   function go(address) {
-    // A mount opened from Places stays marked for that one arrival.
-    if (state.markMount && !(address && state.markMount && address === state.markAnchor)) state.markMount = state.markAnchor = null;
     // A Connection-tree root, a coordinate or a station bookmark opens the station view.
     if (address && /^~\d+$/.test(address)) return openConnTree(address);
-    if (address && (/^~\d+\//.test(address) || /\+\d+$/.test(address))) return openConnTree(address);
+    if (address && /\+\d+$/.test(address)) return go(address.split('+')[0]);
+    if (address && /^~\d+\//.test(address)) return openConnTree(address);
     if (address && /^place:/.test(address)) return openStation(address.slice(6));
+    const occurrence = address && state.byCoordId.get(state.tree?.byCoord?.get(address));
+    if (occurrence && occurrence.is_filing === false && !state.byAddress.has(address)) {
+      return openStation(coordId(occurrence));
+    }
     const hash = address ? '#/card/' + enc(address) : '#/';
     if (location.hash === hash) route();
     else location.hash = hash;
@@ -1837,17 +1976,7 @@
     const parsed = CONN.parseHash(location.hash);
     if (parsed.kind === 'place' || parsed.kind === 'conn') {
       if (/\+\d+$/.test(parsed.value)) {
-        // A Topic-side mount coordinate opens the Topic Card it stands beside, its tab marked, as
-        // Places does; unless the reader has moved on before the answer came.
-        const seq = pointerLoads.begin();
-        connApi('list_placements', { at: parsed.value }).then((listed) => {
-          if (!pointerLoads.isLatest(seq)) return;
-          // The Card's placements are every tree it stands in: mark the mount this coordinate names.
-          const mount = (listed.placements || []).find((p) => p.coord === parsed.value) || null;
-          state.markMount = mount ? mount.placement_id : null;
-          state.markAnchor = parsed.value.split('+')[0];
-          go(state.markAnchor);
-        }).catch(fail);
+        go(parsed.value.split('+')[0]);
         return;
       }
       state.pointer = null;
@@ -1858,19 +1987,21 @@
       return;
     }
     state.conn = null;
+    state.activeCoordId = null;
     const match = location.hash.match(/^#\/card\/(.+)$/);
     const pointer = match ? decodeURIComponent(match[1]) : null;
     // A Link to a Connection root opens its tree; a Link to a native Card opens its home station.
     if (pointer && /^~\d+$/.test(pointer)) { openConnTree(pointer); return; }
     if (pointer && /^~\d+#\d+$/.test(pointer)) {
       const seq = pointerLoads.begin();
-      connApi('list_placements', { at: pointer }).then((listed) => {
+      connApi(PORTABLE ? 'list_placements' : 'list_coordinates', { at: pointer }).then((listed) => {
         // A late answer after another move is dropped: the reader never jumps back.
         if (!pointerLoads.isLatest(seq)) return;
         // A promoted Card opens at its Topic home; a native Card at its home station.
         if (listed.home && !listed.home.startsWith('~')) { go(listed.home); return; }
-        const home = (listed.placements || []).find((p) => p.host === pointer.split('#')[0]);
-        if (home) openStation(home.placement_id);
+        const home = coordinateRows(listed).find((p) => listed.filing_coord_id
+          ? coordId(p) === listed.filing_coord_id : p.origin === 'native' && p.host === pointer.split('#')[0]);
+        if (home) openStation(coordId(home));
         else go(listed.home || null);
       }).catch(fail);
       return;
@@ -1895,6 +2026,7 @@
     if (!state.pointer) {
       showPending(null);
       state.card = null;
+      setMapTree(null);
       renderAll();
       return;
     }
@@ -1907,6 +2039,10 @@
       card = await api('card?at=' + enc(pointer) + (via ? '&via=' + enc(via) : ''), undefined, signal);
     } catch (error) {
       if (!pointerLoads.isLatest(seq)) return;
+      const listed = await connApi(PORTABLE ? 'list_placements' : 'list_coordinates', { at: pointer }).catch(() => null);
+      if (!pointerLoads.isLatest(seq)) return;
+      const coordinate = coordinateRows(listed).find((p) => p.coord === pointer);
+      if (coordinate) { openStation(coordId(coordinate)); return; }
       showPending(null);
       // Another client removed this Card: fall back to its nearest ancestor.
       const known = new Set(state.nodes.map((node) => node.address));
@@ -1927,8 +2063,7 @@
         throw error;
       }
       if (!pointerLoads.isLatest(seq)) return;
-      state.tree = tree;
-      state.outline = ZtLayout.outline(tree.cards, tree.root);
+      setMapTree(cardMap(tree));
     }
     state.card = card;
     showPending(null);
@@ -1992,10 +2127,10 @@
       spliceTrees(change.drop, fetched, overview.trees);
       const open = state.tree && state.tree.tree;
       const mine = fetched.find((tree) => tree.tree === open);
-      if (mine) { state.tree = mine; state.outline = ZtLayout.outline(mine.cards, mine.root); }
-      else if (open && change.drop.includes(open)) { state.tree = null; state.outline = null; }
+      if (mine) setMapTree(cardMap(mine));
+      else if (open && change.drop.includes(open)) setMapTree(null);
     }
-    if (change.graph) { state.tree = null; state.outline = null; }
+    if (change.graph) setMapTree(null);
     if (change.graph || change.fetch.length || change.drop.length) sky.invalidate();
     state.prints = prints;
     // Coordinates live outside the Card summaries: a mount, a move or a tree connection changes no
@@ -2007,7 +2142,7 @@
       const open = state.tree && state.tree.tree;
       if (open && !String(open).startsWith('conn:') && !change.graph && !change.fetch.includes(open)) {
         const again = await api('tree?id=' + enc(open)).catch(() => null);
-        if (again && state.tree && state.tree.tree === open) { state.tree = again; state.outline = ZtLayout.outline(again.cards, again.root); }
+        if (again && state.tree && state.tree.tree === open) setMapTree(cardMap(again));
         else if (!again) revisionRead = false;
       }
       state.homeExtras = null;
@@ -2036,7 +2171,12 @@
     // Card load here would supersede the station and leave the page at ROOT.
     const routed = CONN.parseHash(location.hash);
     if (routed.kind === 'place' || routed.kind === 'conn') {
-      await loadStation(routed).catch((error) => toast(String(error.message || error), 'err'));
+      const previous = state.card?.address;
+      await loadStation(routed).catch((error) => {
+        const message = String(error.message || error);
+        toast(message, 'err');
+        if (state.activeCoordId === routed.value && /(?:coordinate|placement) removed/i.test(message)) go(previous || null);
+      });
       return;
     }
     await loadPointer();
@@ -2725,17 +2865,17 @@
       }),
       h('a', { href: '#/', text: 'ROOT' }),
     ];
-    if (state.conn && state.conn.station) {
-      // At a station the trail is its path in the Connection tree, read from the tree's stations.
-      const byId = new Map((state.conn.tree.placements || []).map((p) => [p.placement_id, p]));
+    if (state.activeCoordId || state.conn?.station) {
+      const station = currentCoordinate();
+      const byId = state.conn ? new Map(coordinateRows(state.conn.tree).map((p) => [coordId(p), p])) : state.byCoordId;
       const chain = [];
-      for (let at = byId.get(state.conn.station.placement_id); at; at = at.parent_id ? byId.get(at.parent_id) : null) chain.unshift(at);
+      for (let at = station; at; at = byId.get(coordParent(at))) chain.unshift(at);
       const shown = chain.length > 5 ? [chain[0], '…', ...chain.slice(-3)] : chain;
       for (const at of shown) {
         trail.push(h('span', { class: 'sep', text: '›' }));
         if (at === '…') trail.push(h('span', { class: 'sep', text: '…' }));
-        else if (at.placement_id === state.conn.station.placement_id) trail.push(h('span', { class: 'cur', text: at.coord }));
-        else trail.push(h('a', { href: CONN.stationHash(at.placement_id), text: at.coord }));
+        else if (at === station) trail.push(h('span', { class: 'cur', text: at.coord }));
+        else trail.push(h('a', { href: CONN.stationHash(coordId(at)), text: at.coord }));
       }
     } else if (state.pointer) {
       const chain = [];
@@ -2757,8 +2897,8 @@
   /** The camera of the view that lays Cards on a plane: the Map's or the Table's. */
   const planeCamera = () => (state.mode === 'table' ? camera.table : camera.map);
   const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
-  /** Whether the Map shows a tree now: an open Card, or a station of a Connection tree. */
-  const onMap = () => state.mode === 'map' && !!(state.conn ? state.conn.focusCard : state.card);
+  /** Whether the Map shows a tree now, including a selected Missing Coordinate. */
+  const onMap = () => state.mode === 'map' && !!(state.conn ? state.conn.focusCard : state.card || missingCoordinate());
 
   // The viewport's size, read once and then kept current by a ResizeObserver (#240), so a render
   // never forces a layout just to learn it. A size of zero (the stage not laid out yet) is read again.
@@ -2828,14 +2968,7 @@
       // The stations are index cards in the same focus lens as a Topic or Literature tree, each on
       // the card stock of the tree it comes from; the tree connections are the focus's Links.
       const conn = state.conn;
-      if (conn.mapFrom !== conn.tree) {
-        conn.map = CONN.mapTree(conn.tree);
-        conn.outline = ZtLayout.outline(conn.map.cards, conn.map.root);
-        conn.mapFrom = conn.tree;
-      }
-      state.tree = conn.map;
-      state.outline = conn.outline;
-      conn.focusCard = CONN.focusCard(conn.map, conn.station ? conn.station.coord : conn.map.root);
+      if (state.tree !== conn.map) setMapTree(conn.map);
       for (const id of ['#desk', '#table-plane', '#term-toggle', '#cross-toggle', '#sky', '#table-tools', '#table-empty', '#table-hand', '#ask-bar']) $(id).hidden = true;
       $('#stage-title').hidden = false;
       $('#plane').hidden = false;
@@ -2855,9 +2988,9 @@
         + (conn.tree.locked ? ' · locked' : '');
       return;
     }
-    const inTree = state.mode === 'map' && state.card;
+    const inTree = onMap();
     const onTableMode = state.mode === 'table';
-    $('#desk').hidden = !(state.mode === 'map' && !state.card);
+    $('#desk').hidden = state.mode !== 'map' || inTree;
     $('#plane').hidden = !inTree;
     $('#table-plane').hidden = !onTableMode;
     // While a question's proposal lies on the Table, the ask bar takes the stage row: the title and
@@ -2870,7 +3003,7 @@
     if (!onTableMode) { $('#table-empty').hidden = true; $('#table-hand').hidden = true; $('#ask-bar').hidden = true; }
     $('#sky').hidden = state.mode !== 'constellation';
     $('#sky-label').hidden = true;
-    $('.zoom').hidden = state.mode === 'map' && !state.card;
+    $('.zoom').hidden = state.mode === 'map' && !inTree;
     renderTableCount();
     const lens = $('#lens-toggle');
     lens.hidden = !inTree;
@@ -2904,14 +3037,14 @@
       title.textContent = spreads.previewing()
         ? (count ? `Ask · ${count} proposed card${count === 1 ? '' : 's'} on a temporary Table` : 'Ask · nothing justified')
         : (count ? `On the Table · ${count} card${count === 1 ? '' : 's'}` : 'The Table');
-    } else if (!state.card) {
+    } else if (!inTree) {
       title.textContent = `The cabinet · ${wsLabel(state.workspace)} workspace`;
       renderDesk();
     } else {
       map.render();
       const tree = state.tree;
       const shown = map.shownCount();
-      const total = tree.cards.length;
+      const total = (tree.mapCards || tree.cards).length;
       title.textContent = `${tree.kind === 'literature' ? 'Literature' : 'Topic'} ${tree.tree} · ${tree.title} — `
         + (shown < total ? `${shown} of ${total} cards in view` : `${total} card${total === 1 ? '' : 's'}`);
     }
@@ -3026,7 +3159,7 @@
   // counts. Only the Pointer's Links are drawn. Each move of the Pointer re-runs the
   // layout and glides the cards to their new places.
   const map = (() => {
-    const els = new Map();   // address -> node element, only for nodes the camera sees (#241)
+    const els = new Map();   // Coordinate ID -> node element, only for nodes the camera sees (#241)
     const paths = new Map(); // edge key -> SVG path
     let drawn = new Map();   // address -> geometry of every node of the lens, as on screen now
     let view = null;
@@ -3043,6 +3176,8 @@
     let partStarts = new Map();
     let span = new Set();
     const cam = camera.map;
+    const keyOf = (path) => state.tree?.byCoord?.get(path) || path;
+    const pathOf = (key) => state.byCoordId.get(key)?.coord || key;
 
     const STAGE_TOP = 62;
     const GLIDE_LIMIT = 150; // more moving cards than this snap (#240)
@@ -3061,18 +3196,19 @@
     function content(el, card, n, outline) {
       if (card.station) { stationContent(el, card, n); return; }
       const external = card.links.filter((target) => !outline.card.has(target)).length;
-      // Where this Card also stands: a station in a Connection tree, a mount beside a Topic Card.
-      const elsewhere = (state.tree && state.tree.elsewhere && state.tree.elsewhere[card.address]) || null;
-      const exits = n.lod === 'focus' ? CONN.exitsAt(state.tree && state.tree.crossings, card.address).map((e) => `${e.tree}:${e.n}`).join(' ') : '';
-      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.facet, card.emphasis, card.level, card.inbound, external, card.excerpt, elsewhere ? elsewhere.map((e) => e.coord).join(' ') : '', exits].join('\u0001');
+      const occurrence = card.coordinate;
+      const home = card.homeAddress || card.address;
+      const others = occurrence ? Math.max(0, occurrence.places - 1) : (state.tree.elsewhere?.[home]?.length || 0);
+      const exits = n.lod === 'focus' ? projectionExits(home, n.address) : [];
+      const signature = [n.lod, n.role, n.folded, card.address, card.title, card.type, card.facet, card.emphasis, card.level, card.inbound, external, card.excerpt, occurrence?.repeatCount, others, ...exits.map((e) => `${e.tree}:${e.id}:${e.n}`)].join('\u0001');
       setClass(el, ['node', n.lod, 'role-' + n.role,
         card.edge === 'root' ? 'root ' + card.kind : '',
         card.type && card.type !== 'idea' ? 'type-' + card.type + hubClass(card) : '',
         card.facet ? 'model-part' : '',
         n.folded ? 'folded' : '',
-        state.linkedIn && state.linkedIn.has(card.address) ? 'in' : '',
-        state.linkedOut && state.linkedOut.has(card.address) ? 'out' : '',
-        spreads.has(card.address) ? 'on-table' : '',
+        state.linkedIn && state.linkedIn.has(n.address) ? 'in' : '',
+        state.linkedOut && state.linkedOut.has(n.address) ? 'out' : '',
+        spreads.has(home) ? 'on-table' : '',
       ].filter(Boolean).join(' '));
       if (el.dataset.sig === signature) return;
       el.dataset.sig = signature;
@@ -3085,16 +3221,16 @@
       const slash = card.address.indexOf('/');
       // Inside a Literature tree the long Citation key is known, so cards show the rest.
       const short = card.edge !== 'root' && slash > 4 ? '…' + card.address.slice(slash) : card.address;
-      const others = elsewhere ? elsewhere.length : 0;
+      const repeat = repeatBadge(occurrence?.repeatCount);
       if (n.lod === 'slip') {
-        el.replaceChildren(...[h('span', { class: 'addr', text: short }), title, morePlaces(card.address, others), typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form), fold].filter(Boolean));
+        el.replaceChildren(...[h('span', { class: 'addr', text: short }), title, repeat, morePlaces(card.address, others, coordId(occurrence)), typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form), fold].filter(Boolean));
         return;
       }
       el.replaceChildren(...[
         h('span', { class: 'top' },
-          n.lod === 'focus' ? mapStamps([{ coord: card.address, tree: CONN.treeOf(card.address), current: true }]) : h('span', { class: 'addr', text: short }),
+          n.lod === 'focus' ? mapStamps([{ coord: card.address, tree: state.tree.tree, current: true }]) : h('span', { class: 'addr', text: short }),
           h('span', { class: 'badges' },
-            morePlaces(card.address, others),
+            repeat, morePlaces(card.address, others, coordId(occurrence)),
             typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form),
             card.inbound ? h('span', { class: 'badge in', title: `Referred by ${card.inbound}`, text: '←' + card.inbound }) : null,
             external ? h('span', { class: 'badge', title: 'Links to other trees', text: '↗' + external }) : null,
@@ -3103,23 +3239,38 @@
         ),
         title,
         n.lod === 'focus' && card.excerpt ? h('span', { class: 'x', text: card.excerpt }) : null,
-        n.lod === 'focus' ? exitMarks(card.address) : null,
+        exits.length ? exitMarks(exits) : null,
       ].filter(Boolean));
     }
 
-    /** On the lifted card: each crossing tree that goes on outside this tree from here (D4). */
-    function exitMarks(address) {
-      const exits = CONN.exitsAt(state.tree && state.tree.crossings, address);
-      if (!exits.length) return null;
+    /** A crossing may leave from several distinct stations of the same Card. */
+    function projectionExits(home, key) {
+      const exits = [];
+      for (const [tree, cross] of Object.entries(state.tree.crossings || {})) {
+        const stations = (cross.stations || []).filter((s) => s.target_coord_ids
+          ? s.target_coord_ids.includes(key) : s.address === home);
+        if (!cross.exits_by_coord) {
+          const n = cross.exits?.[home];
+          if (n) exits.push({ tree, n, id: coordId(stations[0]), coord: stations[0]?.coord });
+          continue;
+        }
+        for (const s of stations) {
+          const id = coordId(s);
+          const n = cross.exits_by_coord[id];
+          if (n) exits.push({ tree, n, id, coord: s.coord });
+        }
+      }
+      return exits;
+    }
+
+    function exitMarks(exits) {
       return h('span', { class: 'exits' }, ...exits.map((e) => {
-        const cross = state.tree.crossings[e.tree] || {};
-        const station = (cross.stations || []).find((st) => st.address === address);
         return h('span', {
-          class: 'exit', role: 'button', tabindex: '0',
-          title: `${CONN.treeLabel(cross)} goes on outside this tree here (${e.n} step${e.n === 1 ? '' : 's'}): show this Card in ${e.tree}`,
-          onclick: (event) => { event.stopPropagation(); if (station) openStation(station.placement_id); },
-          onkeydown: (event) => { if ((event.key === 'Enter' || event.key === ' ') && station) { event.preventDefault(); event.stopPropagation(); openStation(station.placement_id); } },
-        }, `${e.tree} ↗`);
+          class: 'exit', role: e.id ? 'button' : null, tabindex: e.id ? '0' : null,
+          title: `${CONN.treeLabel(state.tree.crossings[e.tree])} goes on outside this tree here (${e.n} step${e.n === 1 ? '' : 's'}): open ${e.coord || e.tree}`,
+          onclick: (event) => { event.stopPropagation(); if (e.id) openStation(e.id); },
+          onkeydown: (event) => { if ((event.key === 'Enter' || event.key === ' ') && e.id) { event.preventDefault(); event.stopPropagation(); openStation(e.id); } },
+        }, `${e.coord || e.tree} ↗`);
       }));
     }
 
@@ -3135,10 +3286,10 @@
         st.status === 'missing' ? 'missing' : '', st.portal ? 'portal' : '', st.gloss ? 'glossed' : '',
         card.type && card.type !== 'idea' ? 'type-' + card.type : '',
         n.folded ? 'folded' : '',
-        state.linkedIn && state.linkedIn.has(card.address) ? 'in' : '',
-        state.linkedOut && state.linkedOut.has(card.address) ? 'out' : '',
+        state.linkedIn && state.linkedIn.has(n.address) ? 'in' : '',
+        state.linkedOut && state.linkedOut.has(n.address) ? 'out' : '',
       ].filter(Boolean).join(' '));
-      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.inbound, card.excerpt, st.home, st.status, st.gloss, st.hue, st.places].join('\u0001');
+      const signature = [n.lod, n.role, n.folded, card.address, card.title, card.type, card.inbound, card.excerpt, st.home, st.status, st.gloss, st.hue, st.places, st.repeatCount, st.isFiling].join('\u0001');
       if (el.dataset.sig === signature) return;
       el.dataset.sig = signature;
       el.style.setProperty('--tree-h', st.hue);
@@ -3151,21 +3302,22 @@
       // only the places beyond those two, so a plain mount carries no mark.
       const places = missing ? 0 : st.places || 1;
       const coords = [
-        missing ? null : { coord: st.home, tree: st.tree, home: true, current: false },
+        missing || st.isFiling ? null : { coord: st.home, tree: st.tree, home: true, current: false },
         { coord: card.address, tree: thisTree(), home: false, current: true },
       ].filter(Boolean);
       const others = missing ? 0 : Math.max(0, places - 1);
       const gone = missing ? h('span', { class: 'badge missing', title: 'Its Card was deleted at home; the station keeps its place, note and connections', text: 'missing' }) : null;
       const portal = st.portal ? h('span', { class: 'badge portal', text: CONN.portalLabel({ portal: st.portal }) }) : null;
+      const repeat = repeatBadge(st.repeatCount);
       if (n.lod === 'slip') {
-        el.replaceChildren(...[h('span', { class: 'addr', text: card.address }), title, gone, morePlaces(card.address, others), fold].filter(Boolean));
+        el.replaceChildren(...[h('span', { class: 'addr', text: card.address }), title, gone, repeat, morePlaces(card.address, others, st.id), fold].filter(Boolean));
         return;
       }
       el.replaceChildren(...[
         h('span', { class: 'top' },
           n.lod === 'focus' ? mapStamps(coords) : h('span', { class: 'addr', text: card.address }),
           h('span', { class: 'badges' },
-            gone, portal, morePlaces(card.address, others),
+            gone, portal, repeat, morePlaces(card.address, others, st.id),
             typeStamp(card.type, null),
             card.inbound ? h('span', { class: 'badge in', title: `${card.inbound} tree connection(s) point here`, text: '←' + card.inbound }) : null,
             fold,
@@ -3210,15 +3362,20 @@
     }
 
     /** @N: the Card stands in N more places; pressing it opens the Card, whose head lists them all. */
-    function morePlaces(address, count) {
+    function morePlaces(address, count, id) {
       if (!count) return null;
+      const open = () => id ? openStation(id) : go(address);
       return h('span', {
         class: 'more-places', role: 'button', tabindex: '0',
-        onkeydown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); go(address); } },
+        onkeydown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); open(); } },
         title: `Also at ${count} other place${count === 1 ? '' : 's'}: open the Card to see and copy every coordinate`,
         'aria-label': `Show ${count} more coordinate${count === 1 ? '' : 's'}`,
-        onclick: (event) => { event.stopPropagation(); go(address); },
+        onclick: (event) => { event.stopPropagation(); open(); },
       }, '@' + count);
+    }
+
+    function repeatBadge(count) {
+      return count > 1 ? h('span', { class: 'badge coordinate-repeat', title: `${count} Coordinates of this Card in this tree`, text: '×' + count }) : null;
     }
 
     /** A bundle (#239): the slips a long list's window leaves out, as one thick stack of slip
@@ -3226,16 +3383,18 @@
      *  riffles through them. */
     function bundleContent(el, n) {
       setClass(el, 'node bundle ' + (n.count >= 1000 ? 'thick-3' : n.count >= 100 ? 'thick-2' : 'thick-1'));
-      const signature = [n.count, n.cards, n.from, n.through].join('\u0001');
+      const from = pathOf(n.from);
+      const through = pathOf(n.through);
+      const signature = [n.count, n.cards, from, through].join('\u0001');
       if (el.dataset.sig === signature) return;
       el.dataset.sig = signature;
       const short = (address) => { const slash = address.indexOf('/'); return slash > 4 ? '…' + address.slice(slash) : address; };
       const behind = n.cards > n.count ? `, ${n.cards} cards with their successors` : '';
-      el.title = `${n.count} slip${n.count === 1 ? '' : 's'} filed here, ${n.from} … ${n.through}${behind} · click to riffle through them`;
+      el.title = `${n.count} slip${n.count === 1 ? '' : 's'} filed here, ${from} … ${through}${behind} · click to riffle through them`;
       el.setAttribute('aria-label', el.title);
       el.replaceChildren(
         h('span', { class: 'count', text: '+' + n.count }),
-        h('span', { class: 'range', text: `${short(n.from)} … ${short(n.through)}` }),
+        h('span', { class: 'range', text: `${short(from)} … ${short(through)}` }),
       );
     }
 
@@ -3244,16 +3403,19 @@
       const bundle = n.kind === 'bundle';
       const el = h('button', {
         class: 'node',
-        dataset: { address },
         onclick: (event) => {
           event.stopPropagation();
           if (bundle) { riffle(address); return; }
-          if (state.conn) { go(address); return; }
+          const card = state.outline.card.get(address);
+          const home = card.homeAddress || card.address;
+          const occurrence = state.byCoordId.get(address);
+          if (state.conn || occurrence?.status === 'missing') { openStation(address); return; }
           // Alt-click marks a span from the open card through this one (S7, #235).
-          if (event.altKey) { markSpan(address); return; }
+          if (event.altKey && occurrence?.is_filing !== false) { markSpan(home); return; }
           // Shift-click lays the card on the Table, or takes it back, without leaving the Map.
-          if (event.shiftKey) { toggleTable(address); render(); return; }
-          go(address);
+          if (event.shiftKey) { toggleTable(home); render(); return; }
+          if (occurrence?.is_filing === false) openStation(address);
+          else go(home);
         },
         onpointerenter: bundle ? null : () => { hovered = address; paintEdges(drawn); },
         onpointerleave: bundle ? null : () => { if (hovered === address) { hovered = null; paintEdges(drawn); } },
@@ -3289,8 +3451,11 @@
         }
         if (n.kind === 'bundle') bundleContent(el, n);
         else {
-          content(el, outline.card.get(n.address), n, outline);
-          el.classList.toggle('in-span', span.has(n.address));
+          const card = outline.card.get(n.address);
+          el.dataset.address = card.address;
+          if (state.byCoordId.has(n.address)) el.dataset.coordId = n.address;
+          content(el, card, n, outline);
+          el.classList.toggle('in-span', span.has(card.address));
           if (partStarts.has(n.address)) el.dataset.part = partStarts.get(n.address);
           else delete el.dataset.part;
         }
@@ -3391,6 +3556,13 @@
           if (b && seen(view.focus, address) && !near.has(address) && !state.termOut.has(address)) put('u' + address, ZtLayout.linkArc(b, focus, 18), 'e-term in');
         }
       }
+      for (const edge of state.tree.coordEdges || []) {
+        const from = keyOf(edge.from);
+        const to = keyOf(edge.to);
+        if (![from, to].includes(view.focus) && ![from, to].includes(hovered)) continue;
+        const a = geometry.get(from); const b = geometry.get(to);
+        if (a && b && seen(from, to)) put('coord:' + edge.connection_id, ZtLayout.linkArc(a, b, 24), 'e-cross conn hot');
+      }
       // The projection (D4): the Connection trees that cross this tree, drawn for the focus and the
       // hand, or whole with the Crossings switch. A Connection tree's own colour is the Literature ink.
       if (state.tree && state.tree.crossings) {
@@ -3399,13 +3571,27 @@
           state.tree.crossIndexOf = state.tree.crossings;
         }
         for (const line of CONN.visibleCrossings(state.tree.crossIndex, view.focus, hovered, state.crossEdges)) {
-          const a = geometry.get(line.from); const b = geometry.get(line.to);
-          if (!a || !b || !seen(line.from, line.to)) continue;
+          const candidates = (id, at, targets) => targets.length ? targets : [keyOf(at), id];
+          const fromKeys = candidates(line.fromId, line.from, line.fromTargets);
+          const toKeys = candidates(line.toId, line.to, line.toTargets);
+          const choose = (keys, skip) => {
+            for (const key of [view.focus, hovered]) if (key !== skip && keys.includes(key) && geometry.has(key)) return key;
+            return keys.find((key) => key !== skip && geometry.has(key));
+          };
+          let from = choose(fromKeys);
+          const to = choose(toKeys, from) || choose(toKeys);
+          if (from === to) from = choose(fromKeys, to) || from;
+          const a = geometry.get(from); const b = geometry.get(to);
+          if (!a || !b || !seen(from, to)) continue;
           const cls = 'e-cross ' + (line.kind === 'connection' ? 'conn' : line.hops ? 'via' : line.edge)
-            + (line.from === view.focus || line.to === view.focus ? ' hot' : '');
+            + (from === view.focus || to === view.focus ? ' hot' : '');
           // Bowed out to the right a step wider than a Term arc, so it never lies on a Link arc; the
           // lines of one pair of Cards (two assertions, two trees) lie side by side, one lane each.
-          put(line.key, ZtLayout.linkArc(a, b, 40 + line.lane * 14), cls);
+          const lane = 40 + line.lane * 14;
+          // If the plane shows one occurrence, give the two projected endpoints separate anchors on it.
+          const start = from === to ? { ...a, y: a.y - 5 } : a;
+          const end = from === to ? { ...b, y: b.y + 5 } : b;
+          put(line.key, ZtLayout.linkArc(start, end, lane), cls);
           const path = paths.get(line.key);
           const said = CONN.crossingText(line);
           if (path.ztSaid !== said) {
@@ -3485,40 +3671,55 @@
 
     /** What the lens centres on: the open Card, or at a station the station's own summary. */
     function focusOf() {
-      return state.conn && state.mode === 'map' ? state.conn.focusCard : state.card;
+      if (state.conn && state.mode === 'map') return state.conn.focusCard;
+      if (state.card) return state.card;
+      const missing = missingCoordinate();
+      return missing ? { address: missing.coord, tree: state.tree.tree, outbound: [], inbound: [] } : null;
     }
 
     function render() {
       const card = focusOf();
       const outline = state.outline;
       if (!card || !outline) return;
-      const inTree = (address) => outline.card.has(address) && address !== card.address;
+      const focus = (state.conn || !state.activeCoordId) ? keyOf(card.address) : state.activeCoordId;
+      const homeKey = (at) => keyOf(state.tree.byHome?.get(at) || at);
+      const inTree = (key) => outline.card.has(key) && key !== focus;
       // A Model Card's Links to its own parts are its table of contents (its 结构 list), not its
       // reasoning: they draw no pointer thread (#203).
       const ownParts = card.model && card.model.head && card.model.head.address === card.address ? new Set((card.model.parts || []).map((p) => p.address)) : null;
-      const outbound = card.outbound.map((link) => link.address).filter(inTree).filter((at) => !(ownParts && ownParts.has(at)));
+      const outboundAddresses = card.outbound.map((link) => link.address).filter((at) => !(ownParts && ownParts.has(at)));
+      const outbound = outboundAddresses.map(homeKey).filter(inTree);
       // Where a part (range block) of the open Card's model starts on the main line, its node
       // carries the part's name (#203); the label is drawn above the node and moves no Card.
       partStarts = new Map();
       if (card.model && card.model.blocks) {
         let last = null;
-        for (const b of card.model.blocks) if (b.part && b.part !== last) { partStarts.set(b.head, b.part); last = b.part; }
+        for (const b of card.model.blocks) if (b.part && b.part !== last) { partStarts.set(homeKey(b.head), b.part); last = b.part; }
       }
       // The in-tree sources come apart from the lean inbound list (#255); `null` means more than
       // sixteen, which draw no arcs. An older answer without the field keeps the whole list.
-      const inbound = card.inbound_near === undefined
-        ? card.inbound.map((link) => link.address).filter(inTree)
-        : (card.inbound_near || []).filter(inTree);
+      const inboundSources = card.inbound_near === undefined || (state.activeCoordId && card.tree !== state.tree.tree)
+        ? card.inbound.map((link) => link.address) : card.inbound_near || [];
+      const inbound = inboundSources.map(homeKey).filter(inTree);
+      const preferred = homeKey(card.address);
+      const summaryOf = (at) => {
+        const summary = outline.card.get(at);
+        if (!summary || preferred === focus || at === focus || !summary.links.includes(preferred)) return summary;
+        const retarget = (key) => key === preferred ? focus : key;
+        return { ...summary, links: summary.links.map(retarget),
+          kinds: Object.fromEntries(Object.entries(summary.kinds || {}).map(([key, kind]) => [retarget(key), kind])),
+          term_use_targets: (summary.term_use_targets || []).map(retarget) };
+      };
       // The lens shows the same Cards whether Term edges are drawn or not (S16, #158): the switch
       // only adds or removes the dotted Term arcs, so no Card moves when it is pressed.
-      const arcs = ZtLayout.focusEdges((at) => outline.card.get(at), card.address, outbound, inbound, state.termEdges);
+      const arcs = ZtLayout.focusEdges(summaryOf, focus, outbound, inbound, state.termEdges);
       state.linkedOut = new Set(arcs.out);
       state.linkedIn = new Set(arcs.in);
       state.termOut = new Set(arcs.termOut);
       state.termIn = new Set(arcs.termIn);
       const fresh = !view || view.tree !== state.tree.tree;
-      if (fresh || windowsFor !== card.address) { windows = {}; windowsFor = card.address; }
-      view = ZtLayout.focusLens(outline, card.address, {
+      if (fresh || windowsFor !== focus) { windows = {}; windowsFor = focus; }
+      view = ZtLayout.focusLens(outline, focus, {
         links: arcs.lens, expandAll: state.expandAll, windows,
       });
       view.tree = state.tree.tree;
@@ -3627,8 +3828,8 @@
     document.addEventListener('selectstart', (event) => {
       if (document.body.classList.contains('holding')) event.preventDefault();
     });
-    // Images and links in the views are never dragged out as files or URLs.
-    viewport.addEventListener('dragstart', (event) => event.preventDefault());
+    // Keep native image and URL drags out of the view while allowing the Map's own drags.
+    viewport.addEventListener('dragstart', (event) => { if (!dragFrom) event.preventDefault(); });
   }
 
   function installPanZoom() {
@@ -5429,9 +5630,11 @@
     if (state.conn) {
       // A station reads as its Card; a missing station as the same card, empty.
       if (!state.card) reader.replaceChildren(...missingStationCard());
+      const coordinates = coordinateInspector(state.card);
+      if (coordinates) reader.append(coordinates);
       if (state.conn.companion) reader.append(companionPane(state.conn.companion));
       if (state.conn.lens) reader.append(lensPane(state.conn.lens));
-    } else if (state.card && !PORTABLE) {
+    } else if (state.card && (!PORTABLE || state.tree?.byCoord)) {
       reader.append(homeExtras(state.card));
     }
     if (!state.conn && state.excursion) {
@@ -5444,6 +5647,11 @@
     const reader = $('#reader');
     const card = state.card;
     if (!card) {
+      const missing = missingCoordinate();
+      if (missing) {
+        reader.replaceChildren(...missingStationCard(missing));
+        return;
+      }
       const summary = (state.overview.workspaces || []).find((item) => item.id === state.workspace)
         || { cards: 0, topic_trees: 0, literature_trees: 0 };
       reader.replaceChildren(h('div', { class: 'welcome' },
@@ -9202,8 +9410,9 @@
     const note = ZtDraft.checkNote(result || accepted);
     accepted = null;
     if (message) toast(message, note && note.fresh ? 'warn' : null, null, note ? checkSlip(note) : null);
+    const here = (state.activeCoordId || state.conn?.stationId) && address === state.card?.address ? location.hash : null;
     await refresh();
-    go(address);
+    if (!here || location.hash !== here) go(address);
   }
 
   /** A new Card; `preset` may give its title and body, and lay it on the Table once saved. */
@@ -9633,16 +9842,16 @@
     el.classList.remove('drop-before', 'drop-side', 'drop-after');
     if (zone) el.classList.add(zone === 'side_of' ? 'drop-side' : `drop-${zone}`);
   };
-  function wireDrag(el, address) {
+  function wireDrag(el, key) {
     el.draggable = true;
     el.addEventListener('dragstart', (event) => {
-      dragFrom = address;
-      event.dataTransfer.setData('text/plain', address);
+      dragFrom = key;
+      event.dataTransfer.setData('text/plain', el.dataset.address);
       event.dataTransfer.effectAllowed = 'move';
     });
     el.addEventListener('dragend', () => { dragFrom = null; });
     el.addEventListener('dragover', (event) => {
-      if (!dragFrom || dragFrom === address) return;
+      if (!dragFrom || dragFrom === key) return;
       event.preventDefault();
       showDrop(el, dropZone(el, event));
     });
@@ -9651,14 +9860,36 @@
       event.preventDefault();
       const zone = dropZone(el, event);
       showDrop(el, null);
-      const from = dragFrom;
+      const sourceKey = dragFrom;
       dragFrom = null;
-      if (!from || from === address) return;
+      if (!sourceKey || sourceKey === key) return;
+      const source = state.byCoordId.get(sourceKey);
+      const target = state.byCoordId.get(key);
+      if (source?.is_filing === false || target?.is_filing === false) {
+        if (source && target) moveMapCoordinate(source, target, zone).catch(fail);
+        return;
+      }
+      const from = source?.coord || sourceKey;
+      const address = target?.coord || key;
       const cards = spanCards();
       const span = cards.includes(from) ? { from: cards[0], through: cards.at(-1) } : { from, through: from };
       const name = span.through === span.from ? span.from : `${span.from}..${span.through}`;
       applyTree(`Move ${name}`, [{ tool: 'move_span', arguments: { ...span, [zone]: address } }]).catch(fail);
     });
+  }
+
+  async function moveMapCoordinate(source, target, zone) {
+    const destination = { parent_coord_id: coordId(target), edge: zone === 'side_of' ? 'side' : 'direct' };
+    if (zone === 'before') {
+      if (!coordParent(target)) throw new Error('Choose a position below the root.');
+      destination.parent_coord_id = coordParent(target);
+      destination.edge = target.edge;
+      if (target.edge === 'side') destination.before_coord_id = coordId(target);
+    }
+    const answer = await connWrite(`Move ${source.coord}`, 'move_coordinate', {
+      coord_id: coordId(source), destination, mode: 'alone',
+    });
+    if (answer) openStation(coordId(source));
   }
 
   /**
@@ -9852,8 +10083,7 @@
       }
       // Alt+↑ / Alt+↓ move the open card one place among its siblings (S7, #235).
       if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
-        // At a station the Card's home order is not what the reader sees: Alt+↑/↓ do nothing there.
-        if (isTyping(event.target) || !state.card || state.card.context !== 'regular' || state.conn) return;
+        if (isTyping(event.target) || !state.card || state.card.context !== 'regular' || state.conn || currentCoordinate()?.is_filing === false) return;
         event.preventDefault();
         stepCard(event.key === 'ArrowUp' ? -1 : 1).catch(fail);
         return;
@@ -9861,29 +10091,34 @@
       if (isTyping(event.target) || event.ctrlKey || event.metaKey || event.altKey) return;
       const card = state.card;
       const run = (fn) => { event.preventDefault(); Promise.resolve().then(fn).catch(fail); };
-      // At a station the writing keys act on the station and the arrows walk its tree; the Card at
-      // home is edited from there with e (Back to station returns).
+      // Arrows walk the Coordinate structure, including repeated occurrences of the same Card.
+      const occurrence = currentCoordinate();
+      if (occurrence && ['u', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight'].includes(event.key)) {
+        const id = coordId(occurrence);
+        const edge = event.key === 'ArrowDown' ? 'direct' : event.key === 'ArrowRight' ? 'side' : null;
+        const next = edge
+          ? [...state.byCoordId.values()].find((row) => coordParent(row) === id && row.edge === edge)
+          : state.byCoordId.get(coordParent(occurrence));
+        if (next) return run(() => openStation(coordId(next)));
+        if (state.conn || edge) return;
+      }
       if (state.conn && state.conn.station) {
         const s = state.conn.station;
-        const cards = state.conn.map ? state.conn.map.cards : [];
-        const here = cards.find((c) => c.address === s.coord);
-        const child = (edge) => cards.filter((c) => c.parent === s.coord && c.edge === edge).map((c) => c.address).sort()[0];
         // The keys do what the station's buttons do, under the same permission.
         const editHost = s.can_edit_placement;
         switch (event.key) {
           case 'n': return editHost ? run(() => mountHere()) : undefined;
           case 'b': return editHost && s.edge !== 'root' ? run(() => mountHere(undefined, true)) : undefined;
           case 'm': return editHost && s.edge !== 'root' ? run(() => moveStation(s)) : undefined;
-          case 'Delete': return editHost && s.edge !== 'root' && s.origin !== 'native' ? run(() => unplaceStation(s)) : undefined;
+          case 'Delete': return editHost && s.edge !== 'root' && !(s.is_filing ?? s.origin === 'native') ? run(() => unplaceStation(s)) : undefined;
           case 'e': return s.status === 'live' && s.can_edit_card ? run(editCard) : undefined;
           case 'c': return run(() => copyAddress(s.coord));
           case 'i': case 'Tab': return undefined;
-          case 'u': case 'ArrowUp': case 'ArrowLeft': return here && here.parent ? run(() => go(here.parent)) : undefined;
-          case 'ArrowDown': { const next = child('direct'); return next ? run(() => go(next)) : undefined; }
-          case 'ArrowRight': { const next = child('side'); return next ? run(() => go(next)) : undefined; }
           default: break;
         }
       }
+      // These shortcuts operate on the Filing Coordinate's tree.
+      if (occurrence?.is_filing === false && ['m', 'i', 'Delete'].includes(event.key)) return;
       switch (event.key) {
         case ':': return run(() => $('#command-input').focus());
         case '/': return run(() => finder.open());
@@ -9898,7 +10133,7 @@
         case 'l': return run(() => newLiterature());
         case 'm': return card ? run(() => moveCard()) : undefined;
         // Tab indents the open card (or its marked span) under the card before it; Shift+Tab outdents.
-        case 'Tab': return card && card.context === 'regular' && !(event.target && event.target.closest && event.target.closest('button, a, [role="button"], [tabindex]')) ? run(() => outline(event.shiftKey ? 'outdent' : 'indent')) : undefined;
+        case 'Tab': return card && card.context === 'regular' && occurrence?.is_filing !== false && !(event.target && event.target.closest && event.target.closest('button, a, [role="button"], [tabindex]')) ? run(() => outline(event.shiftKey ? 'outdent' : 'indent')) : undefined;
         case 'i': return card && card.context === 'regular' ? run(insertCard) : undefined;
         case 'Delete': return card ? run(deleteCard) : undefined;
         case 'u': case 'ArrowUp': case 'ArrowLeft':

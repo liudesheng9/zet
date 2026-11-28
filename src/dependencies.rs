@@ -20,7 +20,7 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::coord::{self, Placement};
+use crate::coord;
 use crate::{Access, CardType, Workspace};
 
 const DEFAULT_MAX_NODES: usize = 200;
@@ -515,7 +515,6 @@ fn overlay_value(
     let tree = coord::resolve_tree(conn, tree)?;
     let shape = coord::load_tree_shape(conn, &tree)?;
     let by_card: BTreeMap<String, &String> = nodes.iter().map(|(address, n)| (n.card_id.clone(), address)).collect();
-    let address_of = |p: &Placement| -> Option<String> { coord::address_of_card_id(conn, &p.card_id).ok().flatten() };
     let mut matched = BTreeSet::new();
     let mut local = Vec::new();
     for e in crate::connection::edges_of_tree(conn, &tree.tree_id)? {
@@ -533,19 +532,25 @@ fn overlay_value(
                 .get(&(f.clone(), t.clone()))
                 .is_some_and(|evidence| evidence.iter().any(|ev| ev["kind"].as_str() == Some("rests-on")))
         };
-        let value = crate::connection::edge_value(conn, &shape, &e)?;
-        if compatible
-            && let (Some(f), Some(t)) = (&from_node, &to_node)
-            && authored_rests_on(f, t)
-        {
+        let both = compatible
+            && matches!((&from_node, &to_node), (Some(f), Some(t)) if authored_rests_on(f, t));
+        if both && let (Some(f), Some(t)) = (&from_node, &to_node) {
             matched.insert((f.clone(), t.clone()));
-            local.push(json!({"class": "both", "from": f, "to": t, "connection": value}));
-            continue;
         }
+        let value = crate::connection::edge_value(conn, &shape, &e)?;
+        let from_address = match from_node {
+            Some(address) => Some(address),
+            None => coord::address_of_card_id(conn, &from.card_id)?,
+        };
+        let to_address = match to_node {
+            Some(address) => Some(address),
+            None => coord::address_of_card_id(conn, &to.card_id)?,
+        };
         local.push(json!({
-            "class": "tree_local",
-            "from": from_node.or_else(|| address_of(from)),
-            "to": to_node.or_else(|| address_of(to)),
+            "class": if both { "both" } else { "tree_local" },
+            "from": from_address, "to": to_address,
+            "from_coord_id": e.from, "to_coord_id": e.to,
+            "from_coord": shape.coord[&e.from], "to_coord": shape.coord[&e.to],
             "connection": value,
         }));
     }
@@ -568,7 +573,12 @@ pub(crate) fn seed(
     args: &Value,
     confirm: &mut dyn FnMut(&str, &[String], &Value) -> Result<Option<Value>>,
 ) -> Result<Value> {
-    let from = opt_str(args, "from").context("missing `from` (hub, spread, dependencies or search)")?;
+    let from = opt_str(args, "from").context("missing `from` (hub, spread, dependencies, search or outline)")?;
+    let mode = match args.get("mode") {
+        None | Some(Value::Null) => "unique",
+        Some(Value::String(mode)) if matches!(mode.as_str(), "unique" | "occurrences") => mode.as_str(),
+        _ => bail!("seed mode must be unique or occurrences"),
+    };
     let params = args.get("source_params").cloned().unwrap_or_else(|| json!({}));
     // The root has no meaning (docs/connection-trees-free-proposal.md D2): the title is optional.
     let title = opt_str(args, "title").unwrap_or_default();
@@ -654,32 +664,42 @@ pub(crate) fn seed(
                 lens["seed_order"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()
             }
         }
-        "search" => params
+        "search" | "outline" => params
             .get("cards")
+            .or_else(|| params.get("order"))
             .and_then(Value::as_array)
-            .context("search seeding needs source_params.cards, the selected Cards in order")?
+            .context("seeding from search or outline needs source_params.cards in occurrence order")?
             .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect(),
-        other => bail!("unknown seed source `{other}`; expected hub, spread, dependencies or search"),
+            .map(|value| value.as_str().map(str::to_string).context("each seed target must be a string"))
+            .collect::<Result<Vec<_>>>()?,
+        other => bail!("unknown seed source `{other}`; expected hub, spread, dependencies, search or outline"),
     };
     let mut seen = BTreeSet::new();
     let mut ordered = Vec::new();
     let mut duplicates = Vec::new();
     let mut missing = Vec::new();
     for at in candidates {
-        let Some(address) = coord::canonical(conn, &at)? else {
+        let card_id = if coord::is_uuid(&at) && coord::identity(conn, &at)?.is_some() {
+            Some(at.clone())
+        } else if let Some(address) = coord::canonical(conn, &at)? {
+            Some(coord::card_id_of(conn, &address)?)
+        } else {
+            coord::resolve_coord(conn, &at).ok().map(|row| row.card_id)
+        };
+        let Some(card_id) = card_id else {
             missing.push(at);
             continue;
         };
-        let card = crate::load_card(conn, &address)?;
-        let card_id = coord::card_id_of_row(conn, card.row_id)?;
-        if !seen.insert(card_id.clone()) {
+        let Some(address) = coord::address_of_card_id(conn, &card_id)? else {
+            missing.push(at);
+            continue;
+        };
+        if mode == "unique" && !seen.insert(card_id.clone()) {
             duplicates.push(at);
             continue;
         }
-        let title = crate::parse_card_text(&card.text).map(|p| p.title).unwrap_or_default();
+        let card = crate::load_card(conn, &address)?;
+        let title = crate::parse_card_text(&card.text)?.title;
         ordered.push((address, card_id, title));
     }
     if ordered.is_empty() {
@@ -697,6 +717,7 @@ pub(crate) fn seed(
         lines.push(format!("missing, skipped: {m}"));
     }
     let effects = json!({
+        "mode": mode,
         "order": ordered.iter().map(|(a, id, _)| json!([a, id])).collect::<Vec<_>>(),
         "duplicates": duplicates,
         "missing": missing,
@@ -712,11 +733,11 @@ pub(crate) fn seed(
     for (address, card_id, _) in &ordered {
         let id = coord::new_uuid()?;
         conn.execute(
-            "INSERT INTO placements(placement_id, host_kind, host_tree_key, card_id, parent_id, anchor_card_id, edge, ordinal, gloss)
-             VALUES(?1, 'connection', ?2, ?3, ?4, NULL, 'direct', NULL, NULL)",
-            rusqlite::params![id, tree.tree_id, card_id, parent],
+            "INSERT INTO coordinates(coord_id, tree_id, host_workspace, card_id, parent_coord_id, edge, slot)
+             VALUES(?1, ?2, ?3, ?4, ?5, 'direct', NULL)",
+            rusqlite::params![id, tree.tree_id, tree.workspace.id(), card_id, parent],
         )?;
-        stations.push(json!({"placement_id": id, "home_address": address}));
+        stations.push(json!({"coord_id": id, "placement_id": id, "card_id": card_id, "home_address": address}));
         parent = id;
     }
     let shape = coord::load_tree_shape(conn, &tree)?;
@@ -733,6 +754,7 @@ pub(crate) fn seed(
         "tree": tree.handle(),
         "tree_id": tree.tree_id,
         "stations": stations,
+        "mode": mode,
         "duplicates": duplicates,
         "missing": missing,
         "connections": 0,

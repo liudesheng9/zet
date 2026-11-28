@@ -95,27 +95,14 @@ fn install(target: &ScratchBox, source: &ScratchBox, dump: &Dump) {
         .unwrap();
     }
     tx.execute("UPDATE metadata SET value = ?1 WHERE key = 'next_topic_id'", [dump.manifest["next_topic_id"].to_string()]).unwrap();
-    // The coordinate tables, as the source archive defines them.
+    // The coordinate tables (v2), as the source archive defines them.
     let source_db = writer::open(source.archive_root.join("zt.sqlite3")).unwrap();
-    for table in ["card_identity", "card_handles", "connection_trees", "placements", "placement_edges", "retired_placements"] {
+    for table in ["trees", "card_identity", "card_handles", "coordinates", "coordinate_edges", "retired_coordinates"] {
         let sql: String = source_db.query_row("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1", [table], |r| r.get(0)).unwrap();
         tx.execute_batch(&sql).unwrap();
     }
     let c = &dump.coordinates;
-    assert_eq!(c["version"], 1);
-    for i in c["identities"].as_array().unwrap() {
-        let live = i["status"] == "live";
-        let row: Option<i64> = if live {
-            Some(tx.query_row("SELECT row_id FROM cards WHERE location = ?1 OR citation_key = ?1", [i["address"].as_str().unwrap()], |r| r.get(0)).unwrap())
-        } else {
-            None
-        };
-        tx.execute(
-            "INSERT INTO card_identity(card_id, card_row, status, last_address, last_title, retired_at_rev) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![i["card_id"].as_str(), row, i["status"].as_str(), i["last_address"].as_str(), i["last_title"].as_str(), i["retired_at_rev"].as_i64()],
-        )
-        .unwrap();
-    }
+    assert_eq!(c["version"], 2);
     let insert_all = |table: &str, rows: &Value| {
         for row in rows.as_array().unwrap() {
             let map = row.as_object().unwrap();
@@ -137,12 +124,34 @@ fn install(target: &ScratchBox, source: &ScratchBox, dump: &Dump) {
             tx.execute(&sql, rusqlite::params_from_iter(values)).unwrap();
         }
     };
-    insert_all("card_handles", &c["handles"]);
-    insert_all("connection_trees", &c["connection_trees"]);
-    insert_all("placements", &c["placements"]);
-    insert_all("placement_edges", &c["placement_edges"]);
-    insert_all("retired_placements", &c["retired_placements"]);
-    tx.execute("INSERT INTO metadata(key, value) VALUES('coordinates_schema_version', '1')", []).unwrap();
+    for i in c["card_identity"].as_array().unwrap() {
+        let live = i["status"] == "live";
+        let row: Option<i64> = if live {
+            Some(tx.query_row("SELECT row_id FROM cards WHERE location = ?1 OR citation_key = ?1", [i["last_address"].as_str().unwrap()], |r| r.get(0)).unwrap())
+        } else {
+            None
+        };
+        tx.execute(
+            "INSERT INTO card_identity(card_id, card_row, owner_workspace, status, filing_coord_id, last_address, last_title, retired_at_rev) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                i["card_id"].as_str(),
+                row,
+                i["owner_workspace"].as_str(),
+                i["status"].as_str(),
+                i["filing_coord_id"].as_str(),
+                i["last_address"].as_str(),
+                i["last_title"].as_str(),
+                i["retired_at_rev"].as_i64()
+            ],
+        )
+        .unwrap();
+    }
+    insert_all("trees", &c["trees"]);
+    insert_all("card_handles", &c["card_handles"]);
+    insert_all("coordinates", &c["coordinates"]);
+    insert_all("coordinate_edges", &c["coordinate_edges"]);
+    insert_all("retired_coordinates", &c["retired_coordinates"]);
+    tx.execute("INSERT INTO metadata(key, value) VALUES('coordinates_schema_version', '2')", []).unwrap();
     tx.execute("INSERT INTO metadata(key, value) VALUES('next_connection_id', ?1)", [c["next_connection_id"].as_str().unwrap()]).unwrap();
     tx.commit().unwrap();
     drop(conn);
@@ -173,9 +182,9 @@ fn a_dump_rebuilds_an_archive_where_handles_bookmarks_and_connections_resolve() 
 
     let d = dump(&source);
     let c = &d.coordinates;
-    assert_eq!(c["version"], 1, "{c}");
-    assert_eq!(c["handles"].as_array().unwrap().len(), 3, "~1, ~1#1, ~1#2: {c}");
-    assert_eq!(c["placement_edges"][0]["connection_id"], edge["connection_id"]);
+    assert_eq!(c["version"], 2, "{c}");
+    assert_eq!(c["card_handles"].as_array().unwrap().len(), 3, "~1, ~1#1, ~1#2: {c}");
+    assert_eq!(c["coordinate_edges"][0]["connection_id"], edge["connection_id"]);
     assert!(d.mapping.contains_key("0/2") && d.mapping.contains_key("~1#2") && d.mapping.contains_key("~1"), "{:?}", d.mapping.keys());
 
     let target = ScratchBox::up();

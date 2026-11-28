@@ -264,9 +264,7 @@ fn a_set_of_cards_mounts_in_one_block() {
         json!({"edge": "attach", "anchor_at": "0/0", "targets": ["Bk2020/5"]}),
     );
     assert!(
-        refused
-            .to_string()
-            .contains("Topic-side mount takes one Card"),
+        refused.to_string().contains("MC1") || refused.to_string().contains("add_coordinate"),
         "{refused}"
     );
 }

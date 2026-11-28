@@ -68,10 +68,12 @@ fn a_legacy_archive_upgrades_with_one_identity_per_card_and_no_other_change() {
         .count();
     assert_eq!(backups, 1, "the upgrade backed the archive up once");
     let db = writer::open(scratch.archive_root.join("zt.sqlite3")).unwrap();
-    for table in ["placements", "card_handles", "placement_edges", "connection_trees"] {
+    for table in ["card_handles", "coordinate_edges"] {
         let n: i64 = db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0, "{table} starts empty");
     }
+    let coords_n: i64 = db.query_row("SELECT COUNT(*) FROM coordinates", [], |r| r.get(0)).unwrap();
+    assert_eq!(coords_n as usize, before.len(), "one Filing Coordinate per Card");
     drop(db);
     scratch.cmd().arg("down").assert().success();
     scratch.cmd().arg("up").assert().success();
@@ -101,8 +103,8 @@ fn an_older_writer_cannot_change_the_upgraded_archive() {
         "DELETE FROM cards WHERE location = '0/0'",
         "INSERT INTO cards(location, is_topic, is_lit, text) VALUES('9/0', 1, 0, '# x\n')",
         "DELETE FROM links",
-        "DELETE FROM placements",
-        "UPDATE connection_trees SET purpose = 'x'",
+        "DELETE FROM coordinates",
+        "UPDATE trees SET purpose = 'x'",
         "DELETE FROM lock_placements",
         "DELETE FROM lock_placement_pins",
     ] {

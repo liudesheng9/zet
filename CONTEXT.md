@@ -102,40 +102,49 @@ A Literature Card and all Regular Cards whose Location starts with `<citation-ke
 _Avoid_: Reference tree
 
 **Connection tree**:
-关联树. An authored Folgezettel tree `~<n>` in which a person or agent mounts any Cards, or any set of Cards at once, from anywhere in the archive, arranges them freely on a spine (`~7/1`, `~7/2`, Side branches `~7/2|a`) whatever their home trees are, writes native Cards in it (`~7#4`), and records Tree connections between any two of its stations. Its root Card `~7` has no special meaning: unlike a Literature root (the source's metadata) or a Topic root (a Topic), it is an ordinary Card that may hold a title, a body, or nothing (an untitled root is stored with its handle as its title and reads as untitled). A short shelf tag `purpose` is optional metadata. Each Card stands in it at most once. The root is citable as `[[~7]]`. Its number is never reused. There are meant to be many more Connection trees than Literature trees. See docs/multi-tree-coordinates-proposal.md and docs/connection-trees-free-proposal.md.
+关联树. An authored Folgezettel tree `~<n>` in which a person or agent places any Cards, or any set of Cards at once, from anywhere in the archive (including the same Card multiple times), arranges them freely on a spine (`~7/1`, `~7/2`, Side branches `~7/2|a`) whatever their Filing trees are, writes native Cards in it (`~7#4`), and records Tree connections between any two of its Coordinates. Its root Card `~7` has no special meaning: unlike a Literature root (the source's metadata) or a Topic root (a Topic), it is an ordinary Card that may hold a title, a body, or nothing (an untitled root is stored with its handle as its title and reads as untitled). A short shelf tag `purpose` is optional metadata. The root is citable as `[[~7]]`. Its number is never reused. There are meant to be many more Connection trees than Literature trees. See docs/multi-tree-coordinates-proposal.md, docs/connection-trees-free-proposal.md, and docs/multi-coordinate-cards-proposal.md.
 _Avoid_: Reading tree, working tree, relation tree, graph tree
 
 **Card identity**:
-The immutable `card_id` a Card receives once when it is created, independent of its Location or Citation key. A deleted Card's identity is retired (with its last address and title), never deleted or reused.
+The immutable `card_id` a Card receives once when it is created, independent of its Location or Citation key. It carries its immutable `owner_workspace` and a commit-enforced `filing_coord_id` pointing to its Filing Coordinate. A deleted Card's identity is retired (with its last address and title), never deleted or reused.
+
+**Coordinate**:
+坐标. One occurrence (`coord_id`, UUID) of a Card in any Tree (`Topic`, `Literature`, or `Connection`), stored uniformly in `coordinates` with `(tree_id, host_workspace, card_id, parent_coord_id, edge, slot, gloss)`. Every live Card has **at least one** Coordinate, and may hold **multiple** Coordinates across different Trees or **multiple** Coordinates in the **same** Tree (including beneath itself by Card identity, while `parent_coord_id` stays strictly acyclic). Its path (`3/2|a`, `Hart1995/4`, `~7/2|a`) is derived from the Tree topology and sparse `slot`; a Secondary Coordinate path is navigation-only and refused inside `[[…]]`, whereas `[label](place:<coord_id>)` bookmarks one specific occurrence. See docs/multi-coordinate-cards-proposal.md.
+_Avoid_: Copy, duplicate, placement (legacy storage term)
+
+**Filing Coordinate**:
+主归档坐标. The single distinguished Coordinate (`card_identity.filing_coord_id`) of a live Card in its `owner_workspace` that defines its canonical citation address (`Location`, `Citation key`, or Connection `Handle`), its write-gate context, and its membership in scholarly structural reports (`Model`, `Math`, `Term`, `Cited`, `Hub`). Changing it requires an explicit `refile_card` (or `promote_card`) operation within `owner_workspace`. Also referred to as a Card's **Home** coordinate.
+_Avoid_: Primary copy
+
+**Secondary Coordinate**:
+次坐标. Any Coordinate of a Card other than its Filing Coordinate (`coord_id != card_identity.filing_coord_id`). It has its own parent, edge (`direct` or `side`), sparse `slot`, children, positional gloss, and Tree connections, without copying Card text, rewriting `[[…]]` Links, or altering scholarly structural reports. Topic trees admit Secondary Coordinates from any Tree directly onto standard Direct/Side slots (replacing retired `+k` mounts); Literature trees admit repeated Secondary Coordinates of their own filed Cards; Connection trees admit any Card freely.
+_Avoid_: Topic-side mount (retired `+k` shelf), alias, copy
 
 **Home**:
-The single tree that owns a Card (Topic, Literature or Connection tree). It decides the Card's Workspace, its Lock, its write gate context and every structural report (Model, Math, Term, Cited, Hub). A mount never changes it; promotion (`move_home`) does.
+The Tree containing a Card's Filing Coordinate (Topic, Literature, or Connection tree). It decides the Card's canonical address, its write-gate context, and every scholarly structural report (Model, Math, Term, Cited, Hub). Adding or moving Secondary Coordinates never changes it; explicit `refile_card` or `promote_card` does.
 
 **Handle**:
-A permanent citation address issued by a Connection tree: `~7` for its root and `~7#4` for its fourth native Card. A handle is never reused and keeps naming its Card after the Card is promoted into a Topic tree and after its Connection tree is deleted. `/` always means tree traversal; `#` always means a handle.
+A permanent citation address issued by a Connection tree: `~7` for its root and `~7#4` for its fourth native Card. A handle is never reused and keeps naming its Card after the Card is promoted or refiled into a Topic tree and after its Connection tree is deleted. `/` always means tree traversal; `#` always means a handle.
 
 **Station**:
-One occurrence (placement, `placement_id`) of a Card in a Connection tree or beside a Topic Card. Its coordinate (`~7/2|a`, `3/2+1`) is derived from its position and changes when the tree is reorganized, so a coordinate is navigation only and is refused inside `[[…]]`. A station bookmark `[label](place:<uuid>)` follows the station.
+A Coordinate viewed in the Terminal Session or a Connection tree (`coord_id`, bookmarked by `[label](place:<uuid>)`). Its derived coordinate path changes when the tree is reorganized; only a Filing Coordinate's canonical address or Handle may stand inside `[[…]]`.
 _Avoid_: Copy, reference (a station is no copy of the Card)
 
 **Mount**:
-A station whose Card has its Home in another tree. Mounting places one Card by identity and writes nothing in it; a mounted tree root stands as one portal station and never expands its home tree.
-
-**Topic-side mount**:
-An ordered station `<loc>+k` beside a Topic home Card, for outside evidence. It takes no `|a` slot, rewrites no Link, and earns no Hub coverage; it follows its anchor Card by identity.
+A Secondary Coordinate whose Card has its Filing Coordinate in another tree. Placing adds a Coordinate by `card_id` and writes nothing into the Card; a mounted Tree root stands as one portal Coordinate and never expands its home tree.
 
 **Positional gloss**:
-An optional one-line plain-text note (at most 240 characters, no Links) on a non-root station: why this Card sits at this spot. A move that changes a station's structural predecessor asks for the gloss to be reviewed.
+An optional one-line plain-text note (at most 240 characters, no Links) on a non-root Coordinate: why this Card sits at this spot. A move that changes a Coordinate's structural predecessor asks for the gloss to be reviewed.
 
 **Tree connection**:
-An authored association recorded by a Connection tree's editor between two of its stations (`connection_id`): neutral (a blank quick-connect, no claim) or directed, with an optional free label (1–32 characters, never translated), an optional canonical Relation kind (for local filtering) and an optional plain note (at most 400 characters). It follows its two placement IDs through every reorganization and is never a Link: it writes no Card, no Reverse link and no Model report. Its provenance reads "In this tree · ~7".
+An authored association recorded between two Coordinates (`from_coord_id`, `to_coord_id`) of the same Tree (`connection_id`): neutral (a blank quick-connect, no claim) or directed, with an optional free label (1–32 characters, never translated), an optional canonical Relation kind (for local filtering), and an optional plain note (at most 400 characters). Both endpoints may belong to different Coordinates of the same Card (`from_coord_id != to_coord_id`). It follows its two Coordinate IDs through every reorganization and is never a Link: it writes no Card, no Reverse link, and no Model report.
 _Avoid_: Link (a Link is authored inside a Card body), edge
 
-**Missing mount**:
-A station whose Card was deleted at its Home. It keeps its coordinate, gloss, children and Tree connections; a new Card at the old Location never revives it; its host's owner repairs it by rebinding (deciding every connection) or detaching it.
+**Missing coordinate**:
+遗失坐标 (formerly *Missing mount*). A surviving Coordinate whose Card was deleted at its Filing Coordinate. It keeps its `coord_id`, derived path, gloss, children, and Tree connections; a new Card at the old Location never revives it; its host's owner repairs it by `rebind_coordinate` (deciding every connection) or `detach_coordinate`.
 
 **Projection**:
-The part of a Connection tree that lies in the plane of the Topic or Literature tree being read (docs/connection-trees-free-proposal.md D4): its stations whose Cards have their home in that tree, a structure line from each of them to its nearest such ancestor in the Connection tree (with the number of stations outside the plane between them), its Tree connections between two such stations, and its exits, where it goes on outside the plane. The root station is the tree itself and is in no plane. The Map draws the projection as Crossings.
+The part of a crossing Tree that lies in the plane of the Tree being read (docs/connection-trees-free-proposal.md D4, docs/multi-coordinate-cards-proposal.md §8.8): keyed by `coord_id`, its Coordinates whose Cards appear in that plane, structure lines to each Coordinate's nearest in-plane ancestor (with `hops` outside the plane, including Missing hops), every Tree connection between two in-plane Coordinates (including equal-Card/different-`coord_id` lines and parallel assertions), and per-Coordinate exits (`exits_by_coord`). The Map draws the projection as Crossings.
 _Avoid_: Overlay (the Dependency Lens overlay is another view), copy
 
 **Dependency Lens**:

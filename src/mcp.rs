@@ -394,14 +394,17 @@ fn call_tool(name: &str, args: &Value, scope: &mut crate::scope::WriteScope) -> 
     let root = archive_root()?;
     // Every writer below checks its real Link rewrites against a Literature scope.
     let _rewrites = scope.rewrite_guard(name);
-    if crate::connection::is_tool(name) {
+    if name != "delete_card" && crate::connection::is_tool(name) {
         if crate::connection::is_write_tool(name) {
             scope.check(&crate::open_db(&root)?, name, args, &Default::default())?;
         }
         return crate::connection::run(&root, ACCESS, name, args);
     }
-    if matches!(name, "edit_literature_metadata" | "set_literature_type" | "delete_card" | "move_card" | "insert_card")
-        || crate::tree_ops::is_structural(name)
+    if name != "delete_card"
+        && (matches!(
+            name,
+            "edit_literature_metadata" | "set_literature_type" | "move_card" | "insert_card"
+        ) || crate::tree_ops::is_structural(name))
     {
         // These writers open their own transaction; the scope check reads only the addresses the
         // call names and, for a change, the named Card's type, before any plan is made.
@@ -577,11 +580,36 @@ fn call_tool(name: &str, args: &Value, scope: &mut crate::scope::WriteScope) -> 
             LiteratureType::parse(&string_arg(args, "literature_type")?)?,
         ),
         "delete_card" => {
+            if let Some(card_id) = args.get("card_id").filter(|value| !value.is_null()) {
+                if args.get("at").is_some_and(|value| !value.is_null()) {
+                    bail!("give either `at` (legacy subtree delete) or `card_id` (single Card identity delete), not both");
+                }
+                let card_id = card_id.as_str().context("argument `card_id` must be a string")?;
+                {
+                    let conn = crate::open_db(&root)?;
+                    let identity = crate::coord::identity(&conn, card_id)?
+                        .with_context(|| format!("Card identity `{card_id}` does not exist"))?;
+                    let at = if identity.live {
+                        crate::coord::address_of_card_id(&conn, card_id)?
+                            .unwrap_or(identity.last_address)
+                    } else if args.get("op_key").and_then(Value::as_str).is_some() {
+                        identity.last_address
+                    } else {
+                        bail!("Card identity `{card_id}` is retired or does not exist");
+                    };
+                    let mut scoped_args = args.clone();
+                    scoped_args["at"] = json!(at);
+                    scope.check(&conn, name, &scoped_args, &Default::default())?;
+                }
+                return crate::connection::delete_card_identity(&root, ACCESS, args);
+            }
             let into = optional_string(args, "into")?;
+            let at = string_arg(args, "at")?;
+            scope.check(&crate::open_db(&root)?, name, args, &Default::default())?;
             let outcome = ops::delete_reviewed(
                 &root,
                 ACCESS,
-                &string_arg(args, "at")?,
+                &at,
                 (!into.is_empty()).then_some(into.as_str()),
                 args.get("confirm").and_then(Value::as_str),
                 args.get("plan_hash").and_then(Value::as_str),
@@ -992,6 +1020,11 @@ pub(crate) fn canonical_write_args(name: &str, args: &Value) -> Result<Value> {
             canonical["body"] = json!(optional_string(args, "body")?);
         }
         "delete_card" => {
+            if args.get("at").is_none_or(Value::is_null)
+                && args.get("card_id").is_some_and(Value::is_string)
+            {
+                bail!("delete_card in apply_batch takes `at`; call delete_card directly to use `card_id`");
+            }
             canonical["at"] = json!(string_arg(args, "at")?);
             let into = optional_string(args, "into")?;
             canonical["into"] = json!((!into.is_empty()).then_some(into));
@@ -1626,14 +1659,18 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "delete_card",
             "Delete card",
-            "Delete an agent Card and all its successors; deleting a tree root deletes the whole tree. The plan lists every Link from a Card that stays to a Card that goes (`links that will break`). When you delete a Card whose content now lives in another Card (a merged Model part), pass `into` with that Card: each of those Links is re-pointed to it, so none breaks. Returns a plan first with its `plan_hash`; confirm with the text it names (`delete`, or the root's address) and pass the plan_hash back, so the delete applies only while it removes exactly what the plan showed.",
+            "Delete an agent Card. Use exactly one of `at` for the legacy subtree delete or `card_id` for an identity delete. Deleting a non-root Card by identity preserves its filed descendants. The plan lists incoming Links that would break. Use `into` to redirect those Links to a surviving Card. Review the plan and return its confirmation word and plan_hash. An identity delete confirmation also requires the plan's expected_revision.",
             json!({
-                "at": at,
+                "at": { "type": "string", "description": "Card address for legacy deletion of the Card and its successors. A root address selects the entire tree." },
+                "card_id": { "type": "string", "description": "Live Card identity for deletion. Filed descendants of a non-root Card survive." },
+                "children": { "type": "string", "enum": ["reattach", "detach"], "default": "reattach", "description": "Policy for child Coordinates when deleting by card_id." },
                 "into": { "type": "string", "description": "A Card that stays and now holds the deleted Card's content: every Link to a deleted Card is re-pointed to it." },
                 "confirm": confirm,
                 "plan_hash": { "type": "string", "description": "The plan_hash of the plan you confirm; a plan that changed since is refused as stale." },
+                "expected_revision": { "type": "integer", "minimum": 0, "description": "Archive revision returned by the identity-delete plan." },
+                "op_key": { "type": "string", "description": "Idempotency key for an identity delete." },
             }),
-            &["at"],
+            &[],
             false,
             true,
         ),
@@ -1830,18 +1867,125 @@ fn tool_definitions() -> Vec<Value> {
     .collect()
 }
 
-/// The Connection-tree, Topic-side mount and Dependency Lens tools (docs/multi-tree-coordinates-proposal.md §9.3).
+/// Coordinate tools, Connection-tree adapters, and the Dependency Lens.
 fn connection_tool_definitions() -> Vec<Value> {
     let s = |d: &str| json!({"type": "string", "description": d});
-    let confirm = json!({"type": "string", "description": "The confirmation word the plan returned. Omit it to see the plan without changing anything."});
+    let confirm = json!({"type": "string", "description": "The confirmation word the plan returned. Send the plan's expected_revision and plan_hash with it."});
     let expected = json!({"type": "integer", "description": "The archive_revision the plan was made at; a changed archive refuses the confirmation."});
     let plan_hash = json!({"type": "string", "description": "The plan_hash of the plan; a changed plan refuses the confirmation."});
     let op_key = json!({"type": "string", "description": "Idempotency key: the same key and request replay the stored answer; a different request under the same key is refused."});
-    let gloss_updates = json!({"type": "object", "description": "Gloss review: placement_id → new gloss (a string; the same text keeps it as reviewed) or null (clear). Every station whose structural predecessor changes and has a gloss must be named.", "additionalProperties": {"type": ["string", "null"]}});
+    let gloss_updates = json!({"type": "object", "description": "Gloss review keyed by coord_id (also returned as placement_id). Supply a string to keep or replace the gloss, or null to clear it. Include each Coordinate the plan flags for review.", "additionalProperties": {"type": ["string", "null"]}});
     let kinds = json!({"type": "string", "enum": crate::coord::RELATION_KINDS, "description": "Optional canonical Relation kind, for local filtering only. rests-on, illustrates, relaxes, objects and specializes need direction: directed."});
+    let preview = json!({"type": "boolean", "description": "Preview the operation without committing changes."});
+    let tree = s("A Topic or Literature tree, a Connection tree such as `~7`, or a tree_id.");
+    let coord_id = s("The Coordinate ID, current path, or place:<uuid> bookmark.");
+    let placement_id = s("Legacy alias for coord_id.");
+    let parent_coord_id = s("The parent Coordinate ID.");
+    let parent_coord = s("The parent Coordinate's path or place:<uuid> bookmark.");
+    let parent = s("Alias for parent_coord.");
+    let edge = json!({"type": "string", "enum": ["direct", "side"], "description": "The edge from the parent. Defaults to direct."});
+    let before_coord_id = s("Insert before this Side child of the same parent.");
+    let before = s("Alias for before_coord_id. Accepts a Coordinate ID, path, or bookmark.");
+    let slot = json!({"type": "integer", "minimum": 1, "description": "An explicit Side slot. Omit before_coord_id and before when supplying slot."});
+    let card_id = s("The Card identity.");
+    let at = s("A Card address, handle, Coordinate path or place:<uuid> bookmark.");
+    let target_at = s("The target Card's address, handle, Coordinate path or place:<uuid> bookmark.");
     vec![
+        tool("list_coordinates", "List a Card's Coordinates",
+            "List every Coordinate of the Card, including its Filing Coordinate and repeated occurrences in the same tree. Supply at or card_id. A retired identity lists its surviving Missing Coordinates.",
+            json!({"at": at, "card_id": card_id}),
+            &[], true, false),
+        tool("get_tree_coordinates", "Read a tree's Coordinates",
+            "Read a page of a Topic, Literature or Connection tree's Coordinate outline. Each occurrence has its own coord_id, including repeated Cards. Supply next_cursor from the previous page to continue at the same archive revision.",
+            json!({
+                "tree": tree,
+                "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "description": "Page size. Defaults to 500."},
+                "cursor": s("The previous page's next_cursor."),
+                "include_connections": {"type": "boolean", "description": "Include tree-local connections. Defaults to true."},
+            }),
+            &["tree"], true, false),
+        tool("add_coordinate", "Add a Coordinate",
+            "Add a fresh Coordinate for a live Card, even if it already occurs in this tree. Supply a parent and identify the Card with target_at, card_id or target_coord_id. A change to filing paths or an existing gloss can require a plan confirmed with add.",
+            json!({
+                "tree": tree, "parent_coord_id": parent_coord_id, "parent_coord": parent_coord, "parent": parent,
+                "edge": edge, "target_at": target_at, "card_id": card_id, "target_coord_id": coord_id,
+                "before_coord_id": before_coord_id, "before": before, "slot": slot,
+                "gloss": s("Optional positional gloss. Use one plain line of at most 240 characters without Links."),
+                "gloss_updates": gloss_updates, "confirm": confirm, "expected_revision": expected,
+                "plan_hash": plan_hash, "op_key": op_key, "preview": preview,
+            }),
+            &["tree"], false, false),
+        tool("add_coordinates", "Add ordered Coordinates",
+            "Add a fresh Coordinate for every target in order, including repeated targets. Supply a parent. The new Coordinates form a Direct chain or an ordered set of Side children. A change to filing paths or an existing gloss can require a plan confirmed with add.",
+            json!({
+                "tree": tree, "parent_coord_id": parent_coord_id, "parent_coord": parent_coord, "parent": parent,
+                "edge": edge,
+                "targets": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 500,
+                    "description": "Ordered Card addresses, handles, Card IDs, Coordinate IDs, paths or bookmarks."},
+                "before_coord_id": before_coord_id, "before": before,
+                "gloss_updates": gloss_updates, "confirm": confirm, "expected_revision": expected,
+                "plan_hash": plan_hash, "op_key": op_key, "preview": preview,
+            }),
+            &["tree", "targets"], false, false),
+        tool("move_coordinate", "Move a Coordinate",
+            "Move the Coordinate named by coord_id or placement_id. The destination needs a parent and defaults to the source tree. Review any flagged glosses and cross-tree boundary connections in the plan, then confirm with move.",
+            json!({
+                "coord_id": coord_id, "placement_id": placement_id,
+                "destination": {"type": "object", "properties": {
+                    "tree": tree, "parent_coord_id": parent_coord_id, "parent_coord": parent_coord,
+                    "parent": parent, "parent_placement_id": s("Legacy alias for parent_coord_id."),
+                    "edge": edge, "before_coord_id": before_coord_id, "before": before, "slot": slot,
+                }, "additionalProperties": false},
+                "mode": {"type": "string", "enum": ["subtree", "alone", "span"], "description": "Move the whole subtree (default), the selected Coordinate alone, or a Direct span ending at through_coord_id."},
+                "through_coord_id": s("End Coordinate ID of a Direct span when mode is `span`."),
+                "span_end_coord_id": s("Alias for through_coord_id when mode is `span`."),
+                "gloss_updates": gloss_updates,
+                "boundary_edges": {"type": "string", "enum": ["delete"], "description": "Approve deleting connections between moved Coordinates and Coordinates that stay in the source tree."},
+                "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash,
+                "op_key": op_key, "preview": preview,
+            }),
+            &["destination"], false, true),
+        tool("reorder_coordinates", "Reorder Side Coordinates",
+            "Reorder the Side children of the parent named by parent_coord_id or parent_coord. List every Side child once. Review the plan before confirming with reorder.",
+            json!({
+                "tree": tree, "parent_coord_id": parent_coord_id, "parent_coord": parent_coord,
+                "order": {"type": "array", "items": {"type": "string"}, "description": "Every Side child in the desired order, by Coordinate ID, path or bookmark."},
+                "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash,
+                "op_key": op_key, "preview": preview,
+            }),
+            &["tree", "order"], false, true),
+        tool("detach_coordinate", "Detach a Coordinate",
+            "Detach the non-root Coordinate named by coord_id or placement_id. For a Coordinate with children, choose whether to reattach them or detach the whole branch. Detaching a Filing Coordinate requires a surviving replacement in the Card's owner Workspace. Review the plan before confirming with detach.",
+            json!({
+                "coord_id": coord_id, "placement_id": placement_id,
+                "children": {"type": "string", "enum": ["reattach", "detach"]},
+                "reattach_to": s("With children: reattach, a Coordinate in the same tree outside the branch that takes the children as Side successors."),
+                "replacement_filing_coord_id": s("A surviving Coordinate of the same Card in its owner Workspace."),
+                "gloss_updates": gloss_updates, "confirm": confirm, "expected_revision": expected,
+                "plan_hash": plan_hash, "op_key": op_key, "preview": preview,
+            }),
+            &[], false, true),
+        tool("refile_card", "Change a Card's Filing Coordinate",
+            "Choose a new Filing Coordinate for the Card identified by card_id or at. The destination must be an existing Coordinate of the Card in its owner Workspace. Review changes to the canonical address and Links before confirming with refile.",
+            json!({
+                "card_id": card_id, "at": at,
+                "to_coord_id": s("The Card's new Filing Coordinate, by ID, path or bookmark."),
+                "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash,
+                "op_key": op_key, "preview": preview,
+            }),
+            &["to_coord_id"], false, true),
+        tool("rebind_coordinate", "Rebind a Missing Coordinate",
+            "Replace a Missing non-root Coordinate named by coord_id or placement_id with a fresh Coordinate for a live Card named by target_at or card_id. Review the flagged glosses and decide each incident connection before confirming with rebind.",
+            json!({
+                "coord_id": coord_id, "placement_id": placement_id, "target_at": target_at, "card_id": card_id,
+                "connection_dispositions": {"type": "object", "description": "Decisions keyed by connection_id.",
+                    "additionalProperties": {"type": "string", "enum": ["keep", "delete"]}},
+                "gloss_updates": gloss_updates, "confirm": confirm, "expected_revision": expected,
+                "plan_hash": plan_hash, "op_key": op_key, "preview": preview,
+            }),
+            &[], false, true),
         tool("list_side_mounts", "List Topic-side mounts",
-            "The Topic-side mounts beside one Topic home Card, in order (`3/2+1`, `3/2+2`, …): each with its placement_id, coord, the mounted Card's home address, title, status (live or missing) and gloss. A mount takes no `|a` slot and rewrites no Link.",
+            "Legacy read for `+k` Topic-side mounts, retired under MC1. Returns an empty mounts array with retired set to true. Use add_coordinate directly on a Topic tree and get_tree_coordinates to read its outline.",
             json!({"at": s("The Topic Card.")}),
             &["at"], true, false),
         tool("list_connection_trees", "List Connection trees",
@@ -1849,7 +1993,7 @@ fn connection_tool_definitions() -> Vec<Value> {
             json!({"workspace": {"type": "string", "enum": ["human", "agent", "all"]}, "purpose": s("Only trees with this shelf tag."), "query": s("Only trees whose title, handle or purpose contains this text."), "sort": {"type": "string", "enum": ["number", "recent"]}}),
             &[], true, false),
         tool("get_connection_tree", "Read a Connection tree",
-            "Read one Connection tree: its root and its stations in outline order (each with placement_id, coord such as `~7/2|a`, card_id, home_address, home_role, home_workspace, host_workspace, status live|missing, origin mount|native, title, gloss, can_edit_card, can_edit_placement; a mounted tree root is one `portal` station and its home tree is never expanded), and its tree connections (placement_edges) with provenance \"In this tree · ~n\" and a sentence for each directed assertion. Coordinates change when the tree is reorganized; placement_id and connection_id never do.",
+            "Read one Connection tree: its root and its stations in outline order (each with placement_id, coord such as `~7/2|a`, card_id, home_address, home_role, home_workspace, host_workspace, status live|missing, origin mount|native, title, gloss, can_edit_card, can_edit_placement; a mounted tree root is one `portal` station and its home tree is never expanded), and its tree connections (coordinate_edges) with provenance \"In this tree · ~n\" and a sentence for each directed assertion. Coordinates change when the tree is reorganized; placement_id and connection_id never do.",
             json!({"tree": s("`~7`, `7`, or the tree_id."), "limit": {"type": "integer", "minimum": 1, "maximum": 5000}, "cursor": s("next_cursor of the previous page."), "include_connections": {"type": "boolean"}}),
             &["tree"], true, false),
         tool("list_placements", "List a Card's stations",
@@ -1873,8 +2017,8 @@ fn connection_tool_definitions() -> Vec<Value> {
             json!({"tree": s("`~7`."), "purpose": {"type": ["string", "null"]}, "op_key": op_key}),
             &["tree"], false, false),
         tool("place_card", "Mount a Card",
-            "Mount existing Cards (any Card of either Workspace, locked or not, including a Literature root or another Connection tree's root, which stays one portal station) into a Connection tree you may edit, as the Direct or Side successor of a station; or, with edge `attach` and anchor_at, beside a Topic Card as a Topic-side mount `<loc>+k` that takes no `|a` slot and rewrites no Link. Pass `target_at` for one Card, or `targets` for a set of Cards at once: with edge direct they form a Direct chain after the parent in the given order (the parent's old Direct successor continues after the last), with edge side each becomes the next Side branch (before `before` when given); one transaction and one gloss review; the answer lists `placed` and `already_placed`. The mounted Card is never written. A Card stands at most once in a tree: mounting it again answers its station.",
-            json!({"host": s("The Connection tree (`~7`)."), "parent_coord": s("The parent station's coordinate, such as `~7/2`."), "parent_placement_id": s("Or the parent station's placement_id."), "edge": {"type": "string", "enum": ["direct", "side", "attach"]}, "anchor_at": s("For edge attach: the Topic Card to mount beside."), "target_at": s("The Card to mount (an address or handle)."), "targets": {"type": "array", "items": {"type": "string"}, "maxItems": 500, "description": "Several Cards to mount in this order (addresses, Citation keys or handles); not with edge attach."}, "card_id": s("Or the Card's identity."), "gloss": s("Optional positional gloss: one plain line, at most 240 characters, no Links."), "before": s("Insert before this sibling (a Side successor or a Topic-side mount)."), "gloss_updates": gloss_updates, "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash, "op_key": op_key}),
+            "Mount existing Cards from either Workspace into an editable Connection tree as Direct or Side successors. Pass target_at or card_id for one Card, or targets for several. With edge direct they form a chain and the parent's old Direct successor follows the last Card. With edge side they become Side children, optionally inserted before a sibling. For a Card already in the tree, this tool returns an existing Coordinate. Use add_coordinate for intentional repeats. Under MC1, +k Topic-side mounts (edge: attach) are retired. Use add_coordinate directly on a Topic tree.",
+            json!({"host": s("The Connection tree (`~7`)."), "parent_coord": s("The parent station's coordinate, such as `~7/2`."), "parent_placement_id": s("Or the parent station's placement_id."), "edge": edge, "target_at": s("The Card to mount (an address or handle)."), "targets": {"type": "array", "items": {"type": "string"}, "maxItems": 500, "description": "Several Cards to mount in this order (addresses, Citation keys or handles)."}, "card_id": card_id, "gloss": s("Optional positional gloss: one plain line, at most 240 characters, no Links."), "before": s("Insert before this Side sibling."), "gloss_updates": gloss_updates, "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash, "op_key": op_key}),
             &[], false, false),
         tool("create_connection_card", "Write a native Card in a Connection tree",
             "Write a new Idea, Event or Finding Card whose home is the Connection tree, at a new station. It gets a permanent handle `~n#k` ([[~7#4]]) that survives reordering, promotion and the tree's deletion. The ordinary write gate applies; an Event or Finding cites its real source, never the tree. Model, Hub, Term and Cited Cards are not authored natively (native_structure_required): mount them instead.",
@@ -1917,13 +2061,21 @@ fn connection_tool_definitions() -> Vec<Value> {
             json!({"at": s("The native Card (`~7#4`)."), "card_id": s("Or its identity."), "to": s("The free Topic Location, such as `3/6`."), "destination_topic": s("Optional check: the Topic number."), "duplicate_resolution": {"type": "string", "enum": ["detach"]}, "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash, "op_key": op_key}),
             &["to"], false, true),
         tool("seed_connection_tree", "Seed a Connection tree",
-            "Create a Connection tree once from a Hub Card's members, a saved Spread, a Dependency Lens prerequisite order, or an ordered list of selected Cards: one Direct chain of mounts, each Card once, in the previewed order. Seeding creates no tree connection. Returns a plan first; confirm with `seed`.",
-            json!({"from": {"type": "string", "enum": ["hub", "spread", "dependencies", "search"]}, "source_params": {"type": "object", "description": "hub: {at}; spread: {name | id}; dependencies: {at, scope?, depth?, order?: [addresses]}; search: {cards: [addresses in order]}."}, "title": s("Optional title of the new tree's root Card."), "purpose": s("Optional shelf tag."), "workspace": {"type": "string", "enum": ["human", "agent"]}, "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash, "op_key": op_key}),
+            "Create a Connection tree with a Direct chain from Hub members, a saved Spread, a Dependency Lens prerequisite order, or an ordered search or outline selection. By default the first occurrence of each Card is used. Set mode to occurrences to include repeats in source order. Seeding creates no tree connections. Review the plan before confirming with seed.",
+            json!({
+                "from": {"type": "string", "enum": ["hub", "spread", "dependencies", "search", "outline"]},
+                "source_params": {"type": "object", "description": "hub: {at}, spread: {name | id}, dependencies: {at, scope?, depth?, order?: [addresses]}, search or outline: {cards: [ordered Card or Coordinate identifiers]} (order is an alias for cards)."},
+                "mode": {"type": "string", "enum": ["unique", "occurrences"], "description": "unique (default) keeps the first occurrence of each Card. occurrences keeps intentional repeats."},
+                "title": s("Optional title of the new tree's root Card."),
+                "purpose": s("Optional shelf tag."),
+                "workspace": {"type": "string", "enum": ["human", "agent"]},
+                "confirm": confirm, "expected_revision": expected, "plan_hash": plan_hash, "op_key": op_key,
+            }),
             &["from", "source_params"], false, false),
         tool("review_source", "Mark a mounted source reviewed",
-            "Owner action on a locked host: record that the current version of a mounted Card that differs from its lock-time version was reviewed. The reviewed fingerprint you were shown must still be current. It never changes the Lock seal.",
-            json!({"placement_id": s("The station."), "reviewed_fp": s("The current fingerprint you reviewed."), "lock_id": {"type": "integer", "description": "The Lock the review was shown under; a different active Lock refuses the review."}, "note": s("Optional note.")}),
-            &["placement_id", "reviewed_fp", "lock_id"], false, false),
+            "Owner action on a locked host. Record review of the current source fingerprint for the occurrence named by coord_id or placement_id. The fingerprint and Lock must still match the review shown to you.",
+            json!({"coord_id": coord_id, "placement_id": placement_id, "reviewed_fp": s("The current fingerprint you reviewed."), "lock_id": {"type": "integer", "description": "The Lock the review was shown under."}, "note": s("Optional note of up to 400 characters.")}),
+            &["reviewed_fp", "lock_id"], false, false),
     ]
 
 }

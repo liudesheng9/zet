@@ -184,6 +184,7 @@ fn present_line_result(result: CommandResult) -> Result<()> {
 fn line_result_lines(result: CommandResult) -> Vec<String> {
     match result {
         CommandResult::Noop | CommandResult::Navigated | CommandResult::Changed => Vec::new(),
+        CommandResult::NavigationNotice(notice) => vec![notice],
         CommandResult::Stats(stats) => vec![
             format!("total: {}", stats.total),
             format!("topics: {}", stats.topics),
@@ -223,6 +224,7 @@ enum ViewLine {
     Entry {
         address: String,
         rest: String,
+        bookmark: Option<String>,
     },
 }
 
@@ -232,7 +234,7 @@ impl ViewLine {
             Self::Plain(text) | Self::Heading(text) | Self::Hint(text) | Self::Linked(text) => {
                 text.clone()
             }
-            Self::Entry { address, rest } => format!("{address}{rest}"),
+            Self::Entry { address, rest, .. } => format!("{address}{rest}"),
         }
     }
 
@@ -240,6 +242,7 @@ impl ViewLine {
         Self::Entry {
             address: address.to_string(),
             rest: format!(" {title}"),
+            bookmark: None,
         }
     }
 }
@@ -270,7 +273,11 @@ fn result_panel(result: &CommandResult) -> Option<Vec<ViewLine>> {
                 listing
                     .cards
                     .iter()
-                    .map(|card| ViewLine::entry(&card.address, &card.title)),
+                    .map(|card| ViewLine::Entry {
+                        address: card.address.clone(),
+                        rest: format!(" {}", card.title),
+                        bookmark: card.bookmark.clone(),
+                    }),
             );
             Some(lines)
         }
@@ -284,6 +291,7 @@ fn result_panel(result: &CommandResult) -> Option<Vec<ViewLine>> {
             ))];
             lines.extend(broken_links.iter().map(|broken| ViewLine::Entry {
                 address: broken.source_address.clone(),
+                bookmark: None,
                 rest: format!(
                     " {} -> {}: {}",
                     broken.source_title,
@@ -366,11 +374,11 @@ fn view_lines(conn: &Connection, pointer: &Pointer, workspace: Workspace) -> Res
     let mut lines = Vec::new();
     match pointer {
         Pointer::Station(id) => {
-            let (header, home) = station::header_lines(conn, id)?;
-            lines.extend(header.into_iter().map(ViewLine::Plain));
+            let (mut header, home) = station::header_lines(conn, id)?;
             if let Some(home) = home {
-                lines.extend(view_lines(conn, &Pointer::Card(home), workspace)?);
+                header.extend(card_view_lines(conn, &home, false)?);
             }
+            return Ok(header);
         }
         Pointer::Root => {
             lines.push(ViewLine::Plain("ROOT".to_string()));
@@ -419,66 +427,69 @@ fn view_lines(conn: &Connection, pointer: &Pointer, workspace: Workspace) -> Res
                 }
             }
         }
-        Pointer::Card(target) => {
-            let card = load_card(conn, target)?;
-            let marks = card_marks(conn, card.row_id)?;
-            if card.is_lit {
-                let citation_key = card
-                    .citation_key
-                    .as_deref()
-                    .context("Literature Card is missing its Citation key")?;
-                lines.push(ViewLine::Plain(format!(
-                    "citation key: {citation_key}{marks}"
-                )));
-                lines.push(ViewLine::Plain("metadata:".to_string()));
-                let bibtex = card
-                    .bibtex
-                    .as_deref()
-                    .context("Literature Card is missing its BibTeX metadata")?;
-                lines.extend(bibtex.lines().map(|line| ViewLine::Plain(line.to_string())));
-            } else {
-                // A non-Idea Card names its type, and a Model part its facet
-                // and emphasis, after its Location.
-                let card_type = match (card.card_type, &card.facet) {
-                    (crate::CardType::Idea, _) => String::new(),
-                    (other, Some(facet)) => match card.emphasis {
-                        Some(emphasis) => format!(" [{other} · {facet} · {emphasis}]"),
-                        None => format!(" [{other} · {facet}]"),
-                    },
-                    (other, None) => match (card.form, card.level) {
-                        (Some(form), Some(level)) => format!(" [{other} · {form} · {level}]"),
-                        (Some(form), None) => format!(" [{other} · {form}]"),
-                        (None, Some(level)) => format!(" [{other} · {level}]"),
-                        (None, None) => format!(" [{other}]"),
-                    },
-                };
-                lines.push(ViewLine::Plain(format!(
-                    "location: {}{card_type}{marks}",
-                    card.address
-                )));
+        Pointer::Card(target) => return card_view_lines(conn, target, true),
+    }
+    Ok(lines)
+}
+
+fn card_view_lines(conn: &Connection, target: &str, show_neighbors: bool) -> Result<Vec<ViewLine>> {
+    let mut lines = Vec::new();
+    let card = load_card(conn, target)?;
+    let marks = card_marks(conn, card.row_id)?;
+    if card.is_lit {
+        let citation_key = card
+            .citation_key
+            .as_deref()
+            .context("Literature Card is missing its Citation key")?;
+        lines.push(ViewLine::Plain(format!(
+            "citation key: {citation_key}{marks}"
+        )));
+        lines.push(ViewLine::Plain("metadata:".to_string()));
+        let bibtex = card
+            .bibtex
+            .as_deref()
+            .context("Literature Card is missing its BibTeX metadata")?;
+        lines.extend(bibtex.lines().map(|line| ViewLine::Plain(line.to_string())));
+    } else {
+        // A non-Idea Card names its type, and a Model part its facet
+        // and emphasis, after its Location.
+        let card_type = match (card.card_type, &card.facet) {
+            (crate::CardType::Idea, _) => String::new(),
+            (other, Some(facet)) => match card.emphasis {
+                Some(emphasis) => format!(" [{other} · {facet} · {emphasis}]"),
+                None => format!(" [{other} · {facet}]"),
+            },
+            (other, None) => match (card.form, card.level) {
+                (Some(form), Some(level)) => format!(" [{other} · {form} · {level}]"),
+                (Some(form), None) => format!(" [{other} · {form}]"),
+                (None, Some(level)) => format!(" [{other} · {level}]"),
+                (None, None) => format!(" [{other}]"),
+            },
+        };
+        lines.push(ViewLine::Plain(format!(
+            "location: {}{card_type}{marks}",
+            card.address
+        )));
+    }
+    lines.extend(markdown_view_lines(&card.text));
+    if show_neighbors {
+        if let Some(parent) = parent_location(&card.address)
+            && target_exists(conn, &parent)?
+        {
+            lines.push(ViewLine::Linked(format!("parent: [[{parent}]]")));
+        }
+        if let Ok(direct) = direct_successor(&card.address)
+            && location_exists(conn, &direct)?
+        {
+            lines.push(ViewLine::Linked(format!("direct: [[{direct}]]")));
+        }
+        if !is_tree_root(&card) {
+            for side in side_successors(conn, &card.address)? {
+                lines.push(ViewLine::Linked(format!("side: [[{side}]]")));
             }
-            lines.extend(markdown_view_lines(&card.text));
-            if let Some(parent) = parent_location(&card.address)
-                && target_exists(conn, &parent)?
-            {
-                lines.push(ViewLine::Linked(format!("parent: [[{parent}]]")));
-            }
-            if let Ok(direct) = direct_successor(&card.address)
-                && location_exists(conn, &direct)?
-            {
-                lines.push(ViewLine::Linked(format!("direct: [[{direct}]]")));
-            }
-            if !is_tree_root(&card) {
-                for side in side_successors(conn, &card.address)? {
-                    lines.push(ViewLine::Linked(format!("side: [[{side}]]")));
-                }
-            }
-            lines.push(ViewLine::Hint(format!(
-                "workspace: {}",
-                card.workspace.id()
-            )));
         }
     }
+    lines.push(ViewLine::Hint(format!("workspace: {}", card.workspace.id())));
     Ok(lines)
 }
 
@@ -1249,14 +1260,9 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                         } else if let Some(target) =
                             link_target_at(&frame.links, mouse.row, mouse.column)
                         {
-                            let conn = open_db(&root)?;
-                            if target_exists(&conn, target)? {
-                                state.follow_link(&root, target.to_string());
-                                present_tui_result(CommandResult::Navigated, &mut view);
-                            } else {
-                                view.message = StatusMessage::Error(format!(
-                                    "target `{target}` does not exist"
-                                ));
+                            match state.follow_link(&root, target) {
+                                Ok(result) => present_tui_result(result, &mut view),
+                                Err(error) => view.message = StatusMessage::Error(format!("{error:#}")),
                             }
                         }
                     }
@@ -1304,6 +1310,11 @@ fn present_tui_result(result: CommandResult, view: &mut TuiView) {
             view.panel = None;
             view.scroll = 0;
             view.message = StatusMessage::None;
+        }
+        CommandResult::NavigationNotice(notice) => {
+            view.panel = None;
+            view.scroll = 0;
+            view.message = StatusMessage::Info(notice);
         }
         CommandResult::Stats(stats) => {
             view.message = StatusMessage::Info(format!(
@@ -1554,11 +1565,11 @@ fn segments_of(line: &ViewLine, lifecycle: &link::LinkLifecycle) -> Vec<LineSegm
         ViewLine::Plain(text) => vec![LineSegment::plain(text)],
         ViewLine::Heading(text) => vec![LineSegment::styled(Ink::Heading, text)],
         ViewLine::Hint(text) => vec![LineSegment::styled(Ink::Hint, text)],
-        ViewLine::Entry { address, rest } => vec![
+        ViewLine::Entry { address, rest, bookmark } => vec![
             LineSegment {
                 ink: Ink::Link,
                 text: expand_display_tabs(address),
-                target: Some(address.clone()),
+                target: Some(bookmark.as_ref().unwrap_or(address).clone()),
             },
             LineSegment::plain(rest),
         ],
@@ -2964,10 +2975,12 @@ mod tests {
             cards: vec![
                 command::CardSummary {
                     address: "Smith2024".to_string(),
+                    bookmark: None,
                     title: "Work".to_string(),
                 },
                 command::CardSummary {
                     address: "Smith2024/1".to_string(),
+                    bookmark: None,
                     title: "Note".to_string(),
                 },
             ],
@@ -2992,6 +3005,7 @@ mod tests {
             Some(ViewLine::Entry {
                 address: "Smith2024/1".to_string(),
                 rest: " Note".to_string(),
+                bookmark: None,
             })
         );
 

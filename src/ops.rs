@@ -18,7 +18,8 @@ pub(crate) use crate::place::Target;
 
 /// How long a change waits for another client's short write to finish.
 pub(crate) const EDIT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
-use crate::{Access, Card, CardType, Workspace};
+pub(crate) use crate::Access;
+use crate::{Card, CardType, Workspace};
 
 /// The result of a change that may need a typed confirmation first.
 pub(crate) enum Outcome {
@@ -669,9 +670,119 @@ pub(crate) fn delete_reviewed(
     })))
 }
 
-/// Move a Regular Card inside its Workspace: with its successors, or `alone`
-/// (its Direct successor chain closes the gap), to a free Location or into
-/// the place of another Card, which moves down.
+/// Delete a single Card inside the Coordinate writer's transaction. Tree deletion uses
+/// the explicit address-based operation.
+pub(crate) fn delete_identity_tx(
+    conn: &Connection,
+    access: Access,
+    args: &Value,
+    confirm: &mut dyn FnMut(&str, &[String], &Value) -> Result<Option<Value>>,
+) -> Result<Value> {
+    let card_id = args["card_id"].as_str().context("delete_card requires a card_id")?;
+    let (card, identity) = crate::connection::live_card(conn, card_id)?;
+    access.ensure_writable(identity.live_owner_workspace()?)?;
+    let filing = crate::connection::filing_row(conn, &identity)?;
+    if filing.edge == crate::coord::EdgeKind::Root {
+        bail!("`{}` defines a tree; pass its address as `at` to delete the tree explicitly, or empty the tree to keep its root", card.address);
+    }
+    let delete_set = BTreeSet::from([card.address.clone()]);
+    let inbound = if crate::link_index::ready(conn) {
+        let mut inbound = BTreeSet::new();
+        for spelling in crate::coord::spellings(conn, &card.address)? {
+            for source in crate::link_index::rewrite_sources(conn, [&spelling])? {
+                if source != card.address {
+                    inbound.insert((source, spelling.clone()));
+                }
+            }
+        }
+        inbound.into_iter().collect()
+    } else {
+        crate::links_into(conn, &delete_set)?
+    };
+    let mut plan = crate::DeletePlan {
+        scope: crate::DeleteScope::Subtree,
+        inbound,
+        delete_set,
+        confirmation: "delete".to_string(),
+        into: None,
+        side_compaction: BTreeMap::new(),
+    };
+    match args.get("into") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(target)) if target.is_empty() => {}
+        Some(value) => {
+            let target = value.as_str().context("into must name a Card")?;
+            let (address, _) = crate::read::read_address(conn, target)?;
+            plan = plan.into(conn, &address)?;
+        }
+    }
+    let repoint = plan.repoint_mapping();
+    access.ensure_link_rewrites_allowed(conn, &repoint)?;
+    crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Delete(&plan))?;
+    crate::coord_lock::ensure_delete_allowed(conn, &plan.delete_set)?;
+    let mut lines = crate::delete_verification_lines(&plan);
+    let state = crate::coord::delete_state(conn, &plan.delete_set)?;
+    let crate::connection::IdentityDeleteCoordinates {
+        filing_moves: mapping,
+        removed,
+        missing,
+        gloss_review: review,
+        missing_gloss,
+    } = crate::connection::remove_coordinates_for_identity_delete(conn, access, &identity, args)?;
+    lines.push(format!("remove {} Coordinate(s) from the owner Workspace", removed.len()));
+    let mut missing_coordinates = Vec::new();
+    for row in missing {
+        lines.push(format!("{} (place:{}) will become a Missing Coordinate", crate::coord::coordinate_path(conn, &row)?, row.coord_id));
+        missing_coordinates.push(row.coord_id);
+    }
+    let would_capture_link = plan.into.is_none()
+        && plan.inbound.iter().any(|(_, target)| mapping.values().any(|new| new == target));
+    if would_capture_link {
+        lines.push("a surviving Card takes a deleted address; pass `into` to repoint its existing Links before confirming".to_string());
+    }
+    crate::connection::append_filing_changes(&mut lines, &mapping);
+    crate::connection::append_gloss_review(&mut lines, &review);
+    let effects = json!({"card_ids": [card_id], "removed_coordinates": removed, "coordinates_removed": removed, "filing_moves": mapping,
+        "missing_coordinates": missing_coordinates,
+        "gloss_review": review, "delete_state": delete_plan_hash(&plan.delete_set, &state)});
+    if let Some(preview) = confirm(&plan.confirmation, &lines, &effects)? {
+        return Ok(preview);
+    }
+    if would_capture_link {
+        bail!("a surviving Card would take over a Link to the deleted Card; pass `into` and review the new plan");
+    }
+    crate::connection::require_gloss_decisions(&missing_gloss)?;
+    let mut changes = crate::link_index::Changes::default();
+    if !repoint.is_empty() {
+        let sources = if crate::link_index::ready(conn) {
+            crate::link_index::rewrite_sources(conn, repoint.keys())?.iter()
+                .map(|source| crate::load_card(conn, source)).collect::<Result<Vec<_>>>()?
+        } else {
+            crate::load_cards(conn)?
+        };
+        for source in sources {
+            if plan.delete_set.contains(&source.address) {
+                continue;
+            }
+            let text = crate::replace_link_locations(&source.text, &repoint)?;
+            if text != source.text {
+                conn.execute("UPDATE cards SET text = ?2 WHERE row_id = ?1", rusqlite::params![source.row_id, text])?;
+                changes.resync(conn, &source.address)?;
+            }
+        }
+    }
+    changes.drop_sources(conn, &plan.delete_set)?;
+    conn.execute("DELETE FROM cards WHERE row_id = ?1", [card.row_id])?;
+    crate::connection::check_filing_mapping(conn, access, &mapping)?;
+    crate::spread::follow(conn, &BTreeMap::new(), &plan.delete_set)?;
+    crate::connection::write_filing_mapping(conn, &mapping, &mut changes)?;
+    changes.finish(conn)?;
+    Ok(json!({"applied": true, "changed": true, "card_id": card_id,
+        "deleted": 1, "removed": removed, "removed_coordinates": removed,
+        "missing_coordinates": missing_coordinates, "moved": mapping}))
+}
+
+/// Move a Regular Card inside its Workspace: with its successors, or alone.
 pub(crate) fn move_card(
     root: &Path,
     access: Access,
@@ -820,6 +931,8 @@ pub(crate) struct Snapshot {
     pub(crate) aliases: BTreeMap<String, String>,
     pub(crate) cards: Vec<Card>,
     pub(crate) by_address: BTreeMap<String, Card>,
+    /// Each live Card's filing tree public key, by Card row.
+    filing_trees: BTreeMap<i64, String>,
     pub(crate) parsed: BTreeMap<String, crate::ParsedCard>,
     pub(crate) lifecycle: LinkLifecycle,
     pub(crate) inbound: BTreeMap<String, BTreeSet<String>>,
@@ -926,7 +1039,34 @@ impl Snapshot {
         let lock = crate::tree_lock::LockView::read(conn, None)?;
         let revision = crate::link_index::revision(conn)?;
         Ok(Self::from_cards_aliased(cards, lock, revision, crate::coord::aliases(conn)?)?
+            .with_filing_trees(Self::load_filing_trees(conn)?)
             .with_literature_types(crate::literature::stored_types(conn)?))
+    }
+
+    pub(crate) fn load_filing_trees(conn: &Connection) -> Result<BTreeMap<i64, String>> {
+        if !crate::coord::installed(conn) {
+            return Ok(BTreeMap::new());
+        }
+        let mut stmt = conn.prepare_cached(
+            "SELECT i.card_row, t.public_key FROM card_identity i
+             JOIN coordinates f ON f.coord_id = i.filing_coord_id
+             JOIN trees t ON t.tree_id = f.tree_id
+             WHERE i.status = 'live' AND i.card_row IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub(crate) fn with_filing_trees(mut self, filing_trees: BTreeMap<i64, String>) -> Self {
+        self.filing_trees = filing_trees;
+        self
+    }
+
+    pub(crate) fn filing_tree<'a>(&'a self, card: &'a Card) -> &'a str {
+        self.filing_trees
+            .get(&card.row_id)
+            .map(String::as_str)
+            .unwrap_or_else(|| crate::tree_id(&card.address))
     }
 
     pub(crate) fn with_literature_types(mut self, types: BTreeMap<i64, LiteratureType>) -> Self {
@@ -1000,6 +1140,7 @@ impl Snapshot {
             aliases,
             cards,
             by_address,
+            filing_trees: BTreeMap::new(),
             parsed,
             lifecycle,
             inbound,
@@ -1157,7 +1298,7 @@ impl Snapshot {
             let mut members: BTreeMap<String, Vec<usize>> = BTreeMap::new();
             for (at, card) in self.cards.iter().enumerate() {
                 members
-                    .entry(crate::tree_id(&card.address).to_string())
+                    .entry(self.filing_tree(card).to_string())
                     .or_default()
                     .push(at);
             }
@@ -1218,7 +1359,7 @@ impl Snapshot {
         }
         let mut value = json!({
             "address": card.address,
-            "tree": crate::tree_id(&card.address),
+            "tree": self.filing_tree(card),
             "workspace": card.workspace.id(),
             "title": self.title(&card.address),
             "kind": kind(card),
@@ -1277,12 +1418,11 @@ impl Snapshot {
     /// S03-AC01; the sixth Card type in S14, #161).
     pub(crate) fn trees(&self) -> Vec<Value> {
         // Every Card's tree in one pass: with many Connection roots a scan of all Cards per root
-        // would cost roots × Cards (docs/connection-trees-free-proposal.md D3). A Card belongs to
-        // the tree its address names, exactly when `is_tree_member` says so.
+        // would cost roots × Cards (docs/connection-trees-free-proposal.md D3).
         let mut by_tree: BTreeMap<&str, Vec<&Card>> = BTreeMap::new();
         for member in &self.cards {
-            let tree = crate::tree_id(&member.address);
-            if crate::is_tree_member(&member.address, tree) {
+            let tree = self.filing_tree(member);
+            if tree.starts_with('~') || crate::is_tree_member(&member.address, tree) {
                 by_tree.entry(tree).or_default().push(member);
             }
         }
@@ -1290,7 +1430,7 @@ impl Snapshot {
             .iter()
             .filter(|card| crate::is_tree_root(card))
             .map(|card| {
-                let tree = crate::tree_id(&card.address);
+                let tree = self.filing_tree(card);
                 let members: &[&Card] = by_tree.get(tree).map(Vec::as_slice).unwrap_or(&[]);
                 // A model counts once: its Model Card, not its parts.
                 let typed = |card_type: CardType| {
@@ -1638,7 +1778,7 @@ impl Snapshot {
             .take(limit)
             .map(|found| {
                 let card = &self.cards[found.order];
-                let tree = crate::tree_id(&card.address);
+                let tree = self.filing_tree(card);
                 let mut row = json!({
                     "address": card.address,
                     "title": self.title(&card.address),

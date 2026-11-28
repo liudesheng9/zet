@@ -2,8 +2,8 @@
 //!
 //! Since multi-tree coordinates (docs/multi-tree-coordinates-proposal.md §10.1.2) every table of an
 //! upgraded archive is fenced: a connection that lacks the `zt_writer_epoch` function (an older
-//! `zt`, or plain SQLite) cannot write it. The identity triggers on `cards` also call `zt_uuid_v4`
-//! and `zt_card_title`. Tests that seed or tamper with an archive through raw SQL open it here, so
+//! `zt`, or plain SQLite) cannot write it. The fixture helper also registers the ID and Card-title
+//! functions. Tests that seed or tamper with an archive through raw SQL open it here, so
 //! they act as a current-format writer; a test that proves the fence opens plain SQLite instead.
 
 #![allow(dead_code)]
@@ -25,7 +25,7 @@ pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Connection> {
 
 /// Register the current writer functions on an existing connection.
 pub fn register(conn: &Connection) {
-    conn.create_scalar_function("zt_writer_epoch", 0, FunctionFlags::SQLITE_UTF8, |_| Ok(1_i64))
+    conn.create_scalar_function("zt_writer_epoch", 0, FunctionFlags::SQLITE_UTF8, |_| Ok(2_i64))
         .expect("register zt_writer_epoch");
     conn.create_scalar_function("zt_uuid_v4", 0, FunctionFlags::SQLITE_UTF8, |_| {
         let n = NEXT.fetch_add(1, Ordering::SeqCst);
@@ -58,13 +58,19 @@ pub fn register(conn: &Connection) {
 /// generation), so a fixture can rebuild the archive into the exact shape of a release that
 /// predates it. The next `zt up` installs it again.
 pub fn strip_coordinates(conn: &Connection) {
+    let foreign_keys: bool = conn
+        .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+        .expect("read foreign key setting");
+    if foreign_keys {
+        conn.pragma_update(None, "foreign_keys", "OFF").expect("disable foreign keys");
+    }
     let triggers: Vec<String> = {
         let mut stmt = conn
             .prepare(
                 "SELECT name FROM sqlite_master WHERE type = 'trigger'
-                 AND (name LIKE 'writer_epoch_%' OR name LIKE 'identity_%'
-                      OR name LIKE 'coord_lock_%' OR name LIKE 'coord_pin_%'
-                      OR name LIKE 'lock_source_reviews_%'
+                 AND (name GLOB 'writer_epoch_*' OR name GLOB 'identity_*'
+                      OR name GLOB 'coord_lock_*' OR name GLOB 'coord_pin_*'
+                      OR name GLOB 'lock_source_reviews_*'
                       OR name IN ('cards_row_id_immutable', 'card_identity_id_immutable',
                                   'card_identity_never_deleted', 'card_handles_permanent_update',
                                   'card_handles_permanent_delete'))",
@@ -76,7 +82,8 @@ pub fn strip_coordinates(conn: &Connection) {
             .expect("trigger names")
     };
     for trigger in triggers {
-        conn.execute_batch(&format!("DROP TRIGGER {trigger};")).expect("drop trigger");
+        let trigger = trigger.replace('"', "\"\"");
+        conn.execute_batch(&format!("DROP TRIGGER IF EXISTS \"{trigger}\";")).expect("drop trigger");
     }
     for table in [
         "lock_source_reviews",
@@ -84,10 +91,10 @@ pub fn strip_coordinates(conn: &Connection) {
         "lock_connections",
         "lock_placements",
         "lock_coordinate_seals",
-        "retired_placements",
-        "placement_edges",
-        "placements",
-        "connection_trees",
+        "retired_coordinates",
+        "coordinate_edges",
+        "coordinates",
+        "trees",
         "card_handles",
         "card_identity",
     ] {
@@ -98,4 +105,7 @@ pub fn strip_coordinates(conn: &Connection) {
         [],
     )
     .expect("forget the coordinate generation");
+    if foreign_keys {
+        conn.pragma_update(None, "foreign_keys", "ON").expect("restore foreign keys");
+    }
 }

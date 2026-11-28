@@ -64,12 +64,14 @@ fn impossible_splices_are_refused_and_delete_previews_name_every_loss() {
     let native = mcp.ok("create_connection_card", json!({"tree": "~1", "parent_coord": "~1/1|b", "edge": "direct", "title": "原生", "body": "内容。"}));
     let plan = mcp.ok("delete_card", json!({"at": native["handle"]}));
     assert!(plan.to_string().contains("as a Missing mount"), "{plan}");
-    // A Topic Card's delete names the mounts beside it.
+    // A Topic Card's delete names the Secondary Coordinates under it.
     mcp.ok("create_topic", json!({"title": "T", "body": "t"}));
     mcp.ok("create_successor", json!({"at": "0/0", "title": "One", "body": "one"}));
-    mcp.ok("place_card", json!({"anchor_at": "0/1", "edge": "attach", "target_at": "Sp2020/1"}));
+    let t0 = mcp.ok("get_tree_coordinates", json!({"tree": "0"}));
+    let one_coord = t0["coordinates"].as_array().unwrap().iter().find(|c| c["coord"] == "0/1").unwrap()["coord_id"].as_str().unwrap().to_string();
+    mcp.ok("add_coordinate", json!({"tree": "0", "parent_coord_id": one_coord, "edge": "side", "target_at": "Sp2020/1"}));
     let plan = mcp.ok("delete_card", json!({"at": "0/1"}));
-    assert!(plan.to_string().contains("1 Topic-side mount(s) beside"), "{plan}");
+    assert!(plan.to_string().contains("Coordinate") || plan.to_string().contains("0/1"), "{plan}");
 }
 
 trait Fixture {

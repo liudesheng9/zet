@@ -325,7 +325,7 @@ fn a_deleted_source_leaves_a_missing_mount_and_rebinding_decides_every_connectio
     };
     let host_rows = |s: &ScratchBox| -> Vec<(String, String, Option<String>)> {
         let db = writer::open(s.archive_root.join("zt.sqlite3")).unwrap();
-        let mut stmt = db.prepare("SELECT placement_id, card_id, gloss FROM placements ORDER BY 1").unwrap();
+        let mut stmt = db.prepare("SELECT coord_id, card_id, gloss FROM coordinates WHERE host_workspace = 'human' ORDER BY 1").unwrap();
         stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap()
     };
     let humans_before = human_rows(&scratch);
@@ -441,7 +441,7 @@ fn extracting_a_branch_copies_internal_connections_and_keeps_the_original() {
         tree["placements"].as_array().unwrap().iter().map(|p| { let mut p = p.clone(); p.as_object_mut().unwrap().remove("places"); p }).collect()
     };
     assert_eq!(without_places(&after), without_places(&before));
-    assert_eq!(station(&after, "Hart1995")["places"], 2, "the Card now stands in both trees");
+    assert_eq!(station(&after, "Hart1995")["places"], 3, "the Card now stands at home plus both Connection trees");
     assert_eq!(after["connections"].as_array().unwrap().len(), 2);
 }
 

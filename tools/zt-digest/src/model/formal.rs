@@ -1544,4 +1544,16 @@ $$E[z_t (y_t - \\beta x_t)] = 0 \\tag{2}$$
         let skel = skeleton(&exp, &json!({"parts": []}), &[], &|id| Ok(format!("K/1|{id}"))).unwrap();
         assert!(skel.contains("[[K/1|CAL]]"), "Experiment skeleton must emit calibration link: {skel}");
     }
+
+    #[test]
+    fn s7_formal_limits_skeleton_includes_plain_setting_anchor_for_zero_loose() {
+        let mut plan = arro_plan();
+        plan["parts"].as_array_mut().unwrap().push(json!({
+            "id": "LIM", "line": "off", "facet": "局限", "title": "局限：外生技术假设", "spec": "抽象局限"
+        }));
+        let lim = plan["parts"].as_array().unwrap().last().unwrap();
+        let skel = skeleton(lim, &plan, &[], &|id| Ok(format!("K/3|a|{id}"))).unwrap();
+        assert!(skel.contains("见设定 [[K/3|a|S0]]"), "formal 局限 must pre-populate plain setting anchor: {skel}");
+        assert!(!skel.contains("依赖"), "局限 anchor must be plain refers, not rests-on: {skel}");
+    }
 }

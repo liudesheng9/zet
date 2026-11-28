@@ -1,36 +1,22 @@
-//! Locks over Connection trees and Topic-side mounts (docs/multi-tree-coordinates-proposal.md §8.1).
+//! Coordinate evidence for Tree Locks (docs/multi-coordinate-cards-proposal.md §8.3).
 //!
-//! A Connection tree `~7` is locked like any tree: its root `~7` and its native Cards `~7#k` are the
-//! Lock's members (the existing member seal, triggers and pins), and this module adds four
-//! separate records for the coordinate data the Lock also promises:
-//!
-//! 1. **Structure and connection freeze**: `lock_placements` and `lock_connections` keep the exact
-//!    tuple of every station (target, parent or anchor, edge, ordinal, gloss, live or missing) and
-//!    every tree connection; SQL triggers refuse any change of a locked host's stations,
-//!    connections or tree record. A Topic Lock freezes the Topic-side mounts beside its Cards the
-//!    same way, also a Lock made before mounts existed.
-//! 2. **Mounted target pins**: `lock_placement_pins` names each live mounted Card; its delete is
-//!    refused (`pinned-delete`) and so is a change of its address (`pinned-move`). A pin reaches no
-//!    further: a Card connected to a mounted Card is not pinned.
-//! 3. **Source observation**: each pin keeps the target's authored fingerprint at lock time. An
-//!    edit of an unlocked source succeeds; the reader shows that it differs from the lock-time
-//!    version. This never blocks and never faults.
-//! 4. **Append-only review**: `lock_source_reviews` records that the owner reviewed a source at a
-//!    given fingerprint. It never changes the Lock seal and never writes a `reseal` event.
+//! A v2 Lock seals every Coordinate and connection of its tree. Each live occurrence of a Card
+//! filed outside the tree gets its own pin, lock-time authored fingerprint and review history.
+//! Pins protect the promised filing address and live Card. Authored drift is advisory.
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Access;
-use crate::coord::{self, Handle, TreeRole};
+use crate::coord::{self, TreeRecord};
 
 const TABLES_SQL: &str = "
 CREATE TABLE IF NOT EXISTS lock_coordinate_seals (
     lock_id          INTEGER NOT NULL PRIMARY KEY REFERENCES locks(lock_id),
-    evidence_version INTEGER NOT NULL CHECK(evidence_version = 1),
+    evidence_version INTEGER NOT NULL CHECK(evidence_version = 2),
     host_tree_key    TEXT NOT NULL,
     structure_fp     TEXT NOT NULL
 );
@@ -73,37 +59,44 @@ CREATE TABLE IF NOT EXISTS lock_source_reviews (
 CREATE INDEX IF NOT EXISTS lock_source_reviews_latest ON lock_source_reviews(lock_id, placement_id, review_id);
 ";
 
-/// The SQL backstop: the active Lock of a host, by its root address (`3/0` for a Topic host, `~7`
-/// for a Connection host).
-const HOST_ROOT_SQL_NEW: &str = "(CASE NEW.host_kind WHEN 'topic' THEN NEW.host_tree_key || '/0'
-    ELSE (SELECT '~' || display_num FROM connection_trees WHERE tree_id = NEW.host_tree_key) END)";
-const HOST_ROOT_SQL_OLD: &str = "(CASE OLD.host_kind WHEN 'topic' THEN OLD.host_tree_key || '/0'
-    ELSE (SELECT '~' || display_num FROM connection_trees WHERE tree_id = OLD.host_tree_key) END)";
-
 fn triggers_sql() -> String {
-    let locked = |root: &str| {
-        format!("EXISTS (SELECT 1 FROM locks l WHERE l.unlocked_at IS NULL AND l.root_address = {root})")
+    let locked = |side: &str| {
+        format!(
+            "EXISTS (SELECT 1 FROM trees t JOIN locks l ON l.unlocked_at IS NULL
+                     AND (l.root_address = t.public_key
+                          OR (t.role = 'topic' AND l.root_address = t.public_key || '/0'))
+                     WHERE t.tree_id = {side}.tree_id)"
+        )
     };
-    let edge_root = |side: &str| format!("(SELECT '~' || display_num FROM connection_trees WHERE tree_id = {side}.tree_id)");
     let refuse = "BEGIN SELECT RAISE(ABORT, 'zt: card is in a locked tree'); END;";
     format!(
         "
-CREATE TRIGGER IF NOT EXISTS coord_lock_placement_insert BEFORE INSERT ON placements
-WHEN {new_p} {refuse}
-CREATE TRIGGER IF NOT EXISTS coord_lock_placement_update BEFORE UPDATE ON placements
-WHEN {old_p} OR {new_p} {refuse}
-CREATE TRIGGER IF NOT EXISTS coord_lock_placement_delete BEFORE DELETE ON placements
-WHEN {old_p} {refuse}
-CREATE TRIGGER IF NOT EXISTS coord_lock_edge_insert BEFORE INSERT ON placement_edges
-WHEN {new_e} {refuse}
-CREATE TRIGGER IF NOT EXISTS coord_lock_edge_update BEFORE UPDATE ON placement_edges
-WHEN {old_e} OR {new_e} {refuse}
-CREATE TRIGGER IF NOT EXISTS coord_lock_edge_delete BEFORE DELETE ON placement_edges
-WHEN {old_e} {refuse}
-CREATE TRIGGER IF NOT EXISTS coord_lock_tree_change BEFORE UPDATE ON connection_trees
-WHEN EXISTS (SELECT 1 FROM locks l WHERE l.unlocked_at IS NULL AND l.root_address = '~' || OLD.display_num) {refuse}
-CREATE TRIGGER IF NOT EXISTS coord_lock_tree_delete BEFORE DELETE ON connection_trees
-WHEN EXISTS (SELECT 1 FROM locks l WHERE l.unlocked_at IS NULL AND l.root_address = '~' || OLD.display_num) {refuse}
+CREATE TRIGGER IF NOT EXISTS coord_lock_placement_insert BEFORE INSERT ON coordinates
+WHEN {new_tree} {refuse}
+CREATE TRIGGER IF NOT EXISTS coord_lock_placement_update BEFORE UPDATE ON coordinates
+WHEN {old_tree} OR {new_tree} {refuse}
+CREATE TRIGGER IF NOT EXISTS coord_lock_placement_delete BEFORE DELETE ON coordinates
+WHEN {old_tree} {refuse}
+CREATE TRIGGER IF NOT EXISTS coord_lock_edge_insert BEFORE INSERT ON coordinate_edges
+WHEN {new_tree} {refuse}
+CREATE TRIGGER IF NOT EXISTS coord_lock_edge_update BEFORE UPDATE ON coordinate_edges
+WHEN {old_tree} OR {new_tree} {refuse}
+CREATE TRIGGER IF NOT EXISTS coord_lock_edge_delete BEFORE DELETE ON coordinate_edges
+WHEN {old_tree} {refuse}
+CREATE TRIGGER IF NOT EXISTS coord_lock_tree_change BEFORE UPDATE ON trees
+WHEN {old_tree} {refuse}
+CREATE TRIGGER IF NOT EXISTS coord_lock_tree_delete BEFORE DELETE ON trees
+WHEN {old_tree} {refuse}
+CREATE TRIGGER IF NOT EXISTS coord_lock_filing_change BEFORE UPDATE OF filing_coord_id ON card_identity
+WHEN NEW.filing_coord_id IS NOT OLD.filing_coord_id AND OLD.status = 'live' AND NEW.status = 'live'
+BEGIN
+    SELECT RAISE(ABORT, 'zt: card is in a locked tree')
+    WHERE EXISTS (SELECT 1 FROM lock_members m JOIN locks l ON l.lock_id = m.lock_id
+                  WHERE m.row_id = OLD.card_row AND l.unlocked_at IS NULL);
+    SELECT RAISE(ABORT, 'zt: card is pinned by a locked tree (pinned-move)')
+    WHERE EXISTS (SELECT 1 FROM lock_placement_pins p JOIN locks l ON l.lock_id = p.lock_id
+                  WHERE p.card_id = OLD.card_id AND l.unlocked_at IS NULL);
+END;
 CREATE TRIGGER IF NOT EXISTS coord_pin_no_delete BEFORE DELETE ON cards
 WHEN EXISTS (SELECT 1 FROM lock_placement_pins p JOIN locks l ON l.lock_id = p.lock_id
              WHERE p.target_row = OLD.row_id AND l.unlocked_at IS NULL)
@@ -115,22 +108,36 @@ WHEN (NEW.location IS NOT OLD.location OR NEW.citation_key IS NOT OLD.citation_k
 BEGIN SELECT RAISE(ABORT, 'zt: card is pinned by a locked tree (pinned-move)'); END;
 CREATE TRIGGER IF NOT EXISTS coord_lock_native_insert BEFORE INSERT ON cards
 WHEN NEW.location LIKE '~%#%' AND EXISTS (SELECT 1 FROM locks l WHERE l.unlocked_at IS NULL
-      AND l.tree = substr(NEW.location, 1, instr(NEW.location, '#') - 1))
+      AND l.root_address = substr(NEW.location, 1, instr(NEW.location, '#') - 1))
 BEGIN SELECT RAISE(ABORT, 'zt: locked tree takes no new cards'); END;
 CREATE TRIGGER IF NOT EXISTS coord_lock_native_move_in BEFORE UPDATE OF location ON cards
 WHEN NEW.location IS NOT OLD.location AND NEW.location LIKE '~%#%' AND EXISTS (SELECT 1 FROM locks l
-      WHERE l.unlocked_at IS NULL AND l.tree = substr(NEW.location, 1, instr(NEW.location, '#') - 1))
+      WHERE l.unlocked_at IS NULL AND l.root_address = substr(NEW.location, 1, instr(NEW.location, '#') - 1))
 BEGIN SELECT RAISE(ABORT, 'zt: locked tree takes no new cards'); END;
 CREATE TRIGGER IF NOT EXISTS lock_source_reviews_append_only_update BEFORE UPDATE ON lock_source_reviews
 BEGIN SELECT RAISE(ABORT, 'zt: a source review is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS lock_source_reviews_append_only_delete BEFORE DELETE ON lock_source_reviews
 BEGIN SELECT RAISE(ABORT, 'zt: a source review is append-only'); END;
 ",
-        new_p = locked(HOST_ROOT_SQL_NEW),
-        old_p = locked(HOST_ROOT_SQL_OLD),
-        new_e = locked(&edge_root("NEW")),
-        old_e = locked(&edge_root("OLD")),
+        new_tree = locked("NEW"),
+        old_tree = locked("OLD"),
     )
+}
+
+/// Remove the coordinate Lock triggers before reinstallation.
+pub(crate) fn drop_triggers(conn: &Connection) -> Result<()> {
+    let names = conn
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'
+             AND (name GLOB 'coord_lock_*' OR name GLOB 'coord_pin_*'
+                  OR name GLOB 'lock_source_reviews_*')",
+        )?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for name in names {
+        conn.execute_batch(&format!("DROP TRIGGER \"{}\";", name.replace('"', "\"\"")))?;
+    }
+    Ok(())
 }
 
 /// Install the coordinate Lock tables and triggers (after the Lock tables and coordinate storage).
@@ -143,26 +150,34 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
     if !locks_exist || !coord::installed(conn) {
         return Ok(());
     }
-    conn.execute_batch(TABLES_SQL)?;
-    conn.execute_batch(&triggers_sql())?;
-    Ok(())
+    conn.execute_batch("SAVEPOINT coord_lock_schema;")?;
+    let result = (|| -> Result<()> {
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS coord_lock_meta_no_delete;
+             DROP TRIGGER IF EXISTS coord_lock_meta_no_update;
+             DROP TRIGGER IF EXISTS coord_lock_meta_no_insert;
+             DROP TRIGGER IF EXISTS coord_lock_meta_no_replace;
+             DELETE FROM metadata WHERE key = 'coord_v2_min_lock_id';",
+        )?;
+        drop_triggers(conn)?;
+        conn.execute_batch(TABLES_SQL)?;
+        conn.execute_batch(&triggers_sql())?;
+        conn.execute_batch("RELEASE coord_lock_schema;")?;
+        Ok(())
+    })();
+    if result.is_err() {
+        conn.execute_batch("ROLLBACK TO coord_lock_schema; RELEASE coord_lock_schema;")?;
+    }
+    result
 }
 
-fn installed(conn: &Connection) -> bool {
+pub(crate) fn installed(conn: &Connection) -> bool {
     conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lock_placement_pins')",
         [],
         |r| r.get::<_, bool>(0),
     )
     .unwrap_or(false)
-}
-
-/// The root address whose Lock freezes a host: `3/0` for Topic `3`, `~7` for a Connection tree.
-fn host_root(conn: &Connection, host_key: &str) -> Result<Option<String>> {
-    if crate::valid_topic_id(host_key) {
-        return Ok(Some(format!("{host_key}/0")));
-    }
-    Ok(coord::tree_by_id(conn, host_key)?.map(|tree| tree.handle()))
 }
 
 fn active_lock_of_root(conn: &Connection, root: &str) -> Result<Option<i64>> {
@@ -183,18 +198,22 @@ fn active_lock_of_root(conn: &Connection, root: &str) -> Result<Option<i64>> {
         .optional()?)
 }
 
-/// Whether an active Lock freezes the placements and connections of this host.
-pub(crate) fn host_locked(conn: &Connection, host_key: &str) -> Result<bool> {
-    Ok(match host_root(conn, host_key)? {
-        Some(root) => active_lock_of_root(conn, &root)?.is_some(),
-        None => false,
-    })
+/// Whether an active Lock freezes this tree, addressed by ID or public key.
+pub(crate) fn host_locked(conn: &Connection, tree_id: &str) -> Result<bool> {
+    let tree = match coord::tree_by_id(conn, tree_id)? {
+        Some(tree) => Some(tree),
+        None => coord::tree_by_public_key(conn, tree_id)?,
+    };
+    match tree {
+        Some(tree) => Ok(active_lock_of_root(conn, &tree.root_address())?.is_some()),
+        None => Ok(false),
+    }
 }
 
 /// Refuse a host write while its tree is locked.
-pub(crate) fn ensure_host_unlocked(conn: &Connection, host_key: &str, label: &str) -> Result<()> {
-    if host_locked(conn, host_key)? {
-        bail!("card_locked: {label} is locked; its stations and connections do not change");
+pub(crate) fn ensure_host_unlocked(conn: &Connection, tree_id: &str, label: &str) -> Result<()> {
+    if host_locked(conn, tree_id)? {
+        bail!("card_locked: {label} is locked; its Coordinates and connections do not change");
     }
     Ok(())
 }
@@ -259,58 +278,29 @@ pub(crate) fn ensure_moves_allowed<'a>(conn: &Connection, moved: impl IntoIterat
 // Snapshot at Lock time
 // ---------------------------------------------------------------------------------------------
 
-/// The stations a Lock of `root` freezes: a Connection tree's stations, or a Topic's side mounts.
-fn host_stations(conn: &Connection, root: &crate::Card) -> Result<Option<(String, Vec<coord::Placement>)>> {
-    if !coord::installed(conn) {
-        return Ok(None);
-    }
-    if let Some(handle) = Handle::parse(&root.address).filter(|h| h.local.is_none()) {
-        let tree = coord::tree_by_num(conn, handle.tree)?.context("Connection tree record is missing")?;
-        let mut stations = coord::placements_of_host(conn, &tree.tree_id)?;
-        stations.sort_by(|a, b| a.placement_id.cmp(&b.placement_id));
-        return Ok(Some((tree.tree_id, stations)));
-    }
-    if root.is_topic {
-        let topic = crate::tree_id(&root.address).to_string();
-        let mut stations = coord::placements_of_host(conn, &topic)?;
-        stations.sort_by(|a, b| a.placement_id.cmp(&b.placement_id));
-        return Ok(Some((topic, stations)));
-    }
-    Ok(None)
-}
-
-fn station_tuple(conn: &Connection, p: &coord::Placement) -> Result<Value> {
-    let live = coord::identity(conn, &p.card_id)?.map(|i| i.live).unwrap_or(false);
-    Ok(json!([
-        "station-v1",
-        p.placement_id,
-        p.host_kind,
-        p.host_tree_key,
-        p.card_id,
-        p.parent_id,
-        p.anchor_card_id,
-        p.edge.id(),
-        p.ordinal,
-        p.gloss,
-        if live { "live" } else { "missing" },
-    ]))
-}
-
-fn connection_tuple(e: &crate::connection::Edge) -> Value {
-    json!([
-        "connection-v1",
-        e.connection_id,
-        e.from,
-        e.to,
-        if e.directed { "directed" } else { "neutral" },
-        e.label,
-        e.kind,
-        e.note,
-        e.created_by,
-        e.created_at_rev,
-        e.updated_by,
-        e.updated_at_rev,
-    ])
+fn connection_tuples(conn: &Connection, tree_id: &str) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT connection_id, from_coord_id, to_coord_id, direction, relation_label, relation_kind,
+                note, created_by, created_at_rev, updated_by, updated_at_rev
+         FROM coordinate_edges WHERE tree_id = ?1 ORDER BY connection_id",
+    )?;
+    let tuples = stmt.query_map([tree_id], |row| {
+        Ok(json!([
+            "connection-v2",
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, i64>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, i64>(10)?,
+        ]))
+    })?;
+    Ok(tuples.collect::<rusqlite::Result<_>>()?)
 }
 
 fn fp(value: &Value) -> String {
@@ -320,57 +310,110 @@ fn fp(value: &Value) -> String {
         .collect()
 }
 
-/// The coordinate evidence a Lock of `root` captures, or null when the tree has none (a Topic with
-/// no side mount, a Literature tree). Bound into the Lock plan hash.
+fn structure_fp(
+    host: &str,
+    placements: &[Value],
+    connections: &[Value],
+    pin_tuples: &[Value],
+) -> String {
+    fp(&json!({"host": host, "placements": placements, "connections": connections, "pins": pin_tuples}))
+}
+
+fn card_address(conn: &Connection, row: i64) -> Result<String> {
+    Ok(conn.query_row(
+        "SELECT COALESCE(location, citation_key) FROM cards WHERE row_id = ?1",
+        [row],
+        |r| r.get(0),
+    )?)
+}
+
+fn pin_target(coord_id: &str, card_id: &str, row: i64, address: &str) -> Value {
+    json!({
+        "placement_id": coord_id,
+        "coord_id": coord_id,
+        "card_id": card_id,
+        "target_row": row,
+        "target_address": address,
+        "fp_version": 1,
+    })
+}
+
+fn tree_coordinates(conn: &Connection, tree_id: &str) -> Result<Vec<coord::CoordinateRow>> {
+    let mut coordinates = coord::coordinates_of_tree(conn, tree_id)?;
+    coordinates.sort_by(|a, b| a.coord_id.cmp(&b.coord_id));
+    Ok(coordinates)
+}
+
+/// The v2 evidence for any Tree root, bound into the Lock plan hash.
 pub(crate) fn snapshot(conn: &Connection, root: &crate::Card) -> Result<Value> {
-    let Some((host, stations)) = host_stations(conn, root)? else {
-        return Ok(Value::Null);
-    };
-    if stations.is_empty() {
+    if !coord::installed(conn) {
         return Ok(Value::Null);
     }
-    let members: BTreeSet<i64> = {
-        let tree = crate::tree_id(&root.address).to_string();
-        crate::addresses(conn)?
-            .into_iter()
-            .filter(|a| crate::is_tree_member(a, &tree))
-            .filter_map(|a| crate::load_card(conn, &a).ok().map(|c| c.row_id))
-            .collect()
-    };
-    let mut placements = Vec::new();
+    let tree = coord::tree_by_public_key(conn, crate::tree_id(&root.address))?
+        .with_context(|| format!("tree record is missing for `{}`", root.address))?;
+    snapshot_v2(conn, &tree, None)
+}
+
+fn snapshot_v2(
+    conn: &Connection,
+    tree: &TreeRecord,
+    stored_observed_fps: Option<&BTreeMap<&str, &str>>,
+) -> Result<Value> {
+    let coordinates = tree_coordinates(conn, &tree.tree_id)?;
+    let coord_ids: BTreeSet<&str> = coordinates.iter().map(|c| c.coord_id.as_str()).collect();
+    let mut placements = Vec::with_capacity(coordinates.len());
     let mut pins = Vec::new();
+    let mut pin_tuples = Vec::new();
     let mut missing = Vec::new();
-    for p in &stations {
-        placements.push(station_tuple(conn, p)?);
-        let identity = coord::identity(conn, &p.card_id)?.context("station names an unknown Card")?;
+    for c in &coordinates {
+        let identity =
+            coord::identity(conn, &c.card_id)?.context("Coordinate names an unknown Card")?;
+        placements.push(json!([
+            "coord-v2",
+            c.coord_id,
+            c.tree_id,
+            c.host_workspace.id(),
+            c.card_id,
+            c.parent_coord_id,
+            c.edge.id(),
+            c.slot,
+            c.gloss,
+            if identity.live { "live" } else { "missing" },
+        ]));
+        let filed_here = identity
+            .filing_coord_id
+            .as_deref()
+            .is_some_and(|id| coord_ids.contains(id));
         match identity.card_row.filter(|_| identity.live) {
-            Some(row) if !members.contains(&row) => {
-                let card = crate::connection::card_by_row(conn, row)?;
-                pins.push(json!({
-                    "placement_id": p.placement_id,
-                    "card_id": p.card_id,
-                    "target_row": row,
-                    "target_address": card.address,
-                    "observed_authored_fp": crate::card::authored_fingerprint(&card)?,
-                    "fp_version": 1,
-                }));
+            Some(row) if !filed_here => {
+                let address = card_address(conn, row)?;
+                let mut pin = pin_target(&c.coord_id, &c.card_id, row, &address);
+                pin["observed_authored_fp"] = match stored_observed_fps {
+                    Some(fps) => json!(fps.get(c.coord_id.as_str()).copied()),
+                    None => {
+                        let card = crate::load_card(conn, &address)?;
+                        json!(crate::card::authored_fingerprint(&card)?)
+                    }
+                };
+                pin_tuples.push(json!([
+                    "pin-v2", c.coord_id, c.card_id, row, address,
+                    pin["observed_authored_fp"], pin["fp_version"],
+                ]));
+                pins.push(pin);
             }
             Some(_) => {}
-            None => missing.push(json!({"placement_id": p.placement_id, "last_address": identity.last_address})),
+            None => missing.push(json!({
+                "coord_id": c.coord_id,
+                "placement_id": c.coord_id,
+                "last_address": identity.last_address,
+            })),
         }
     }
-    // Tuples are sealed in ID order, the same order the integrity check reads them back in.
-    let connections: Vec<Value> = if TreeRole::of(root) == TreeRole::Connection {
-        let mut edges = crate::connection::edges_of_tree(conn, &host)?;
-        edges.sort_by(|a, b| a.connection_id.cmp(&b.connection_id));
-        edges.iter().map(connection_tuple).collect()
-    } else {
-        Vec::new()
-    };
-    let structure = json!({"host": host, "placements": placements, "connections": connections});
+    let connections = connection_tuples(conn, &tree.tree_id)?;
     Ok(json!({
-        "host_tree_key": host,
-        "structure_fp": fp(&structure),
+        "evidence_version": 2,
+        "host_tree_key": tree.tree_id,
+        "structure_fp": structure_fp(&tree.tree_id, &placements, &connections, &pin_tuples),
         "placements": placements,
         "connections": connections,
         "pins": pins,
@@ -380,12 +423,12 @@ pub(crate) fn snapshot(conn: &Connection, root: &crate::Card) -> Result<Value> {
 
 /// Record the coordinate evidence of a Lock just inserted by `tree_lock::lock_tx`.
 pub(crate) fn capture(conn: &Connection, lock_id: i64, snapshot: &Value) -> Result<()> {
-    if snapshot.is_null() || !installed(conn) {
+    if snapshot.is_null() {
         return Ok(());
     }
     let revision = crate::link_index::revision(conn)? as i64;
     conn.execute(
-        "INSERT INTO lock_coordinate_seals(lock_id, evidence_version, host_tree_key, structure_fp) VALUES(?1, 1, ?2, ?3)",
+        "INSERT INTO lock_coordinate_seals(lock_id, evidence_version, host_tree_key, structure_fp) VALUES(?1, 2, ?2, ?3)",
         params![lock_id, snapshot["host_tree_key"].as_str(), snapshot["structure_fp"].as_str()],
     )?;
     for tuple in snapshot["placements"].as_array().into_iter().flatten() {
@@ -420,9 +463,9 @@ pub(crate) fn capture(conn: &Connection, lock_id: i64, snapshot: &Value) -> Resu
     Ok(())
 }
 
-/// The drift state of one station under an active Lock: whether its mounted source differs from
+/// The drift state of one Coordinate under an active Lock: whether its source differs from
 /// the lock-time version, and whether its current version was reviewed. `None` without a pin.
-pub(crate) fn drift(conn: &Connection, placement_id: &str) -> Result<Option<Value>> {
+pub(crate) fn drift(conn: &Connection, coord_id: &str) -> Result<Option<Value>> {
     if !installed(conn) {
         return Ok(None);
     }
@@ -431,19 +474,19 @@ pub(crate) fn drift(conn: &Connection, placement_id: &str) -> Result<Option<Valu
             "SELECT p.lock_id, p.card_id, p.target_row, p.observed_authored_fp FROM lock_placement_pins p
              JOIN locks l ON l.lock_id = p.lock_id
              WHERE p.placement_id = ?1 AND l.unlocked_at IS NULL",
-            [placement_id],
+            [coord_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
     let Some((lock_id, card_id, row, observed)) = pin else {
         return Ok(None);
     };
-    let card = crate::connection::card_by_row(conn, row)?;
+    let card = crate::load_card(conn, &card_address(conn, row)?)?;
     let current = crate::card::authored_fingerprint(&card)?;
     let reviewed: Option<String> = conn
         .query_row(
             "SELECT reviewed_fp FROM lock_source_reviews WHERE lock_id = ?1 AND placement_id = ?2 ORDER BY review_id DESC LIMIT 1",
-            params![lock_id, placement_id],
+            params![lock_id, coord_id],
             |r| r.get(0),
         )
         .optional()?;
@@ -465,14 +508,19 @@ pub(crate) fn review_source(conn: &Connection, access: Access, args: &Value) -> 
     if access != Access::Owner {
         bail!("only the owner marks a locked tree's source reviewed");
     }
-    let placement_text = args.get("placement_id").and_then(Value::as_str).context("missing `placement_id`")?;
-    let station = coord::resolve_station(conn, placement_text)?;
+    let coord_text = args
+        .get("coord_id")
+        .or_else(|| args.get("placement_id"))
+        .and_then(Value::as_str)
+        .context("missing `coord_id` or `placement_id`")?;
+    let coordinate = coord::resolve_coord(conn, coord_text)?;
     let reviewed_fp = args.get("reviewed_fp").and_then(Value::as_str).context("missing `reviewed_fp`")?;
     let note = args.get("note").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty());
     if note.is_some_and(|n| n.chars().count() > 400) {
         bail!("a review note is at most 400 characters");
     }
-    let state = drift(conn, &station.placement_id)?.context("this station has no locked source to review (no active Lock pins it)")?;
+    let state = drift(conn, &coordinate.coord_id)?
+        .context("this Coordinate has no locked source to review (no active Lock pins it)")?;
     if state["current_fp"].as_str() != Some(reviewed_fp) {
         bail!("stale review: the source changed since it was shown; read it again and review the current version");
     }
@@ -482,103 +530,175 @@ pub(crate) fn review_source(conn: &Connection, access: Access, args: &Value) -> 
         .and_then(Value::as_i64)
         .context("a review names the lock_id it was shown under")?;
     if shown != lock_id {
-        bail!("stale review: the station is now under Lock {lock_id}, not the Lock {shown} that was shown; review it again");
+        bail!("stale review: the Coordinate is now under Lock {lock_id}, not the Lock {shown} that was shown; review it again");
     }
     conn.execute(
         "INSERT INTO lock_source_reviews(lock_id, placement_id, card_id, reviewed_fp, reviewed_at_rev, reviewed_at, note)
          VALUES(?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?6)",
         params![
             lock_id,
-            station.placement_id,
-            station.card_id,
+            coordinate.coord_id,
+            coordinate.card_id,
             reviewed_fp,
             coord::next_revision(conn)?,
             note
         ],
     )?;
-    Ok(json!({"applied": true, "lock_id": lock_id, "placement_id": station.placement_id, "reviewed_fp": reviewed_fp, "changed": true}))
+    Ok(json!({
+        "applied": true,
+        "lock_id": lock_id,
+        "coord_id": coordinate.coord_id,
+        "placement_id": coordinate.coord_id,
+        "reviewed_fp": reviewed_fp,
+        "changed": true,
+    }))
 }
 
-/// The coordinate faults of every active Lock, as `(lock_id, kind, subject, detail)`: the stored
-/// evidence no longer reproduces its seal, the live stations or connections differ from it, a
-/// Lock of a tree with stations has no evidence, or a live mounted target lacks its pin. Each is
-/// only possible by tampering, because the triggers refuse the changes.
+fn stored_connections(conn: &Connection, lock_id: i64) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT snapshot_json FROM lock_connections WHERE lock_id = ?1 ORDER BY connection_id",
+    )?;
+    let tuples = stmt.query_map([lock_id], |row| row.get::<_, String>(0))?;
+    Ok(tuples
+        .map(|tuple| tuple.map(|text| serde_json::from_str(&text).unwrap_or(Value::Null)))
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+fn stored_placements(conn: &Connection, lock_id: i64) -> Result<(Vec<Value>, bool)> {
+    let mut stmt = conn.prepare(
+        "SELECT placement_id, card_id, snapshot_json FROM lock_placements
+         WHERE lock_id = ?1 ORDER BY placement_id",
+    )?;
+    let rows = stmt.query_map([lock_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+    })?;
+    let mut placements = Vec::new();
+    let mut ids_match = true;
+    for row in rows {
+        let (placement_id, card_id, text) = row?;
+        let tuple: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        ids_match &= tuple[1].as_str() == Some(placement_id.as_str())
+            && tuple[4].as_str() == Some(card_id.as_str());
+        placements.push(tuple);
+    }
+    Ok((placements, ids_match))
+}
+
+fn stored_pin_tuples(conn: &Connection, lock_id: i64) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT placement_id, card_id, target_row, target_address, observed_authored_fp, fp_version
+         FROM lock_placement_pins WHERE lock_id = ?1 ORDER BY placement_id",
+    )?;
+    let rows = stmt.query_map([lock_id], |row| {
+        Ok(json!([
+            "pin-v2",
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, i64>(5)?,
+        ]))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Verify stored and live v2 coordinate evidence for every active Lock.
 pub(crate) fn faults(conn: &Connection) -> Result<Vec<(i64, String, String, String)>> {
-    let mut out = Vec::new();
-    if !installed(conn) || !coord::installed(conn) {
-        return Ok(out);
+    if !coord::installed(conn) {
+        return Ok(Vec::new());
     }
     let mut stmt = conn.prepare(
-        "SELECT l.lock_id, l.root_address, s.structure_fp FROM locks l
+        "SELECT l.lock_id, l.root_address, s.evidence_version, s.host_tree_key, s.structure_fp
+         FROM locks l
          LEFT JOIN lock_coordinate_seals s ON s.lock_id = l.lock_id
          WHERE l.unlocked_at IS NULL ORDER BY l.lock_id",
     )?;
     let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)))?
+        .query_map([], |r| Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<i64>>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, Option<String>>(4)?,
+        )))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
-    for (lock_id, root, sealed) in rows {
-        let Ok(card) = crate::load_card(conn, &root) else { continue };
-        let now = snapshot(conn, &card)?;
-        let Some(sealed) = sealed else {
-            // A Topic Lock made while it had no side mount holds no coordinate evidence, and its
-            // frozen Topic cannot gain one; a Connection-tree Lock always captures its root station.
-            if root.starts_with('~') || !now.is_null() {
-                out.push((lock_id, "coordinate-evidence-missing".into(), root.clone(), "the Lock holds no coordinate evidence for its stations".into()));
-            }
+    let mut out = Vec::new();
+    for (lock_id, root, version, host, sealed) in rows {
+        let Some(version) = version else {
+            out.push((lock_id, "coordinate-evidence-missing".into(), root,
+                "the Lock holds no coordinate evidence for its tree's Coordinates or connections".into()));
             continue;
         };
-        // The stored evidence reproduces its own seal.
-        let placements: Vec<Value> = conn
-            .prepare("SELECT snapshot_json FROM lock_placements WHERE lock_id = ?1 ORDER BY placement_id")?
-            .query_map([lock_id], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .into_iter()
-            .map(|t| serde_json::from_str(&t).unwrap_or(Value::Null))
-            .collect();
-        let connections: Vec<Value> = conn
-            .prepare("SELECT snapshot_json FROM lock_connections WHERE lock_id = ?1 ORDER BY connection_id")?
-            .query_map([lock_id], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .into_iter()
-            .map(|t| serde_json::from_str(&t).unwrap_or(Value::Null))
-            .collect();
-        let host: String = conn.query_row(
-            "SELECT host_tree_key FROM lock_coordinate_seals WHERE lock_id = ?1",
-            [lock_id],
-            |r| r.get(0),
-        )?;
-        let stored = fp(&json!({"host": host, "placements": placements, "connections": connections}));
-        if stored != sealed {
-            out.push((lock_id, "coordinate-evidence-changed".into(), root.clone(), "the stored stations or connections no longer match the Lock's coordinate seal".into()));
+        if version != 2 {
+            out.push((lock_id, "coordinate-evidence-changed".into(), root,
+                format!("the Lock has coordinate evidence version {version}, expected version 2")));
+            continue;
         }
-        if now["structure_fp"].as_str() != Some(sealed.as_str()) {
-            out.push((lock_id, "coordinate-structure-changed".into(), root.clone(), "the locked stations or connections differ from their Lock-time evidence".into()));
+        let (placements, ids_match) = stored_placements(conn, lock_id)?;
+        let connections = stored_connections(conn, lock_id)?;
+        let pin_tuples = stored_pin_tuples(conn, lock_id)?;
+        let stored = structure_fp(host.as_deref().unwrap_or_default(), &placements, &connections, &pin_tuples);
+        if !ids_match || sealed.as_deref() != Some(stored.as_str()) {
+            out.push((lock_id, "coordinate-evidence-changed".into(), root.clone(),
+                "the stored Coordinates, connections, or source pins no longer match the Lock's coordinate seal".into()));
         }
-        // The pins are exactly the live mounted targets, each at its row and address.
-        let expected: BTreeSet<(String, String, i64, String)> = now["pins"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|pin| {
-                (
-                    pin["placement_id"].as_str().unwrap_or_default().to_string(),
-                    pin["card_id"].as_str().unwrap_or_default().to_string(),
-                    pin["target_row"].as_i64().unwrap_or_default(),
-                    pin["target_address"].as_str().unwrap_or_default().to_string(),
-                )
-            })
-            .collect();
-        let stored: BTreeSet<(String, String, i64, String)> = conn
-            .prepare("SELECT placement_id, card_id, target_row, target_address FROM lock_placement_pins WHERE lock_id = ?1")?
-            .query_map([lock_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        for missing in expected.difference(&stored) {
-            out.push((lock_id, "coordinate-pin-missing".into(), missing.3.clone(), "a mounted target of the locked tree has lost its pin".into()));
+        let tree = coord::tree_by_public_key(conn, crate::tree_id(&root))?;
+        let now = if let Some(tree) = tree {
+            let fps = pin_tuples
+                .iter()
+                .filter_map(|tuple| Some((tuple[1].as_str()?, tuple[5].as_str()?)))
+                .collect();
+            snapshot_v2(conn, &tree, Some(&fps))?
+        } else {
+            Value::Null
+        };
+        // Both sides reuse the recorded source observations so authored drift stays advisory.
+        if now["structure_fp"].as_str() != Some(stored.as_str()) {
+            out.push((lock_id, "coordinate-structure-changed".into(), root,
+                "the locked Coordinates or connections differ from their Lock-time evidence".into()));
         }
-        for extra in stored.difference(&expected) {
-            out.push((lock_id, "coordinate-pin-changed".into(), extra.3.clone(), "a stored pin names no live mounted target of the locked tree".into()));
+        if !now.is_null() {
+            verify_pins(conn, lock_id, &now["pins"], &mut out)?;
         }
     }
     Ok(out)
+}
+
+fn verify_pins(
+    conn: &Connection,
+    lock_id: i64,
+    pins: &Value,
+    out: &mut Vec<(i64, String, String, String)>,
+) -> Result<()> {
+    let mut stored: BTreeMap<String, (String, i64, String, i64)> = conn
+        .prepare("SELECT placement_id, card_id, target_row, target_address, fp_version
+                  FROM lock_placement_pins WHERE lock_id = ?1")?
+        .query_map([lock_id], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))))?
+        .collect::<rusqlite::Result<_>>()?;
+    // The pin promises a Card at its row and address. Its current authored text can drift.
+    for pin in pins.as_array().into_iter().flatten() {
+        let coord_id = pin["coord_id"].as_str().context("pin Coordinate ID")?;
+        let address = pin["target_address"].as_str().context("pin target address")?;
+        match stored.remove(coord_id) {
+            None => out.push((lock_id, "coordinate-pin-missing".into(), address.into(),
+                format!("Coordinate `{coord_id}` has lost its source pin"))),
+            Some((card_id, row, stored_address, version))
+                if pin["card_id"].as_str() != Some(card_id.as_str())
+                    || pin["target_row"].as_i64() != Some(row)
+                    || address != stored_address.as_str()
+                    || pin["fp_version"].as_i64() != Some(version) =>
+            {
+                out.push((lock_id, "coordinate-pin-changed".into(), address.into(),
+                    format!("Coordinate `{coord_id}` has a different source pin")));
+            }
+            Some(_) => {}
+        }
+    }
+    for (coord_id, (_, _, address, _)) in stored {
+        out.push((lock_id, "coordinate-pin-changed".into(), address,
+            format!("the stored pin for Coordinate `{coord_id}` has no live external source")));
+    }
+    Ok(())
 }

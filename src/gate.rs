@@ -711,6 +711,12 @@ impl Facts {
 /// Check one proposed Card and either accept it with its warnings or refuse it. This is the shared
 /// decision function of every authoring route (R0152): the caller has already enforced Access and
 /// Locks, and the same write transaction supplies the context.
+pub(crate) fn validate_authored_links(conn: &Connection, body: &str, old_body: Option<&str>) -> Result<()> {
+    // This is a structural refusal in every gate stage, including for retained broken Links.
+    crate::link::LinkBody::for_rendering(body).reject_secondary_coordinates(conn)?;
+    crate::link_index::validate(conn, body, old_body)
+}
+
 pub(crate) fn check_proposed(conn: &Connection, candidate: &Candidate) -> Result<Accepted> {
     let parsed = crate::validate_card_text(
         conn,

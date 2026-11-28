@@ -65,6 +65,19 @@ impl<'a> LinkBody<'a> {
         }
     }
 
+    pub(crate) fn reject_secondary_coordinates(&self, conn: &rusqlite::Connection) -> Result<()> {
+        let mut checked = BTreeSet::new();
+        for occurrence in &self.occurrences {
+            let target = occurrence.target;
+            if checked.insert(target)
+                && let Some((canonical, coord_id)) = crate::coord::secondary_coordinate_at(conn, target)?
+            {
+                bail!("{}", crate::coord::secondary_coordinate_link_hint(target, &canonical, &coord_id));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn occurrences(&self) -> &[LinkOccurrence<'a>] {
         &self.occurrences
     }

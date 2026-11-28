@@ -1419,9 +1419,10 @@ impl App {
             let read = conn.unchecked_transaction()?;
             if crate::link_index::revision(&read)? == snapshot.revision() {
                 let id = crate::tree_id(&crate::tree_root_address(tree)).to_string();
+                let map = Self::map_coordinates(&read, &snapshot, &id)?;
                 let (elsewhere, crossings) = crate::connection::tree_coordinates(&read, &id)?;
                 read.finish()?;
-                coordinates = Some((elsewhere.to_string(), crossings.to_string()));
+                coordinates = Some((map, elsewhere, crossings));
                 break;
             }
             drop(read);
@@ -1429,7 +1430,7 @@ impl App {
                 snapshot = self.snapshots.fresh()?;
             }
         }
-        let (elsewhere, crossings) = coordinates
+        let ((coordinates, coordinate_cards, connections), elsewhere, crossings) = coordinates
             .ok_or_else(|| ApiError::new("the archive kept changing while the tree was read; read it again".to_string()))?;
         let root = crate::tree_root_address(tree);
         let Some(root_card) = snapshot.by_address.get(&root) else {
@@ -1437,7 +1438,7 @@ impl App {
         };
         let cards = snapshot
             .summaries()
-            .tree_cards(crate::tree_id(&root))
+            .tree_cards(snapshot.filing_tree(root_card))
             .unwrap_or_else(|| "[]".to_string());
         let head = json!({
             "tree": tree,
@@ -1445,15 +1446,84 @@ impl App {
             "workspace": root_card.workspace.id(),
             "kind": if root_card.is_lit { "literature" } else { "topic" },
             "title": snapshot.title(&root),
+            "archive_revision": snapshot.revision(),
         })
         .to_string();
         // Where the tree's Cards also stand (`elsewhere`) and the Connection trees that cross it
         // (`crossings`), read above at this Snapshot's revision.
         // The head object without its closing brace, then the coordinates and the cards.
         Ok(format!(
-            "{},\"elsewhere\":{elsewhere},\"crossings\":{crossings},\"cards\":{cards}}}",
+            "{},\"elsewhere\":{elsewhere},\"crossings\":{crossings},\"cards\":{cards},\"coordinates\":{coordinates},\"coordinate_cards\":{coordinate_cards},\"connections\":{connections}}}",
             &head[..head.len() - 1]
         ))
+    }
+
+    /// The Map needs the structure of every Coordinate and summaries for Cards filed outside it.
+    /// Read the shape once and reuse the Snapshot's summaries for the Cards already in this tree.
+    fn map_coordinates(
+        conn: &rusqlite::Connection,
+        snapshot: &Snapshot,
+        tree: &str,
+    ) -> Result<(Value, Value, Value)> {
+        if !crate::coord::installed(conn) {
+            return Ok((json!([]), json!({}), json!([])));
+        }
+        let tree = crate::coord::resolve_any_tree(conn, tree)?;
+        let shape = crate::coord::load_tree_shape(conn, &tree)?;
+        let editable = crate::connection::can_edit_host(
+            conn,
+            ACCESS,
+            &crate::connection::Host(tree.clone()),
+        )?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT i.card_id, i.filing_coord_id, i.last_address, i.last_title, i.status,
+                    (SELECT COUNT(*) FROM coordinates AS all_places WHERE all_places.card_id = i.card_id)
+             FROM card_identity AS i
+             WHERE i.card_id IN (SELECT card_id FROM coordinates WHERE tree_id = ?1)",
+        )?;
+        let identities = stmt
+            .query_map([&tree.tree_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ),
+                ))
+            })?
+            .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
+        let mut cards = serde_json::Map::new();
+        let coordinates = shape
+            .order
+            .iter()
+            .map(|id| {
+                let row = &shape.by_id[id];
+                let (filing, address, title, status, places) = &identities[&row.card_id];
+                if status == "live"
+                    && !cards.contains_key(address)
+                    && let Some(card) = snapshot.by_address.get(address)
+                    && snapshot.filing_tree(card) != tree.public_key.as_str()
+                {
+                    cards.insert(address.clone(), snapshot.summary(card));
+                }
+                json!({
+                    "coord_id": id, "coord": shape.coord[id], "card_id": row.card_id,
+                    "parent_coord_id": row.parent_coord_id, "edge": row.edge.id(), "slot": row.slot,
+                    "is_filing": filing.as_ref() == Some(id), "places": places, "gloss": row.gloss,
+                    "home_address": address, "title": title,
+                    "status": if status == "live" { "live" } else { "missing" },
+                    "can_edit_coordinate": editable,
+                })
+            })
+            .collect::<Vec<_>>();
+        let connections = crate::connection::edges_of_tree(conn, &tree.tree_id)?
+            .iter()
+            .map(|edge| crate::connection::edge_value(conn, &shape, edge))
+            .collect::<Result<Vec<_>>>()?;
+        Ok((json!(coordinates), Value::Object(cards), json!(connections)))
     }
 
     fn graph(&self) -> ApiResult {
@@ -1606,11 +1676,16 @@ impl App {
         let reverse_links = snapshot.reverse_links(&card.address);
         let term_uses = snapshot.term_uses(&card.address);
         let (inbound_count, reverse_count, term_use_count) = (inbound.len(), reverse_links.len(), term_uses.len());
-        let tree = crate::tree_id(&card.address);
+        let tree = snapshot.filing_tree(card);
         let near: Vec<String> = inbound
             .iter()
             .filter_map(|link| link["address"].as_str())
-            .filter(|at| crate::tree_id(at) == tree)
+            .filter(|&at| {
+                snapshot
+                    .by_address
+                    .get(at)
+                    .is_some_and(|source| snapshot.filing_tree(source) == tree)
+            })
             .map(str::to_string)
             .collect();
         let head = |list: Vec<Value>| -> Vec<Value> {
@@ -1618,7 +1693,7 @@ impl App {
         };
         let mut value = json!({
             "address": card.address,
-            "tree": crate::tree_id(&card.address),
+            "tree": tree,
             "workspace": card.workspace.id(),
             "kind": ops::kind(card),
             "type": card.card_type.id(),
@@ -3948,6 +4023,77 @@ mod tests {
     }
 
     #[test]
+    fn the_connection_coordinate_map_keeps_sparse_slots_and_counts_repeated_cards() {
+        let Some(value) = connections_js(
+            "(() => {
+               const coordinates = [
+                 { coord_id: 'late', edge: 'side', parent_coord_id: 'main', slot: 40, ordinal: 1, coord: '~3/1|an', card_id: 'shared', places: 4 },
+                 { coord_id: 'root', edge: 'root', coord: '~3/0', card_id: 'r', is_filing: true },
+                 { placement_id: 'early', edge: 'side', parent_id: 'main', ordinal: 3, coord: '~3/1|c', card_id: 'shared', places: 4 },
+                 { coord_id: 'main', edge: 'direct', parent_coord_id: 'root', coord: '~3/1', card_id: 'shared', is_filing: true, places: 4 },
+               ];
+               const outline = C.outline(coordinates);
+               const map = C.mapTree({ tree: '~3', coordinates });
+               return {
+                 outline: outline.map((r) => [r.coord_id || r.placement_id, r.slot ?? r.ordinal ?? null, r.repeatCount, r.isFiling]),
+                 mapped: map.cards.map((c) => [c.station.id, c.parent, c.slot, c.station.repeatCount, c.station.isFiling, c.station.places]),
+                 ids: [map.byId.get('late').coord, map.byCoord.get('~3/1|c')],
+               };
+             })()",
+        ) else {
+            return;
+        };
+        assert_eq!(value["outline"], json!([
+            ["root", null, 1, true], ["main", null, 3, true],
+            ["early", 3, 3, false], ["late", 40, 3, false],
+        ]));
+        assert_eq!(value["mapped"], json!([
+            ["root", null, 0, 1, true, 1], ["main", "~3/0", 0, 3, true, 4],
+            ["early", "~3/1", 3, 3, false, 4], ["late", "~3/1", 40, 3, false, 4],
+        ]));
+        assert_eq!(value["ids"], json!(["~3/1|an", "early"]));
+    }
+
+    #[test]
+    fn the_connection_projection_keeps_distinct_occurrences_and_indexes_their_exits() {
+        let Some(value) = connections_js(
+            "(() => {
+               const line = { kind: 'connection', from: 'B/1', to: 'B/1', from_coord_id: 'left', to_coord_id: 'right' };
+               const crossings = {
+                 '~2': {
+                   stations: [
+                     { coord_id: 'left', target_coord_ids: ['first', 'second'] },
+                     { coord_id: 'right', target_coord_ids: ['first', 'second'] },
+                   ],
+                   lines: [
+                     { ...line, connection_id: 'a' },
+                     { ...line, connection_id: 'b', target_coord_ids: ['third'] },
+                     { ...line, to_coord_id: 'left', connection_id: 'self' },
+                     { kind: 'structure', from_coord_id: 'left' },
+                   ],
+                   exits_by_coord: { left: 2, right: 0 },
+                   exits: { 'B/1': 2, right: 9 },
+                 },
+               };
+               const index = C.crossingIndex(crossings);
+               const at = (focus, hover) => C.visibleCrossings(index, focus, hover, false).map((l) => l.connection_id);
+               return {
+                 ids: index.all.map((l) => [l.fromId, l.toId]),
+                 unique: new Set(index.all.map((l) => l.key)).size,
+                 focus: [at('left', 'second'), at('B/1'), at('third'), at('right')],
+                 exits: ['left', 'right', 'B/1'].map((id) => C.exitsAt(crossings, id)),
+               };
+             })()",
+        ) else {
+            return;
+        };
+        assert_eq!(value["ids"], json!([["left", "right"], ["left", "right"]]));
+        assert_eq!(value["unique"], 2);
+        assert_eq!(value["focus"], json!([["a", "b"], ["a", "b"], ["b"], ["a", "b"]]));
+        assert_eq!(value["exits"], json!([[{"tree": "~2", "n": 2}], [], [{"tree": "~2", "n": 2}]]));
+    }
+
+    #[test]
     fn the_connection_page_checks_like_the_server_and_routes_by_placement() {
         let Some(value) = connections_js(
             "({
@@ -5219,7 +5365,7 @@ mod tests {
         assert_eq!(answers[0], Value::Null);
         assert_eq!(answers[1], "This file is not a ZET export.");
         assert_eq!(answers[2], "This file is not a ZET export.");
-        assert_eq!(answers[3], "This export has version 9; this page reads version 2.");
+        assert_eq!(answers[3], "This export has version 9; this page reads versions 2, 3, and 4.");
         assert_eq!(answers[4], "This export holds no Cards.");
     }
 
@@ -6946,7 +7092,7 @@ mod tests {
         assert!(stage.contains("terms.title = state.termEdges"));
         assert!(APP_JS.contains("$('#term-toggle').addEventListener('click', () => setTermEdges(!state.termEdges));"));
         // The Map draws Term arcs only from the switch's lists, and its lens does not follow the switch.
-        assert!(APP_JS.contains("ZtLayout.focusEdges((at) => outline.card.get(at), card.address, outbound, inbound, state.termEdges);"));
+        assert!(APP_JS.contains("ZtLayout.focusEdges(summaryOf, focus, outbound, inbound, state.termEdges);"));
         assert!(APP_JS.contains("links: arcs.lens, expandAll: state.expandAll,"));
         assert!(APP_JS.contains("put('t' + address, ZtLayout.linkArc(focus, b, 18), 'e-term out');"));
         assert!(APP_JS.contains("put('u' + address, ZtLayout.linkArc(b, focus, 18), 'e-term in');"));

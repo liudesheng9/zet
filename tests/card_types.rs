@@ -264,9 +264,9 @@ fn up_adds_card_types_to_an_existing_archive_with_every_card_an_idea_card() {
          INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace)
            VALUES('0/0', NULL, 1, 0, NULL, '# Old Topic\n\n<!-- zt:reverse-links -->\n', 'human');
          INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace)
-           VALUES('0/1', NULL, 0, 0, NULL, '# Old Card\n\n<!-- zt:reverse-links -->\n', 'agent');
+           VALUES('0/1', NULL, 0, 0, NULL, '# Old Card\n\n<!-- zt:reverse-links -->\n', 'human');
          INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace)
-           VALUES(NULL, 'Old2020', 0, 1, '@book{Old2020, title={Old}}', '# Old\n\n<!-- zt:reverse-links -->\n', 'human');",
+           VALUES(NULL, 'Old2020', 0, 1, '@book{Old2020, title={Old}}', '# Old\n\n<!-- zt:reverse-links -->\n', 'agent');",
     )
     .expect("0.4 archive");
     drop(conn);

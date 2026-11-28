@@ -107,7 +107,7 @@ fn one_tree_lands_in_a_folder_of_two_files() {
 
     let data = cards_json(&folder);
     assert_eq!(data["format"], "zt-portable-export");
-    assert_eq!(data["version"], 2);
+    assert_eq!(data["version"], 4);
     assert_eq!(data["tree"]["id"], "Test2026");
     assert_eq!(data["tree"]["kind"], "literature");
     assert_eq!(data["tree"]["workspace"], "agent");

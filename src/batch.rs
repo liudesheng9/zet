@@ -1734,6 +1734,7 @@ mod tests {
                 )
                 .expect("chain card");
             }
+            crate::coord::sync_raw_seeded_cards_for_test(&tx).expect("register the seeded filings");
             crate::link_index::rebuild(&tx).expect("index the seed");
             tx.commit().expect("commit");
         }

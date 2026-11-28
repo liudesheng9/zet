@@ -245,12 +245,14 @@ fn a_topic_lock_freezes_its_side_mounts() {
     mcp.ok("create_topic", json!({"title": "Fiscal decentralization", "body": "topic"}));
     mcp.ok("create_successor", json!({"at": "0/0", "title": "Claim one", "body": "one"}));
     mcp.ok("create_successor", json!({"at": "0/1", "title": "Claim two", "body": "two"}));
-    let mount = mcp.ok("place_card", json!({"anchor_at": "0/2", "edge": "attach", "target_at": "Ev2001/1"}));
-    assert_eq!(mount["coord"], "0/2+1");
+    let t0 = mcp.ok("get_tree_coordinates", json!({"tree": "0"}));
+    let anchor = t0["coordinates"].as_array().unwrap().iter().find(|c| c["coord"] == "0/2").unwrap()["coord_id"].as_str().unwrap().to_string();
+    let mount = mcp.ok("add_coordinate", json!({"tree": "0", "parent_coord_id": &anchor, "edge": "side", "target_at": "Ev2001/1"}));
+    assert_eq!(mount["coord"], "0/2|a");
     gui.lock("0/0");
-    let refused = mcp.refused("place_card", json!({"anchor_at": "0/2", "edge": "attach", "target_at": "Ev2001/2"}));
+    let refused = mcp.refused("add_coordinate", json!({"tree": "0", "parent_coord_id": &anchor, "edge": "side", "target_at": "Ev2001/2"}));
     assert!(refused.to_string().contains("locked"), "{refused}");
-    let refused = mcp.refused("unplace", json!({"placement_id": mount["placement_id"], "confirm": "unplace"}));
+    let refused = mcp.refused("detach_coordinate", json!({"coord_id": mount["coord_id"], "confirm": "detach"}));
     assert!(refused.to_string().contains("locked"), "{refused}");
     let refused = mcp.refused("delete_card", json!({"at": "Ev2001/1", "confirm": "delete"}));
     assert!(refused.to_string().contains("pinned"), "{refused}");
@@ -327,7 +329,7 @@ fn tampering_with_locked_coordinate_evidence_is_an_integrity_fault() {
     );
     assert!(blocked.is_err(), "a locked Connection tree takes no new native Card");
     db.execute_batch("DROP TRIGGER coord_lock_placement_update;").unwrap();
-    db.execute("UPDATE placements SET gloss = 'Tampered.' WHERE placement_id = ?1", [a["placement_id"].as_str().unwrap()]).unwrap();
+    db.execute("UPDATE coordinates SET gloss = 'Tampered.' WHERE coord_id = ?1", [a["placement_id"].as_str().unwrap()]).unwrap();
     drop(db);
     let out = scratch.cmd().args(["status", "--check-locks"]).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);

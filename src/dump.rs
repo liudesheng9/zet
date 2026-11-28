@@ -23,8 +23,9 @@ const MANIFEST: &str = "archive.json";
 /// dump writes it even when the archive holds no Lock, so a reader never has to guess whether an
 /// archive was inspected for Locks.
 const LOCKS: &str = "locks.json";
-/// The multi-tree coordinate storage (identities, handles, trees, stations, tree connections, Lock
-/// evidence), versioned on its own (docs/multi-tree-coordinates-proposal.md §8.4).
+/// The payload captured by `coord::dump_export` in the same read as the Cards and Locks.
+/// Dump v2 records trees, Card identities and handles, Coordinates and their edges, retired
+/// Coordinates, allocators, and Coordinate Lock evidence (multi-coordinate proposal §8.9).
 const COORDINATES: &str = "coordinates.json";
 
 pub(crate) struct DumpCard {
@@ -616,6 +617,7 @@ pub(crate) fn run(
     // immediately after the manifest, so a reader can inspect every Lock promise after old roots
     // disappear (R315/R316, S13-AC02/S13-AC04).
     fs::write(staging.join(LOCKS), serde_json::to_vec(locks)?)?;
+    // Preserve the coordinate payload and its independent version as captured by dump_view.
     fs::write(staging.join(COORDINATES), serde_json::to_vec(coordinates)?)?;
     for (filename, text) in &payload.files {
         fs::write(staging.join(filename), text.as_bytes())?;

@@ -4031,14 +4031,9 @@ fn an_orphaned_faulted_lock_is_reported_and_released_from_the_panel() {
         "the guarded startup restored every protection trigger: {panel}"
     );
     assert_eq!(panel["integrity"]["ok"], true);
-    home.db()
-        .execute(
-            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type)
-             VALUES('5/0', NULL, 1, 0, NULL, ?1, 'human', 'idea')",
-            ["# Fresh\n\nfresh root\n\n<!-- zt:reverse-links -->\n"],
-        )
-    .expect("a fresh root for the next promise");
-    let second = gui.lock("5/0", None);
+    let mut mcp = home.mcp();
+    let fresh = topic(&mut mcp, "Fresh");
+    let second = gui.lock(&fresh, None);
     assert_ne!(second["lock_id"], json!(lock_id), "a new Lock id");
     let panel = gui.panel();
     assert_eq!(panel["integrity"]["ok"], true, "a new promise starts clean");

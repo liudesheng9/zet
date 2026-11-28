@@ -212,6 +212,7 @@ impl TestHome {
         )
         .expect("next Topic id");
         tx.commit().expect("loader commit");
+        writer::strip_coordinates(&conn);
         drop(conn);
         self.run(&["up"]);
         self.run(&["reindex"]);
