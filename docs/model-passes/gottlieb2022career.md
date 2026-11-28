@@ -199,3 +199,56 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; judged by G
 | `8|d` | 84 | 0 (0 / 0 / 0) | 0 | `{"head":"gottlieb2022career/8|d","broken":0,"proposed_again":0,"ok":true}` |
 
 - Term relink: `{"ok":true,"complete":true,"book":"gottlieb2022career","cards_changed":4,"links_added":4,"links_repaired":0,"cards_refused":0,"rounds":1,"applied":true}`; `-PlanOnly`: `{"ok":true,"complete":true,"book":"gottlieb2022career","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`.
+
+## Stage 6: literature organize
+
+- **Date:** 2026-11-27
+- **Archive:** Live box `D:\zt` (all writes serialized via `zt_mutex.py`, 0 DeepSeek calls)
+- **Pre-Stage-6 backup:** `D:\zt\backups\zt-before-iof10-stage6-organize-2026-11-27.sqlite3`
+
+### Source divisions
+
+From the digested source headings (引言 through §7 before References): 引言; 1. 数据; 2. 加拿大的产假政策; 3. 实证策略; 4. 因果解释与反事实分析 (4.1 降低职业风险的因果效应, 4.2 反事实路径); 5. 实证结果 (5.1 实证设计的有效性检验, 5.2 主要实证发现, 5.3 稳健性检验, 5.4 省际异质性分析, 5.5 创业企业质量, 5.6 职位保留与收入替代的区分, 5.7 短期效应分析); 6. 作用机制检验 (6 开篇, 6.1 排除间接机制, 6.2 排除间接机制, 6.3 验证直接机制); 7. 结论; plus 术语表 and 参考文献 at the tail.
+
+### Final tree (top line and divisions)
+
+```
+1  引言 (old 1, 14)                          c §引言 chain · d structure Card
+2  1. 数据 (old 2, 9)                        b–c findings · d §1 chain
+3  2. 加拿大的产假政策 (old 3, 7)            a §2 chain + 2 events
+4  3. 实证策略 (old 4, 146)                  a empirical model 4|a (139 tree cards, 140 members) · b–c findings · d §3 chain (detached from 4|a)
+5  4. 因果解释与反事实分析 (old 5, rewrite, 8) a 4.1 (old 5|a|1..2) · b 4.2 (old 5|a|3 + concept model 5|b|a)
+6  5. 实证结果 (old 6, rewrite, 67)          a 5.1 · b 5.2 · c 5.3 · d 5.4 · e 5.5 · f 5.6 · g 5.7 (with empirical model 6|g|b)
+7  6. 作用机制检验 (old 8, rewrite, 93)      a 6 开篇 · b concept model 7|b · c 6.1 (with empirical model 7|c|a) · d 6.2 · e 6.3 (with empirical model 7|e|b)
+8  7. 结论 (from old 8|e|6, 1)
+9  术语表 (from 1|b, 27)
+10 参考文献 (from 1|a, 89)
+```
+
+### Crossers, wrapper dissolution, and moves
+
+- Old `1` held §引言 and both lists: Term list (`1|b`) and Cited list (`1|a`) moved to the tail (`9`, `10`); structure Card `1|d` stays under `1`.
+- Reading-note chains detached from Model Cards: `4|a|1..4|a|4` (§3) moved to `4|d..4|d|3`; `5|a|1..5|a|2` (§4.1) and `5|a|3` (§4.2) moved off concept model `5|a`, with `5|a` placed under `5|b` as `5|b|a`.
+- Digest-group split of §5 (old `6` §5.1–§5.3 and old `7` §5.4–§5.7) merged into one top Card `6` (`5. 实证结果`) with `6|a`–`6|g` (5.1–5.7) in source order; redundant digest-group wrapper old `7` deleted `into` `6` (tree count `463 → 462`).
+- Crosser old `8` (§6 + §7) split: `8|e|6` promoted to top Card `8` (`7. 结论`); §6 organized under `7` with `7|a` (6 开篇), `7|b` (concept model), `7|c` (6.1 + model `7|c|a` + 3 findings), `7|d` (6.2), and `7|e` (6.3 + model `7|e|b` + 4 findings).
+- Summary leads (`leads.mjs --commit`): rewrote `5` (§4), `6` (§5), and `7` (§6) with `小节索引：`, `在全书中的位置：`, and `来源：[[gottlieb2022career]] §…`. Updated section/subdivision title prefixes (`4`, `8`, `5|a`–`5|b`, `6|a`–`6|g`, `7|a`, `7|c`–`7|e`), root index `gottlieb2022career`, and structure Card `gottlieb2022career/1|d` (listing the 8 body divisions and 6 surviving models at final addresses).
+
+### Final Model Card addresses (6 models)
+
+| Model Card | Level | Members | `--stage final` | `--settings` | `--network` |
+| --- | --- | --- | --- | --- | --- |
+| `gottlieb2022career/4\|a` | empirical | 140 (138 own + 2 shared) | pass (`rc=0`) | clean (`rc=0`) | clean (`rc=0`) |
+| `gottlieb2022career/5\|b\|a` | concept | 3 (own) | pass (`rc=0`) | n/a | n/a |
+| `gottlieb2022career/6\|g\|b` | empirical | 31 (own) | pass (`rc=0`) | clean (`rc=0`) | clean (`rc=0`) |
+| `gottlieb2022career/7\|b` | concept | 4 (own) | pass (`rc=0`) | n/a | n/a |
+| `gottlieb2022career/7\|c\|a` | empirical | 42 (39 own + 3 shared) | pass (`rc=0`) | clean (`rc=0`) | clean (`rc=0`) |
+| `gottlieb2022career/7\|e\|b` | empirical | 41 (31 own + 10 shared) | pass (`rc=0`) | clean (`rc=0`) | clean (`rc=0`) |
+
+### Stage 6 Gate verification (post term-relink)
+
+- **Term relink (`zt-digest term-link -Step relink -CitationKey gottlieb2022career`):** `ok: true, complete: true`, final `-PlanOnly`: `cards_changed: 0, links_added: 0, links_repaired: 0, cards_refused: 0`.
+- **`zt-check --tree gottlieb2022career`:** `no fault` (`rc=0`); `--snapshot` diff shows only the expected −1 deleted digest-group wrapper (`463 → 462`) and the two Direct-chain reading-note detachments (`4|a` `143 → 139`, `5|b|a` `7 → 4`; 0 model parts moved).
+- **`zt-check --cards` (20 edited root, structure, lead, and section/subdivision head Cards):** `faults: 0` (`rc=0`, advisory L1/L2/I4 only).
+- **`model-survey.mjs gottlieb2022career`:** 6 surviving Model Cards (`4|a`, `5|b|a`, `6|g|b`, `7|b`, `7|c|a`, `7|e|b`), `rc=0`.
+- **`list_broken_links` (`agent`):** `{"total_broken":0,"gottlieb_broken":[]}`.
+

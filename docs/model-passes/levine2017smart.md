@@ -195,3 +195,65 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; judged by G
 | `6|a` | 0 | 0 (0 / 0 / 0) | 0 | `{"head":"levine2017smart/6|a","broken":0,"proposed_again":0,"ok":true}` |
 
 - Term relink: not needed (0 Cards edited).
+
+## Stage 6: literature organize (2026-11-27)
+
+- Live box: `D:\zt` (agent workspace, tree `levine2017smart` unlocked throughout; all writes serialized through `zt_mutex.py`).
+- Pre-Stage-6 backup: `D:\zt\backups\zt-before-iof10-stage6-organize-2026-11-27.sqlite3`.
+- No DeepSeek job ran (0 DeepSeek cost).
+
+### Source divisions
+
+From `D:\zt-digest\levine2017smart\book.zh.md` (body from 一、引言 through 六、结论; `# 补充材料` is a one-line notice pointing to QJE's Online Appendix website, already noted in the conclusion Card):
+1. `一、引言` (no subdivisions)
+2. `二、数据与描述性统计` (`II.A` CPS 数据, `II.B` NLSY79：基本情况, `II.C` NLSY79：认知与非认知特质, `II.D` 公司化是否反映了基于企业成功的“事后”选择？, `II.E` 工作任务要求)
+3. `三、公司制与非公司制自雇者之间的差异` (no subdivisions; Table VI is introduced in the closing paragraph of §III)
+4. `四、谁会成为企业家？` (`IV.A` 基于认知与非认知特质的就业类型选择, `IV.B` 特质、就业类型与工作任务要求)
+5. `五、企业家赚得更多吗？` (untitled opening + full-section empirical model + `V.A` 年收入与小时收入, `V.B` 进出白领与自雇的自我选择, `V.C` 哪些企业家赚得更多？, `V.D` 风险与收入离散度)
+6. `六、结论` (no subdivisions)
+7. `术语表` (Term list, 27 Cards)
+8. `参考文献` (Cited list, 50 Cards)
+
+### Final tree (top line and divisions)
+
+```
+1  一、引言 (old 1, 14)                         1|c..1|c|10 §I chain · 1|d structure Card
+2  二、数据与描述性统计 (old 2, rewrite, 24)      2|a II.A (old 2|a..3 + 2 findings) · 2|b II.B (old 2|a|4..5 + 2 findings)
+                                                2|c II.C (old 2|a|6..9) · 2|d II.D (old 3|a..1 + finding) · 2|e II.E (old 3 trimmed + old 3|a|2..3 + finding)
+3  三、公司制与非公司制自雇者之间的差异 (old 4, 36) 3|a model (old 4|a, 27) · 3|b..3|b|3 §III chain (3|b|3|a Table VI from 5|c|a) · 3|c..3|e 3 findings
+4  四、谁会成为企业家？ (old 5, rewrite, 77)      4|a IV.A (old 5|c..4, model 4|a|a [old 5|a, 32], 2 findings) · 4|b IV.B (old 5|c|5..6, model 4|b|a [old 5|b, 33], finding)
+5  五、企业家赚得更多吗？ (old 6, rewrite, 144)    5|a 开篇 (old 6|c) · 5|b model (old 6|a, 114) · 5|c V.A (old 6|c|1..4 + 4 findings)
+                                                5|d V.B (old 6|c|5..8) · 5|e V.C (old 7 trimmed + old 7|c..2 + 3 findings) · 5|f V.D (old 7|c|3..4 + 2 findings)
+6  六、结论 (old 7|c|5, 1)
+7  术语表 (Term list, from 1|b, 27)
+8  参考文献 (Cited list, from 1|a, 50)
+```
+
+### Moves, crossers, and text edits
+
+- **4 tail-to-head atomic batches** (`batch.mjs --commit`, all `complete: true, refusals: [], breaks: 0`):
+  - `ops1_sec5_sec6.txt` (§V + §VI: 144 renamed, 656 link rewrites)
+  - `ops2_sec4_sec3.txt` (§IV + Table VI to §III: 77 renamed, 629 link rewrites)
+  - `ops3_sec2.txt` (§II.A–II.E: 276 renamed, 1,176 link rewrites)
+  - `ops4_lists.txt` (Term list `7` and Cited list `8` to tail: 77 renamed, 611 link rewrites)
+- **Crossers settled**:
+  - `old 1` held §I plus both reference lists: `1|b` (Term) and `1|a` (Cited) moved to `7` and `8`; structure Card `1|d` stays under §I.
+  - `old 2` interleaved `II.A`–`II.C` on one chain and `old 3` wrapped `II.D` + `II.E`: split into `2|a`–`2|e` in source order; `old 3` joined `II.E` (`2|e`, tie in Card count 3 vs 3 and all 9 Cited backlinks belong to §II.E), trimmed to §II.E with `3|a|2..3` on its Direct chain and finding `3|c` as Side child.
+  - `old 5|c|a` (Table VI) was filed under §IV.A because the QJE typeset table floats past the §IV heading, though introduced in the closing paragraph of §III: moved under `3|b|3` as `3|b|3|a` with source line corrected to `§III 表 VI`.
+  - `old 5` split into `IV.A` (`4|a`, with model `4|a|a`) and `IV.B` (`4|b`, with model `4|b|a`).
+  - `old 6` + `old 7` split into §V opening (`5|a`), whole §V empirical model (`5|b`), `V.A`–`V.D` (`5|c`–`5|f`), and top Card `6` (`六、结论`, promoted from `7|c|5`). `old 7` joined `V.C` (`5|e`, 7 Cards vs 5 in V.D vs 1 in VI, and all 6 Cited backlinks belong to §V.C), trimmed to §V.C.
+- **Whole units**: all 4 empirical Model Cards moved intact with 0 parts detached: `4|a` → `3|a` (26 owned parts), `5|a` → `4|a|a` (31 owned parts), `5|b` → `4|b|a` (32 owned + 4 shared = 36 members), `6|a` → `5|b` (113 owned + 4 shared = 117 members).
+- **Summary leads & text updates**: `leads.mjs --commit` rewrote `2`, `4`, `5` with `小节索引：`, `在全书中的位置：`, and `来源：`; updated root index `levine2017smart`, structure Card `1|d` (6 sections + 4 surviving models at final addresses), `1`, `3`, `6`, trimmed heads `2|e` and `5|e`, Table VI source line `3|b|3|a`, and prefixed subdivision heads (`2|a`–`2|d`, `4|a`–`4|b`, `5|a`, `5|c`–`5|d`, `5|f`).
+
+### Gate results (post term-relink)
+
+- `zt-digest term-link -Step relink -CitationKey levine2017smart`: **PASS** (`cards_changed: 2, links_added: 8, links_repaired: 0, cards_refused: 0`); final `-PlanOnly`: `cards_changed: 0, links_added: 0, ok: true`.
+- `zt-check --tree levine2017smart --snapshot`: **PASS** (`no fault`, exit 0; 374 Cards unchanged, 0 whole-unit size changes).
+- `zt-check --cards` (21 edited/lead/root/structure Cards): **PASS** (`faults: 0`, exit 0; fixed 1 initial `R2` line-length fault on `1|d`).
+- `model-survey.mjs levine2017smart`: **PASS** — 4 empirical Model Cards (`3|a`, `4|a|a`, `4|b|a`, `5|b`), 4 candidate groups.
+- `zt-check --model '<head>'` on all 4 empirical Model Cards (`3|a`, `4|a|a`, `4|b|a`, `5|b`):
+  - `--stage final`: **PASS** (exit 0 on all 4; `loose 0`, `self_sufficient true`, `evidence_bound true`)
+  - `--settings`: **PASS** (exit 0 on all 4; `settings: data tree and specification ladder are clean`)
+  - `--network`: **PASS** (exit 0 on all 4; `network: clean`)
+- `list_broken_links` (agent workspace): **PASS** — `[]` (0 broken links total, 0 in `levine2017smart/`).
+- No formal models in `levine2017smart` (Stage 7 `zt-model-illustrate` N/A). Post-digest sequence complete.

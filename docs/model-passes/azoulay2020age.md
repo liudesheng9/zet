@@ -182,3 +182,66 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; judged by G
 | `5|a` | 0 | 0 (0 / 0 / 0) | 0 | `{"head":"azoulay2020age/5|a","broken":0,"proposed_again":0,"ok":true}` |
 
 - Term relink: not needed (0 Cards edited).
+
+## Stage 6: literature organize
+
+Date: 2026-11-27 (UTC 2026-11-28), live box `D:\zt` (under `zt-literature-organize`, all writes serialized with `zt_mutex.py`, 0 DeepSeek calls).
+
+Pre-Stage-6 backup: `D:\zt\backups\zt-before-iof10-stage6-organize-2026-11-27.sqlite3`.
+
+### Source divisions
+
+From the paper's headings (`# 年龄与高增长创业†` to before `参考文献`, no front matter or appendix in the digested source): 引言 (untitled opening); 一、数据与度量 (`§1`); 二、结果 (`§2`, untitled opening plus （一）事前增长导向 `§2.1`, （二）事后高绩效企业 `§2.2`, （三）创始人年龄分布 `§2.3`, （四）成功的可能性 `§2.4`); 三、扩展与讨论 (`§3`: （一）跨行业、创立年份、法律形式和创始团队定义的稳健性 `§3.1`, （二）创始团队内部的年龄差异 `§3.2`, （三）创业异常值 `§3.3`, （四）行业经验 `§3.4`, （五）以往工资 `§3.5`, （六）风险投资行为 `§3.6`); 四、结论 (`§4`); followed by the two reference lists at the tail (术语表, 参考文献).
+
+### Final tree (top line and divisions)
+
+```
+1  引言 (old 1)                              1|c..1|c|5 §引言 chain · 1|d structure Card
+2  一、数据与度量 (old 2)                    2|a model (25, old 2|a) · 2|b..2|b|4 §1 chain (old 2|a|1..5) · 2|c–d findings
+3  二、结果 (new, demote of old 3)           3|a 开篇 (old 3|a|1 + finding 3|b) · 3|b model (42, old 3|a)
+                                             3|c （一）事前增长导向 (old 3, trimmed; chain old 3|a|2..4 + 3 findings)
+                                             3|d （二）事后高绩效企业 (old 4, trimmed; chain old 4|a..4|a|1 + 2 findings)
+                                             3|e （三）创始人年龄分布 (old 4|a|2 + finding 4|d)
+                                             3|f （四）成功的可能性 (old 5; model 3|f|a (25), chain, 3 findings)
+4  三、扩展与讨论 (old 6, rewrite)           4|a （一）稳健性 (old 6|a + finding 6|b) · 4|b （二）团队内部年龄 (old 6|a|1 + finding 6|c)
+                                             4|c （三）创业异常值 (old 6|a|2..4 + finding 6|d + footnote 17 old 7|a|a on 4|c|2)
+                                             4|d （四）行业经验 (old 7; chain + 2 findings)
+                                             4|e （五）以往工资 (old 8|a) · 4|f （六）风险投资行为 (old 8|a|1)
+5  四、结论 (old 8, trimmed)                 5|a §4 detail Card (old 8|a|2)
+6  术语表 (Term list, from 1|b)              19 Cards
+7  参考文献 (Cited list, from 1|a)           46 Cards
+```
+
+Batches (tail-to-head via `batch.mjs --commit`, all previewed with `complete: true, refusals: [], breaks: 0`):
+1. `01-sec3.ops`: 17 Cards renamed, 54 rewrites (reconciled `§3.1–§3.6` under `6`, moved misfiled footnote 17 `7|a|a` to `6|a|4`, left `§4` under `8`).
+2. `02-sec2.ops`: 108 Cards renamed, 724 rewrites (separated `§2` opening `3|a|1 + 3|b` and `§2.1` chain `3|a|2..4` off model `3|a`; split `§2.3` `4|a|2 + 4|d` off `4`; nested `§2.2`, `§2.3`, `§2.4` under `3` and reordered).
+3. `03-sec1-and-lists.ops`: 72 Cards renamed, 272 rewrites (separated `§1` reading notes `2|a|1..5` off model `2|a`; moved Term list `1|b` to `6` and Cited list `1|a` to `7`).
+
+### Crossers and how each was settled
+
+- Old `1` held 引言 and both reference lists: Term list (`1|b`) moved to `6`, Cited list (`1|a`) moved to `7`; the structure Card stays under 引言 as `1|d`.
+- Old `2|a` held the `§1` reading-note chain (`2|a|1..5`) on the Model Card's Direct line: moved to `2|b..2|b|4`, leaving `2|a` as a pure 25-Card Model Card (head + 24 parts).
+- Old `3` combined the `§2` opening (`3|a|1`) and `§2.1` (`3|a|2..4`): demoted via `leads.mjs`. A new `二、结果` summary took `3`; the `§2` opening (`3|a` + finding `3|a|a`) and the Table 1–2 empirical model (`3|b`, pure 42 Cards spanning `§2`–`§2.2`) stand first, followed by old `3` trimmed to `（一）事前增长导向` (`3|c`).
+- Old `4` combined `§2.2` (4 Cards) and `§2.3` (2 Cards): old `4` stayed with `§2.2` (`3|d`, trimmed to `§2.2`), and `4|a|2` + finding `4|d` became `3|e` (`（三）创始人年龄分布`).
+- Old `6` combined `§3.1–§3.3` on one chain: split into `4|a` (`§3.1`), `4|b` (`§3.2`), and `4|c` (`§3.3`), with each Finding moved under its subdivision; old `6` was rewritten via `leads.mjs` as the full `三、扩展与讨论` summary lead (`4`).
+- Old `7|a|a` (`§3.3 脚注 17`, five-year stock price multiple definition and Facebook omission) was misfiled under `§3.4`: moved to `4|c|2|a` under the `§3.3` four-tech-giants Card.
+- Old `8` combined `§3.5`, `§3.6`, and `§4` (1-1-1 tie): `8|a` (`§3.5`) and `8|a|1` (`§3.6`) moved into `4` as `4|e` and `4|f`; by the tie-to-later-division rule, old `8` stayed at `5` (`四、结论`, trimmed to `§4`) with `5|a` (`8|a|2`).
+
+### Summary leads, titles, index, and term relink
+
+- `leads.mjs --commit`: `demote azoulay2020age/3` (new `二、结果` summary lead) and `rewrite azoulay2020age/4` (`三、扩展与讨论` summary lead).
+- 31 scripted `edit_card` updates: updated root index (`azoulay2020age`, 7 top Cards) and structure Card (`azoulay2020age/1|d`, 5 body divisions + 3 final Model Card addresses); retitled subdivision heads (`3|a`, `3|e`, `4|a`–`4|c`, `4|e`–`4|f`); trimmed former group heads (`3|c`, `3|d`, `3|f`, `4|d`, `5`); normalized all 17 Finding Cards' `来源：` lines to `[[azoulay2020age]]`.
+- `zt-check --cards` on root, structure Card, leads, and edited heads: `faults: 0` (RC=0, advisory L1/L2/I4 only).
+- Term relink: `zt-digest term-link -Step relink -CitationKey azoulay2020age`: `cards_changed: 0, links_added: 0, links_repaired: 0, cards_refused: 0`; `-PlanOnly`: 0 changes.
+
+### Gate (post term-relink)
+
+- `zt-check --tree azoulay2020age`: exit 0 (`no fault`; top line `1` 引言 [8], `2` 一、数据与度量 [33], `3` 二、结果 [91], `4` 三、扩展与讨论 [17], `5` 四、结论 [2], `6` 术语表 [19], `7` 参考文献 [46]; 217 Cards total = 216 + 1 new `二、结果` summary lead).
+- Snapshot diff: +1 Card (new `3` summary lead) and two expected Model Card Direct-chain trims where reading notes moved off the Model Cards (`2|a` 30 → 25, `3|b` 46 → 42; 0 model parts moved out).
+- `model-survey.mjs azoulay2020age`: 3 surviving empirical models at final addresses `azoulay2020age/2|a` (24 parts), `azoulay2020age/3|b` (47 parts incl. 6 shared), `azoulay2020age/3|f|a` (30 parts incl. 6 shared).
+- Per-model checks at final addresses:
+  - `azoulay2020age/2|a`: `--stage final` pass (RC=0, `loose 0`), `--settings` clean (RC=0), `--network` clean (6 blocks, 4 layers, RC=0).
+  - `azoulay2020age/3|b`: `--stage final` pass (RC=0, `loose 0`), `--settings` clean (RC=0), `--network` clean (8 blocks, 6 layers, `共用` 6, RC=0).
+  - `azoulay2020age/3|f|a`: `--stage final` pass (RC=0, `loose 0`), `--settings` clean (RC=0), `--network` clean (9 blocks, 6 layers, `共用` 6, RC=0).
+- `list_broken_links`: `total_broken: 0`, `azoulay_broken: 0`.
+

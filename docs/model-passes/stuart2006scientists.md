@@ -163,3 +163,53 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D
 
 - `dialogue.mjs survey 'stuart2006scientists/5|a'`: `ours: 22`, `theirs: 2701`, `pairs: 0` (0 candidate pairs; dialogue complete with no edits needed).
 - Gate: `dialogue.mjs check` not needed / clean (`0` pairs proposed).
+
+## Stage 6: literature organize (2026-11-28)
+
+- Live box: `D:\zt` (`stuart2006scientists`, 263 Cards unchanged; all writes serialized via `zt_mutex.py`)
+- Pre-Stage-6 backup: `D:\zt\backups\zt-before-iof10-stage6-organize-2026-11-27.sqlite3`
+- Method: four atomic `batch.mjs` moves (tail-to-head), one `leads.mjs` run (`3` rewrites), scripted `edit_card` updates (root index, structure Card `1|d`, and moved crosser `3|e`), followed by `zt-digest term-link -Step relink`.
+
+### Source divisions
+
+From `D:\zt-digest\stuart2006scientists\book.zh.md`: `# 引言`; `# 研究背景：科学规范与学术创业的演变`; `# 研究假说：学术创业的社会与组织影响因素` (`## 工作情境对向创业型科学转型的影响`, `## 烙印效应与科学规范的维系`, `## 社会网络对向创业型科学转型的影响`, `## 关于社会机制的注意事项`); `# 研究方法与数据` (`## 病例—队列设计`, `## 统计方法`, `## 变量定义`); `# 实证结果` (`## 稳健性检验：社会影响抑或内生匹配？`); `# 结论`; `# 附录` (`## 数据来源`); followed by the Term list and Cited list at the tail.
+
+### Final tree (top line and divisions)
+
+```
+1  引言 (8)                  c 摘要与引言主链 (1|c..1|c|5) · d 全书结构卡 (1|d)
+2  研究背景 (9)              a 科学规范与学术创业演变 (2|a..2|a|4, 含脚注与 1934 哈佛专利禁令事件)
+3  研究假说 (16, rewrite)    a 概念模型 (3|a, 4 parts) · b 工作情境 (3|b..3|b|3) · c 烙印效应 (3|c)
+                             d 社会网络 (3|d..3|d|1) · e 关于社会机制的注意事项 (3|e, 原 4|b)
+4  研究方法与数据 (11, rewrite) a 病例—队列设计 (4|a..4|a|1) · b 统计方法 (4|b..4|b|1) · c 变量定义 (4|c..4|c|4)
+5  实证结果 (99, rewrite)    a 实证模型 (5|a, 70 tree cards / 71 members) · b 主实证结果 (5|b..5|b|6)
+                             c 稳健性检验：社会影响抑或内生匹配？ (5|c..5|c|2, 含 1976 基因泰克事件) · d–r 15 条实证发现
+6  结论 (8)                  a 结论主链 (6|a..6|a|6)
+7  附录 (7)                  a 数据来源 (7|a..7|a|5)
+8  术语表 (30, from 1|b)     Term list
+9  参考文献 (74, from 1|a)   Cited list
+```
+
+### Crossers and how each was settled
+
+- **Old `1` held §引言 and both reference lists**: Term list (`1|b`) and Cited list (`1|a`) moved to the tail as `8` and `9` (692 Link macros rewritten, 0 broken); structure Card `1|d` stays under `1` since the source has no front matter.
+- **Old `3|a` (conceptual Model Card) carried 9 reading notes on its Direct chain**: the 9 reading notes (`3|a|1..3|a|7`, incl. `3|a|2|a` and `3|a|6|a`) were lifted off `3|a`'s Direct chain into three `##` Side branches of `3` (`3|b` 工作情境, `3|c` 烙印效应, `3|d` 社会网络). No model part moved out (`3|a` retains all 4 model parts = 5 cards total; `zt-check --tree --snapshot` reports the expected `14 Cards before, 5 now` unit-size delta from detaching those 9 reading notes).
+- **Old `4|b` (`§关于社会机制的注意事项`) was a crosser in §4**: in the source (`book.zh.md` L123), `## 关于社会机制的注意事项` is the 4th `##` subdivision of `# 研究假说`, before `# 研究方法与数据` (L129). Moved `4|b` to `3|e` as the 4th subdivision of `3`, updated its opening sentence from `作者在方法部分开篇提示如何看待社会机制。` to `作者在研究假说末尾提示如何看待社会机制。`, and split the remaining `4|b|1..4|b|9` chain into `4`'s three `##` subdivisions (`4|a` 病例—队列设计, `4|b` 统计方法, `4|c` 变量定义).
+- **Old `5|b` chained main results and `## 稳健性检验`**: split `5|b|7..5|b|9` (with event `5|b|7|a` -> `5|c|a`) off `5|b` into `5`'s Side branch `5|c` (`稳健性检验：社会影响抑或内生匹配？`), ordered right after `5|a` (empirical model) and `5|b` (main results), ahead of the 15 Finding Cards (`5|d..5|r`).
+- **Summary leads & indexes**: `leads.mjs` rewrote `3`, `4`, and `5` with `小节索引：`, `在全书中的位置：`, and `来源：[[stuart2006scientists]] …`. Updated root card `stuart2006scientists` to list all 9 top divisions (`1`–`9`) and updated structure Card `1|d` to remove the pre-fold duplicate model entry (`5|a|a|8`) and list the final 2 models (`3|a`, `5|a`) and 2 events (`2|a|3|a|a`, `5|c|a`).
+
+### Stage 6 gate results (post term-relink)
+
+| Gate | Command | Result | Exit |
+| --- | --- | --- | ---: |
+| Term relink | `zt-digest term-link -Step relink -CitationKey stuart2006scientists` & `-PlanOnly` | `cards_changed: 0`, `links_added: 0`, `ok: true` | 0 |
+| Tree check | `zt-check --tree stuart2006scientists` | 9 top Cards (`1`–`7`, `8` Term list, `9` Cited list), `no fault` | 0 |
+| Snapshot diff | `zt-check --tree stuart2006scientists --snapshot …` | 263 Cards unchanged; only expected `3|a` 14 -> 5 delta (9 reading notes detached from conceptual Model Card's Direct chain) | 1 (expected) |
+| Model survey | `node E:\zet\skills\zt-model-fold\scripts\model-survey.mjs stuart2006scientists` | 2 Model Cards: `3|a` (`concept`, 4 parts), `5|a` (`empirical`, 71 members) | 0 |
+| Final (`5\|a`) | `zt-check --model 'stuart2006scientists/5\|a' --stage final` | `members 71 (main:9, side:60, shared:1, off:1)`, `loose 0`, `self_sufficient true`, `evidence_bound true`, `stage(final) pass` | 0 |
+| Settings (`5\|a`) | `zt-check --model 'stuart2006scientists/5\|a' --settings` | `settings: data tree and specification ladder are clean` | 0 |
+| Network (`5\|a`) | `zt-check --model 'stuart2006scientists/5\|a' --network` | `network: clean` (11 blocks, 5 layers, 428px wide, 19 paths) | 0 |
+| Final (`3\|a`) | `zt-check --model 'stuart2006scientists/3\|a' --stage final` | `members 4 (main:3, side:1)`, `loose 0`, `self_sufficient true`, `stage(final) pass` | 0 |
+| Edited cards | `zt-check --cards "stuart2006scientists,…,5"` | `faults: 0` (advisory lines only) | 0 |
+| Broken links | `list_broken_links` (`stuart2006scientists/`) | `[]` (0 broken links) | 0 |
+

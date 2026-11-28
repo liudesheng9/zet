@@ -185,3 +185,74 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; judged by G
 | `10|a` | 32 | 0 (0 / 0 / 0) | 0 | `{"head":"hurst2011small/10|a","broken":0,"proposed_again":0,"ok":true}` |
 
 - Term relink: `{"ok":true,"complete":true,"book":"hurst2011small","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`; `-PlanOnly`: `{"ok":true,"complete":true,"book":"hurst2011small","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`.
+
+---
+
+## Stage 6: literature organize
+
+- **Date:** 2026-11-27
+- **Pre-Stage-6 backup:** `D:\zt\backups\zt-before-iof10-stage6-organize-2026-11-27.sqlite3`
+- **Live archive:** `D:\zt` (all writes serialized via `zt_mutex.py`; 0 DeepSeek calls; tree card count unchanged at **345**)
+
+### Source divisions
+
+From `D:\zt-digest\hurst2011small\book.zh.md`:
+- 引言（`# 小企业究竟做什么？`，含摘要与引言）
+- I. 小企业的行业构成
+- II. 小企业的事后成长与创新（`II.A. 小企业的成长`、`II.B. 小企业的创新`）
+- III. 关于成长与创新的事前预期
+- IV. 创业动机
+- V. 创业动机或预期的异质性为何重要（`V.A. 企业动态`、`V.B. 理解风险—收益权衡`、`V.C. 发展中经济体中的小企业`）
+- VI. 政策含义
+- VII. 结论
+- 附录（表 A1、表 A2 与致谢）
+- 评论与讨论（`John Haltiwanger 评论`、`Haltiwanger 评论参考文献`、`Adam Looney 评论`、`Looney 评论参考文献`、`总体讨论`）
+- Tail lists: 术语表（48 个术语）、参考文献（41 篇文献）
+
+### Final top line (12 top Cards, 345 total)
+
+```
+ 1  引言：小企业主与企业家模型的差异及全文结构 (12)              1|c..1|c|7 (含 1|c|7|a 引言脚注 2、3) · 1|d 结构卡
+ 2  I. 小企业的行业构成 (44)                                  2|a 实证模型 M1 (28 parts) · 2|b..2|b|7 · 2|c..2|f Findings
+ 3  II. 小企业的事后成长与创新 (54, rewrite)                   3|a II.A (含 3|a|a 实证模型 M2 [36 parts] + 5 Findings) · 3|b II.B
+ 4  III. 关于成长与创新的事前预期 (9)                          4|a..4|a|3 · 4|b..4|e Findings
+ 5  IV. 创业动机 (41)                                         5|a 实证模型 M3 (27 parts) · 5|b..5|b|2 · 5|c..5|h Findings
+ 6  V. 创业动机或预期的异质性为何重要 (18, rewrite)             6|a V.A (含 6|a|a 概念模型 M4 [9 parts]) · 6|b V.B · 6|c V.C
+ 7  VI. 政策含义 (6)                                          7|b..7|b|4
+ 8  VII. 结论 (5)                                             8|a..8|a|3
+ 9  附录 (6)                                                  9|a..9|a|2 · 9|b..9|c Findings
+10  评论与讨论 (58, rewrite)                                  10|a Haltiwanger 评论 (含 10|a|a 实证模型 M5 [25 parts] + 6 Findings)
+                                                              10|b Haltiwanger 评论参考文献 · 10|c Adam Looney 评论 (含 4 Events)
+                                                              10|d Looney 评论参考文献 · 10|e 总体讨论 (含 1 Event + 2 Findings)
+11  术语表 (49, from 1|b)
+12  参考文献 (42, from 1|a)
+```
+
+### Crossers settled and edits
+
+- **Batches (tail-to-head, 4 atomic `batch.mjs --commit` runs, 0 breaks, 0 refusals):**
+  1. `01_comments.ops` (57 renamed, 361 rewrites): merged old `11` into `10` (`评论与讨论`); detached `11|a|1..6` (`总体讨论`) from `11|a` (`Looney 评论参考文献`), placed `11` as `10|e` (`总体讨论`), split `10|b|5` (`Haltiwanger 评论参考文献`) and `10|b|6..8` (`Adam Looney 评论`), moved Model M5 (`10|a`) and 6 Haltiwanger Findings (`10|c..h`) under `10|a`, and reordered `10` into the 5 source `##` subdivisions (`10|a`–`10|e`).
+  2. `02_sec5.ops` (17 renamed, 60 rewrites): split `6|b` chain into `V.A` (`6|a`), `V.B` (`6|b`), `V.C` (`6|c`), and moved Concept Model M4 (`6|a`) intact under `V.A` (`6|a|a`).
+  3. `03_sec2.ops` (53 renamed, 373 rewrites): split `3|b` chain into `II.A` (`3|a`) and `II.B` (`3|b`), and moved Empirical Model M2 (`3|a`) and 5 `§II.A` Findings (`3|c..g`) under `II.A` (`3|a|a`–`3|a|f`).
+  4. `04_intro_lists.ops` (92 renamed, 776 rewrites): moved OCR-displaced Introduction footnote Card `2|b|a` (`引言脚注 2 与 3`) to `1|c|7|a`, and moved Term list (`1|b`) then Cited list (`1|a`) to tail top Cards `11` and `12`.
+- **Summary leads (`leads.mjs --commit`):** rewrote `3` (`§II`), `6` (`§V`), and `10` (`评论与讨论`).
+- **Head/root/structure edits (14 `edit_card` calls):** dropped `第 N 组：` prefixes and added `来源：` lines on `1`, `2`, `4`, `5`, `7`, `8`, `9`; updated `1|c|7|a` source line (`引言脚注 2、3`), prefixed `3|a` (`II.A.`) and `3|b` (`II.B.`), retitled/trimmed `10|e` to `总体讨论`, repointed `10|d` link to `10|c`, and updated root index (`hurst2011small`) and structure Card (`1|d`) to final addresses and 5 surviving models.
+
+### Final Model Card addresses (`model-survey.mjs`)
+
+| Final Address | Level | Parts | Model |
+| --- | --- | ---: | --- |
+| `hurst2011small/2|a` | empirical | 28 | M1: 2007 SUSB cross-sectional industry concentration (§I) |
+| `hurst2011small/3|a|a` | empirical | 36 | M2: Ex post growth, innovation & SUSB job-creation panel (§II) |
+| `hurst2011small/5|a` | empirical | 27 | M3: PSED II startup motives predicting expectations & innovation (§IV) |
+| `hurst2011small/6|a|a` | concept | 9 | M4: Pugsley (2011a, 2011b) nonpecuniary utility & natural scale conceptual model (§V.A & §VI) |
+| `hurst2011small/10|a|a` | empirical | 25 | M5: Haltiwanger BPEA comment on BDS coworker mean, 6-digit $R^2$ & skewness |
+
+### Stage 6 gate results (post term-relink)
+
+- **Term relink:** `zt-digest term-link -Step relink -CitationKey hurst2011small` and `-PlanOnly`: `ok: true, cards_changed: 0, links_added: 0, links_repaired: 0, cards_refused: 0`.
+- **`zt-check --cards` (17 edited/lead/root/structure Cards):** `faults: 0` (RC=0).
+- **`zt-check --tree hurst2011small --snapshot` & `check.mjs`:** `no fault` (RC=0; 12 top Cards, 345 total, 0 model splits).
+- **`model-survey.mjs hurst2011small`:** 5 Model Cards (`2|a`, `3|a|a`, `5|a`, `6|a|a`, `10|a|a`; RC=0).
+- **Empirical model checks at final addresses (`2|a`, `3|a|a`, `5|a`, `10|a|a`):** `--stage final` (`self_sufficient true`, `evidence_bound true`, `pass`), `--settings` (`clean`), and `--network` (`clean`) all exit **0**.
+- **`list_broken_links` (`hurst2011small/` & full agent workspace):** `{"total_broken":0,"hurst_broken":[]}`.

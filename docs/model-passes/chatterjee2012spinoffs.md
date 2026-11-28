@@ -194,3 +194,46 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D
 
 - `dialogue.mjs survey 'chatterjee2012spinoffs/5|b'`: `ours: 6`, `theirs: 2729`, `pairs: 0` (0 candidate pairs; dialogue complete with no edits needed). (`2|a` is formal, so Stage 5 does not apply.)
 - Gate: `dialogue.mjs check` not needed / clean (`0` pairs proposed).
+
+## Stage 6: literature organize
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; all writes serialized under `zt_mutex.py`). Pre-Stage-6 backup: `D:\zt\backups\zt-before-iof10-stage6-organize-2026-11-27.sqlite3`. No DeepSeek calls ran.
+
+### Source divisions
+
+From `D:\zt-digest\chatterjee2012spinoffs\book.zh.md`: `1. 引言`, `2. 模型` (`§2` untitled opening, `2.1. 企业家的问题`, `2.2. 工人的问题`, `2.3. 均衡`), `3. 均衡刻画`, `4. 比较静态、经验含义与经验证据`, `5. 企业规模的不变分布：理论与证据`, `6. 结论`, `附录` (thin 1-sentence wrapper over `A. 证明` with `A.1`–`A.7` and `B. 允许企业家产生创意的模型扩展`), plus the Term list and Cited list at the tail.
+
+### Final tree (top line, 10 Cards, 277 total unchanged)
+
+```
+1   1. 引言 (12)                                 1|c..1|c|8 §1 notes · 1|d structure Card
+2   2. 模型 (131, rewrite)                       2|a formal model (117 parts) · 2|b §2 开篇 · 2|c 2.1 · 2|d 2.2 · 2|e 2.3 (from 3|b)
+3   3. 均衡刻画 (9, rewrite)                     3|b..3|b|4 §3 notes (old 3|b|1..5)
+4   4. 比较静态、经验含义与经验证据 (7)           4|a..4|a|5 §4 notes
+5   5. 企业规模的不变分布 (52)                    5|b empirical model (30 own parts) · 5|c..5|c|12 §5 notes · 5|d–5|f 3 Findings
+6   6. 结论 (5)                                  6|a..6|a|3 §6 notes
+7   附录 A. 证明 (10, rewrite)                    7|d A.1 · 7|e A.2 · 7|f A.3 · 7|g A.4 · 7|h A.5 (2) · 7|i A.6 · 7|j A.7 (2)
+8   附录 B. 允许企业家产生创意的模型扩展 (3)      old 7|d|9 + 8|a..8|a|1 (old 7|d|10..11)
+9   术语表 (22, from 1|b)
+10  参考文献 (25, from 1|a)
+```
+
+### Moves, crossers, and leads
+
+- **3 atomic batches (`batch.mjs --commit`, tail-to-head, 0 breaks, 0 refusals)**:
+  1. `01_appendix.ops` (8 moves, 11 renamed, 52 link rewrites): promoted Appendix B (`7|d|9..11`) out of the `7` Appendix wrapper to top Card `8` (`8` + `8|a..8|a|1`), and split Appendix A.1–A.7 (`7|d..7|d|8`) into 7 Side branches of `7` (`7|d`–`7|j`).
+  2. `02_sec2_sec3.ops` (4 moves, 20 renamed, 46 link rewrites): detached the 11 Idea reading notes (`2|a|1..7` + 4 footnotes) from formal Model Card `2|a`'s Direct chain into `2`'s subdivisions in source order (`2|b` §2 opening, `2|c` §2.1, `2|d` §2.2), and moved `§2.3` (`3|b`, single card) from `3` to `2|e` while `3|b|1..5` (`§3`) closed up under `3`.
+  3. `03_lists_to_tail.ops` (2 moves, 47 renamed, 764 link rewrites): moved the Term list (`1|b`) to `9` and the Cited list (`1|a`) to `10` (fixing their reversed order under `1`).
+- **Whole units**: both Model Cards stayed intact at their exact original addresses — formal `chatterjee2012spinoffs/2|a` (117 parts; 129 -> 118 subtree cards due solely to the 11 detached Idea reading notes, 0 model parts moved) and empirical `chatterjee2012spinoffs/5|b` (30 own parts + 18 shared = 48 members; 31 subtree cards unchanged).
+- **Summary leads & edits**: `leads.mjs --commit` rewrote `2` (`2. 模型`), `3` (`3. 均衡刻画`, removing stale `§2.3` text), and `7` (`附录 A. 证明`). Cleaned group-wrapper titles on `1`, `4`, `5`, `6`, `8`; added source lines to `1`, `4`; updated `6`'s position line to link both `7` and `8`; normalized Finding source lines on `5|d`–`5|f` to `来源：[[chatterjee2012spinoffs]] §5`; updated root index (`chatterjee2012spinoffs`) to the 10-Card top line and structure Card (`1|d`) to the 8 content sections and 2 surviving models.
+
+### Gate results (post term-relink)
+
+- `zt-digest term-link -Step relink -CitationKey chatterjee2012spinoffs` & `-PlanOnly`: `ok: true`, `cards_changed: 0`, `links_added: 0`, `links_repaired: 0`.
+- `zt-check --cards` (root, `1`, `1|d`, `2`, `3`, `4`, `5`, `5|d`–`5|f`, `6`, `7`, `8`): `faults: 0` (RC=0).
+- `zt-check --tree chatterjee2012spinoffs`: `no fault` (RC=0); `--snapshot` / `check.mjs`: 277 Cards unchanged, 0 broken links, only expected `2|a` 129 -> 118 reading-note detachment.
+- `model-survey.mjs chatterjee2012spinoffs`: 2 Model Cards — `chatterjee2012spinoffs/2|a` (formal, 117 parts, `formal_structured=true`) and `chatterjee2012spinoffs/5|b` (empirical, 48 members = 30 own + 18 shared) (RC=0).
+- `zt-check --model 'chatterjee2012spinoffs/2|a'`: `--stage final` (`pass`, RC=0), `--settings --symbols` (`all in the setting part`, RC=0), `--network` (`network: clean`, RC=0).
+- `zt-check --model 'chatterjee2012spinoffs/5|b'`: `--stage final` (`pass`, RC=0), `--settings` (`clean`, RC=0), `--network` (`network: clean`, RC=0).
+- `list_broken_links`: `total_broken: 0`, `chatterjee_broken: 0`.
+

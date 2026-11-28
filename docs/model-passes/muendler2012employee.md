@@ -89,3 +89,53 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D
 
 - `dialogue.mjs survey 'muendler2012employee/7|a'`: `ours: 17`, `theirs: 2693`, `pairs: 0` (0 candidate pairs; dialogue complete with no edits needed).
 - Gate: `dialogue.mjs check` not needed / clean (`0` pairs proposed).
+
+## Stage 6: literature organize
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D:\zt\backups\zt-before-iof10-stage6-organize-2026-11-27.sqlite3`.
+
+### Source divisions
+
+From `muendler2012employee.source_headings.txt`: Front matter (`论文信息`, `摘要`); `1. 引言`; `2. 相关文献`; `3. 数据`; `4. 新进入者类型的界定` (`4.1`–`4.4`); `5. 员工衍生企业、其他新企业与多元化新设业务的统计`; `6. 员工衍生企业的绩效表现`; `7. 结论`; `附录 A. 雇主—雇员数据` (`员工数据筛选`, `收入`, `职业分类`); `附录 B. 企业识别码`; `附录 C. 法律形式（Natureza Juridica）`; `附录 D. 衍生企业与剥离分拆企业界定的实证实施` (preamble + 8 subsections); followed by `术语表` and `参考文献` at the tail.
+
+### Final tree (top line, 14 Cards, 235 total)
+
+```
+1  摘要与论文信息 (4; 1|a 论文信息 · 1|b 摘要 · 1|c 结构卡)
+2  1. 引言 (5)
+3  2. 相关文献 (4)
+4  3. 数据 (9; events 4|a|2|a|a, 4|a|2|a|b)
+5  4. 新进入者类型的界定 (13; 5|a 4.1 + finding · 5|e 4.2 · 5|f 4.3 · 5|g 4.4 + 2 findings)
+6  5. 员工衍生企业、其他新企业与多元化新设业务的统计 (17; 6|a chain + 9 findings)
+7  6. 员工衍生企业的绩效表现 (92; empirical Model Card 7|a [64 parts] · 7|b chain · 12 findings)
+8  7. 结论 (2; old 8|a promoted to top card + 8|a [old 8|a|1])
+9  附录 A. 雇主—雇员数据 (6; old 8; 9|b 员工数据筛选 · 9|c 收入 · 9|d 职业分类)
+10 附录 B. 企业识别码 (4; old 9; 10|a..10|a|2)
+11 附录 C. 法律形式（Natureza Juridica） (5; old 10)
+12 附录 D. 衍生企业与剥离分拆企业界定的实证实施 (13; old 11; 12|a 追溯框架 · 12|e..12|k 7 subdivision branches with findings)
+13 术语表 (30; from 1|b)
+14 参考文献 (30; from 1|a)
+```
+
+### Moves, crossers, and leads
+
+- 4 atomic batches (`batch.mjs --commit`, tail-to-head, all previews `complete true, refusals [], breaks 0`):
+  1. `01_appD.ops` (10 ops, 11 renamed, 67 rewrites): nested Appendix D subdivisions and findings under `11`.
+  2. `02_sec7_appAB.ops` (5 ops, 30 renamed, 117 rewrites): settled crossers `8` (`结论与附录 A`) and `9` (`附录 A 与附录 B`) — promoted `8|a` + `8|a|1` into `8` (`7. 结论`), moved `8|a|2..8|a|4` and `9|a`, `9|a|1` into old `8` → `9` (`附录 A. 雇主—雇员数据`, preserving inbound Appendix A links), and left `9|a|2..9|a|4` under old `9` → `10` (`附录 B. 企业识别码`, preserving inbound Appendix B links).
+  3. `03_sec4.ops` (6 ops, 10 renamed, 27 rewrites): nested `§4.1`–`§4.4` and findings under `5`.
+  4. `04_front_and_lists.ops` (4 ops, 63 renamed, 712 rewrites): moved Term list (`1|b`) then Cited list (`1|a`) to tail (`13`, `14`), split `论文信息` (`1|a`) and `摘要` (`1|b`) before structure Card `1|c`.
+- Whole Model Card `muendler2012employee/7|a` (empirical, 64 parts) stayed intact at `7|a`.
+- Summary leads (`leads.mjs --commit`): rewrote `1`, `5`, `9`, `10`, `12` with `小节索引：` (where subdivided), `在全书中的位置：`, and `来源：`. Updated root index (`muendler2012employee`) and structure Card (`1|c`), added section-number title prefixes on `4`, `6`, `7`, `8`, fixed stale conclusion link in `7` (`9` → `8`) and Appendix A income links in Cited Card `14|o` (`10` → `9|c`).
+
+### Gate (post term-relink)
+
+| Check | Result | Exit |
+|---|---|---|
+| `zt-digest term-link -Step relink` & `-PlanOnly` | `ok: true`, `cards_changed: 0`, `links_added: 0` | 0 |
+| `zt-check --tree muendler2012employee --snapshot` | `no fault` (14 top Cards, 235 Cards unchanged) | 0 |
+| `zt-check --cards` (root, `1`, `1\|c`, `4`, `5`, `6`, `7`, `8`, `9`, `10`, `12`) | `faults: 0` (advisory L1/L2 only) | 0 |
+| `model-survey.mjs muendler2012employee` | 1 empirical Model Card: `7\|a` (64 parts) | 0 |
+| `zt-check --model 'muendler2012employee/7|a' --stage final` | `stage(final) pass` (`members 64`, `loose 0`, `self_sufficient true`, `evidence_bound true`) | 0 |
+| `zt-check --model 'muendler2012employee/7|a' --settings` | `settings: data tree and specification ladder are clean` | 0 |
+| `zt-check --model 'muendler2012employee/7|a' --network` | `network: clean` (8 blocks, 5 layers, 414px wide, 15 paths) | 0 |
+| `list_broken_links` (`muendler2012employee/`) | `{"broken":[]}` | 0 |

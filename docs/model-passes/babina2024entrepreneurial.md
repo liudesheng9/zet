@@ -198,3 +198,58 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; judged by G
 | `7|a` | 9 | 0 (0 / 0 / 0) | 0 | `{"head":"babina2024entrepreneurial/7|a","broken":0,"proposed_again":0,"ok":true}` |
 
 - Term relink: not needed (0 Cards edited).
+
+## Stage 6: literature organize
+
+Date: 2026-11-27, live box (`D:\zt`), under `zt-literature-organize`. Pre-Stage-6 backup: `D:\zt\backups\zt-before-iof10-stage6-organize-2026-11-27.sqlite3`. All writes serialized through `zt_mutex.py`; 0 DeepSeek calls.
+
+### Source divisions
+
+From `babina2024entrepreneurial.source_headings.txt`: front matter (`企业研发的创业溢出效应`: title, authors, abstract, acknowledgements, JOLE 2024 publication info); `I. 引言`; `II. 概念框架`; `III. 数据` (`A. 数据来源`, `B. 识别员工流动结果`, `C. 描述性统计`); `IV. 实证方法` (`A. 基准模型`, `B. 研发的工具变量`, `C. 市场层面研发的作用`); `V. 实证结果` (`A. 对员工创业的影响`, `B. 母公司异质性`, `C. 员工创业的工具变量估计效应`, `D. 稳健性检验`); `VI. 作用机制` (`A. 高风险、高成长`, `B. 高成本多元化` [1–2], `C. 不完全契约`, `D. 替代性机制` [1–4]); `VII. 结论`; followed by the Term list and Cited list at the tail.
+
+### Final tree (top line and divisions)
+
+```
+1  企业研发的创业溢出效应：摘要与论文来历 (4)   1|c..1|c|1 front matter · 1|d structure Card
+2  I. 引言 (20)                                 2|a..2|a|13 + 2|a|a (2 events) · 2|b, 2|c findings
+3  II. 概念框架 (12)                            3|a concept model (5) · 3|b..3|b|5 §II notes
+4  III. 数据 (44, rewrite)                      4|a §III opening · 4|b empirical model (26) · 4|c A. (7 + 3 findings) · 4|d B. (3) · 4|e C. (3)
+5  IV. 实证方法 (5, rewrite)                    5|a A. (2) · 5|b B. (1) · 5|c C. (1, from 6|b)
+6  V. 实证结果 (64, rewrite)                    6|a empirical model (50) · 6|b A. (2 + 4 findings) · 6|j B. (1 + 2 findings) · 6|k C. (1 + 1 finding) · 6|l D. (2)
+7  VI. 作用机制 (45, rewrite)                   7|a empirical model (26) · 7|b A. (1 + 5 findings) · 7|o B. (2 + 3 findings) · 7|p C. (1 + 1 finding) · 7|q D. (2 + 3 findings)
+8  VII. 结论 (1, from 7|b|6)
+9  术语表 (29, from 1|b)
+10 参考文献 (110, from 1|a)
+```
+
+### Crossers and moves
+
+Executed tail-to-head in 4 atomic `batch.mjs --commit` batches (0 broken links):
+1. `ops_1_sec6_7.txt` (18 renamed, 48 rewrites): split `§VII` (`7|b|6`) out as top Card `8`; split `§VI.B` (`7|b|1..2`), `§VI.C` (`7|b|3`), `§VI.D` (`7|b|4..5`) into Side branches of `7`; moved all 12 `§VI` findings (`7|c`–`7|n`) under their respective subdivision notes.
+2. `ops_2_sec4_5.txt` (17 renamed, 53 rewrites): reconciled `§IV.C` crosser (`6|b` moved alone `side_of 5`); split `§IV.B` (`5|b|2`) `side_of 5` and reordered `5` to `A, B, C`; split `§V.B`–`§V.D` (`6|b|3`, `6|b|4`, `6|b|5..6`) into Side branches of `6` and moved all 7 `§V` findings (`6|c`–`6|i`) under their subdivisions.
+3. `ops_3_sec3.txt` (43 renamed, 201 rewrites): detached `§III` opening (`4|a|1`) and `§III.A`–`C` (`4|a|2..8`, `4|a|9..11`, `4|a|12..14`) from empirical model `4|a`'s Direct chain to Side branches of `4`, moved `§III.A` findings (`4|b`–`4|d`) under `§III.A`, and reordered `4` to opening (`4|a`), model (`4|b`), `A` (`4|c`), `B` (`4|d`), `C` (`4|e`).
+4. `ops_4_sec2_lists.txt` (145 renamed, 685 rewrites): detached `§II` reading notes (`3|a|1..6`) from concept model `3|a`'s Direct chain to `3|b..3|b|5`; moved Term list (`1|b` -> `9`) and Cited list (`1|a` -> `10`) to the tail.
+
+Calls that could go the other way: `VI.B` (`B.1`, `B.2`) and `VI.D` (`D.1–3`, `D.4`) each hold only 2 leaf cards, so they remain 2-card chains under `7` rather than adding wrapper summary leads; `3|a` (`§II`) and `4|b` (`§III`) had their non-model reading notes detached from their Direct chains.
+
+### Summary leads and card updates
+
+- `leads.mjs --commit`: rewrote `4` (`III. 数据`), `5` (`IV. 实证方法`), `6` (`V. 实证结果`), and `7` (`VI. 作用机制`) with `小节索引：`, updated `在全书中的位置：`, and normalized `来源：` lines.
+- Updated root index (`babina2024entrepreneurial`) to list all 10 top divisions (`每部分一行`), updated structure Card (`1|d`) to list all 8 content sections (`1`–`8`) and the 4 surviving models (`3|a`, `4|b`, `6|a`, `7|a`), and titled `8` as `VII. 结论：…` with `在全书中的位置：`.
+
+### Final Model Card addresses
+
+- `babina2024entrepreneurial/3|a` (concept, 4 parts)
+- `babina2024entrepreneurial/4|b` (empirical, 25 parts; moved from `4|a`)
+- `babina2024entrepreneurial/6|a` (empirical, 54 members = 49 own + 5 shared)
+- `babina2024entrepreneurial/7|a` (empirical, 30 members = 25 own + 5 shared)
+
+### Gate results (post term-relink)
+
+- `zt-digest term-link -Step relink -CitationKey babina2024entrepreneurial` & `-PlanOnly`: `{"ok":true,"complete":true,"book":"babina2024entrepreneurial","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`.
+- `zt-check --cards` (root, `1|d`, `4`, `5`, `6`, `7`, `8`): `faults: 0` (exit 0; advisory L1/L2 only).
+- `zt-check --tree babina2024entrepreneurial`: `no fault` (exit 0); with `--snapshot`: 335 Cards unchanged, only the two expected reading-note detachments (`4|b` 40 -> 26, `3|a` 11 -> 5; zero model parts moved).
+- `model-survey.mjs babina2024entrepreneurial`: 4 Model Cards (`3|a`, `4|b`, `6|a`, `7|a`).
+- `zt-check --model '<head>' --stage final`: exit 0 (`pass`, `self_sufficient true`, `evidence_bound true`, `loose 0`) on `3|a`, `4|b`, `6|a`, `7|a`.
+- `zt-check --model '<head>' --settings` and `--network`: exit 0 (`clean`) on `4|b`, `6|a`, `7|a`.
+- `list_broken_links` (`agent` workspace): `[]` (0 total, 0 for `babina2024entrepreneurial/`).

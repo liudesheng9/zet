@@ -208,3 +208,54 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; judged by G
 | `5|b` | 48 | 0 (0 / 0 / 0) | 0 | `{"head":"shaw2019productivity/5|b","broken":0,"proposed_again":0,"ok":true}` |
 
 - Term relink: `{"ok":true,"complete":true,"book":"shaw2019productivity","cards_changed":3,"links_added":4,"links_repaired":0,"cards_refused":0,"rounds":1,"applied":true}`; `-PlanOnly`: `{"ok":true,"complete":true,"book":"shaw2019productivity","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`.
+
+## Stage 6: literature organize
+
+Date: 2026-11-27 (UTC 2026-11-28), live box (`D:\zt`, `zt-literature-organize`, 0 DeepSeek calls). Pre-Stage-6 backup: `D:\zt\backups\zt-before-iof10-stage6-organize-2026-11-27.sqlite3`. All writes serialized via `zt_mutex.py`.
+
+### Source divisions
+
+From the Chinese bilingual source headings (7 unnumbered top sections + reference list, no front matter or appendix):
+1. `连续创业者的生产率优势` (opening + `## 文献综述`)
+2. `理论框架` (no subdivisions)
+3. `实证框架` (`## 基础回归模型`, `## 连续创业回报的异质性`, `## 计量经济学问题`)
+4. `数据` (`## 关联五个数据集`, `## 创业者类型与企业类型的界定`, `## 连续创业者的差异化特征`)
+5. `实证结果：销售额与就业回归分析` (`## 连续创业者的平均成功水平`, `## 销售额与生产率回归结果`, `## 处理连续创业内生性问题的销售额回归结果`, `## 就业回归分析`)
+6. `实证结果：区分不同类型连续创业者的销售额回归分析` (opening + `## 男性与女性连续创业者`, `## 组合型与顺序型连续创业者`, `## 创业者创办的有限责任公司（LLC）`)
+7. `结论` (no subdivisions)
+8. `术语表` (Term list, 18 Cards)
+9. `参考文献` (Cited list, 50 Cards)
+
+### Final top line
+
+```
+1  连续创业者的生产率优势：丹麦面板证据与文献综述 (10)    a 开篇 (§1) · b 文献综述 (§1 文献综述, incl. 脚注 1–4) · c 结构卡
+2  理论框架：初始规模、后天学习与潜在特质代理 (7)          a..a|4 (§2, with a|a 脚注 5)
+3  实证框架：基础回归、异质性与计量问题 (12)              a 基础回归模型 (§3.1) · b 连续创业回报的异质性 (§3.2, incl. 脚注 8–10) · c 计量经济学问题 (§3.3 + finding)
+4  数据：丹麦五库关联、样本界定与连续创业者特征 (34)        a 实证模型 4|a (24) · b 关联五个数据集 (§4.1) · c 创业者与企业类型界定 (§4.2 + 2 findings) · d 差异化特征 (§4.3 + 2 findings)
+5  实证结果：销售额与就业回归分析 (131)                    a 实证模型 5|a (94) · b 平均成功水平 (§5.1 + 2 findings) · c 销售额与生产率回归 (§5.2, incl. 尾注 11 + 4 findings) · d 内生性 (§5.3) · e 就业回归分析 (§5.4 + 实证模型 5|e|a [23])
+6  实证结果：区分不同类型连续创业者的销售额回归分析 (13)    a 开篇 (§6 导言与尾注 18–19) · b 男性与女性 (§6.1 + 3 findings) · c 组合型与顺序型 (§6.2 + 3 findings) · d LLC (§6.3)
+7  结论：连续创业优势的机制总结与政策启示 (8)              a..a|4 (§7) · b–c (2 findings)
+8  术语表 (18, from 1|b)
+9  参考文献 (50, from 1|a)
+```
+
+### Moves, crossers, and summary leads
+
+- **5 atomic tail-to-head batches** (`batch.mjs --commit`, 0 refusals, 0 breaks, 905 link rewrites total):
+  - `ops_s6.txt` (§6): split `6|c..6|c|3` into opening + 3 subdivisions (`6|a`–`6|d`), filed findings `6|d`–`6|i` under §6.1 and §6.2 (12 renamed, 73 rewrites).
+  - `ops_s5.txt` (§5): split `5|c..5|c|4` into 4 subdivisions (`5|b`–`5|e`), moved crosser endnote `5|c|a` (`§5.2 尾注 11`) from §5.1 into §5.2 (`5|c|a`), filed findings `5|d`–`5|i` under §5.1 and §5.2, and moved whole empirical Model Card `5|b` (23 Cards, Table 3 employment) intact into §5.4 as `5|e|a` (35 renamed, 246 rewrites). Model `5|a` (94 owned parts, spanning §5–§6) stays at `5|a`.
+  - `ops_s4.txt` (§4): moved crosser `4|b|a` (`§3.1–§3.2 脚注 8–10`) out of §4.1 into §3.2 (`side_of 3|b|5`, since footnotes 9–10 belong to §3.2), split `4|b..4|b|4` into 3 subdivisions (`4|b`–`4|d`), filed findings `4|c`–`4|f` under §4.2 and §4.3 (9 renamed, 35 rewrites). Model `4|a` (24 Cards, spanning all of §4) stays at `4|a`.
+  - `ops_s3.txt` (§3): split `3|b..3|b|7` into 3 subdivisions (`3|a`–`3|c`), filed finding `3|c` under §3.3 (11 renamed, 19 rewrites).
+  - `ops_s1_s2_lists.txt` (§1, §2, lists): moved crosser `2|a|b` (`§1–§2 脚注 1–4`) from §2 into §1 `文献综述` (`1|b|a`), split `1|c..1|c|6` into §1 opening (`1|a`) and `文献综述` (`1|b`), kept structure Card at `1|c`, and moved Term list (`1|b` → `8`) then Cited list (`1|a` → `9`) to the tail (77 renamed, 532 rewrites).
+- **Summary leads & text edits**: `leads.mjs` rewrote `1`–`7` (dropped `第 1–4 组：` prefixes, added `小节索引：` to `1`, `3`, `4`, `5`, `6`, updated `在全书中的位置：` and `来源：[[shaw2019productivity]] §1–§7`). Updated root index (`shaw2019productivity`, 9 top Cards) and structure Card (`shaw2019productivity/1|c`, listing the 3 final surviving models `4|a`, `5|a`, `5|e|a`).
+
+### Gate (post term-relink)
+
+- `zt-digest term-link -Step relink -CitationKey shaw2019productivity` & `-PlanOnly`: `{"ok":true,"complete":true,"book":"shaw2019productivity","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}` (RC=0).
+- `zt-check --cards` (root, `1|c`, `1`–`7`): `faults: 0` (RC=0; advisory L1/L2 lines only).
+- `zt-check --tree shaw2019productivity --snapshot` & `check.mjs`: `no fault` (RC=0; 284 Cards unchanged, 0 unit-size changes, Term/Cited lists at tail `8`–`9`).
+- `model-survey.mjs shaw2019productivity`: 3 empirical Model Cards (`4|a` 23 parts, `5|a` 97 members, `5|e|a` 26 members).
+- `zt-check --model` on all 3 empirical models (`shaw2019productivity/4|a`, `shaw2019productivity/5|a`, `shaw2019productivity/5|e|a`): `--stage final` PASS (`self_sufficient true`, `evidence_bound true`), `--settings` clean, `--network` clean (all RC=0).
+- `list_broken_links`: `{"total_broken":0,"shaw_broken":[]}` (RC=0).
+
