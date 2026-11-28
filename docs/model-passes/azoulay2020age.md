@@ -170,3 +170,15 @@ All writes executed via `zt-digest call -Allow` and `imports.mjs apply` serializ
 
 - `list_broken_links` (`workspace: agent`): `total_broken: 0`, `azoulay_broken: 0`.
 - Advisory `R20` lines only on chapter `**本章估计**` headings (0 blocking faults).
+
+## Stage 5: evidence dialogue
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; judged by Gemini 4 Neon Medium swarm workers, 0 DeepSeek cost). Backup: `D:\zt\backups\zt-before-iof10-stage5-dialogue-2026-11-27.sqlite3`.
+
+| Model | Unique pairs judged | Same estimand (印证 / 反驳 / 对照) | Cards written | Check |
+|---|---|---|---|---|
+| `2|a` | 0 | 0 (0 / 0 / 0) | 0 | 0 candidate pairs |
+| `3|a` | 4 | 0 (0 / 0 / 0) | 0 | `{"head":"azoulay2020age/3|a","broken":0,"proposed_again":0,"ok":true}` |
+| `5|a` | 0 | 0 (0 / 0 / 0) | 0 | `{"head":"azoulay2020age/5|a","broken":0,"proposed_again":0,"ok":true}` |
+
+- Term relink: not needed (0 Cards edited).

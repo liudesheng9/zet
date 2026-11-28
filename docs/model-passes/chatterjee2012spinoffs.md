@@ -187,3 +187,10 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; all writes 
 |---|---|---|---|---|---|---|---|
 | `2\|a` (formal) | 117 (8/108/0/1) | exit 0 | pass (`self_sufficient: true`, `formal_structured: true`, `loose: 0`, rc=0) | `all in the setting part` (rc=0) | `network: clean` (9 blocks, 2 layers, rc=0) | `faults: 0` (rc=0) | 0 / 0 |
 | `5\|b` (empirical) | 48 (7/22/18/1) | exit 0 | pass (`self_sufficient: true`, `evidence_bound: true`, `loose: 0`, rc=0) | `clean` (rc=0) | `network: clean` (10 blocks, 5 layers, 2 `共用` shelves, rc=0) | `faults: 0` (rc=0) | 0 / 0 |
+
+## Stage 5: evidence dialogue
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D:\zt\backups\zt-before-iof10-stage5-dialogue-2026-11-27.sqlite3`.
+
+- `dialogue.mjs survey 'chatterjee2012spinoffs/5|b'`: `ours: 6`, `theirs: 2729`, `pairs: 0` (0 candidate pairs; dialogue complete with no edits needed). (`2|a` is formal, so Stage 5 does not apply.)
+- Gate: `dialogue.mjs check` not needed / clean (`0` pairs proposed).

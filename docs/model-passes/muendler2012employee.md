@@ -82,3 +82,10 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D
 - `zt-check --model 'muendler2012employee/7|a' --skip-shared`: `faults: 0`.
 - `list_broken_links`: 0 broken.
 - Term relink: not needed (0 Cards edited).
+
+## Stage 5: evidence dialogue
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D:\zt\backups\zt-before-iof10-stage5-dialogue-2026-11-27.sqlite3`.
+
+- `dialogue.mjs survey 'muendler2012employee/7|a'`: `ours: 17`, `theirs: 2693`, `pairs: 0` (0 candidate pairs; dialogue complete with no edits needed).
+- Gate: `dialogue.mjs check` not needed / clean (`0` pairs proposed).

@@ -69,3 +69,7 @@ Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D
 - `zt-check --model 'anton1995startups/2|a' --skip-shared`: `faults: 0`.
 - `list_broken_links`: 0 broken.
 - Term relink: not needed (0 Cards edited).
+
+## Stage 5: evidence dialogue
+
+Not applicable (`anton1995startups` holds only formal model `2|a`; Stage 5 applies to empirical models only).

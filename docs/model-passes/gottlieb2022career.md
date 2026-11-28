@@ -186,3 +186,16 @@ All 5 folds into `gottlieb2022career/4|a` were executed in book order (`2|a`, `6
 | `gottlieb2022career/8\|d` | empirical | `整块 7\|c\|a`, `整块 4\|a\|a`, `单卡 8\|a\|a\|2` | `rc=0`, 0 false shares, 1 tolerated | pass (`members 41`, `shared:10`, `loose 0`, `self_sufficient true`, `evidence_bound true`) | clean (`rc=0`) | clean (11 blocks, 7 layers, `rc=0`) | `faults: 0` (`rc=0`, R20 adv only) |
 
 - **Handoff:** Ready for `zt-evidence-dialogue` on `4|a`, `7|c`, `8|b`, `8|d` and `zt-literature-organize` on `gottlieb2022career`.
+
+## Stage 5: evidence dialogue
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; judged by Gemini 4 Neon Medium swarm workers, 0 DeepSeek cost). Backup: `D:\zt\backups\zt-before-iof10-stage5-dialogue-2026-11-27.sqlite3`.
+
+| Model | Unique pairs judged | Same estimand (印证 / 反驳 / 对照) | Cards written | Check |
+|---|---|---|---|---|
+| `4|a` | 509 | 8 (0 / 0 / 8) | 6 | `{"head":"gottlieb2022career/4|a","broken":0,"proposed_again":0,"ok":true}` |
+| `7|c` | 8 | 0 (0 / 0 / 0) | 0 | `{"head":"gottlieb2022career/7|c","broken":0,"proposed_again":0,"ok":true}` |
+| `8|b` | 231 | 0 (0 / 0 / 0) | 0 | `{"head":"gottlieb2022career/8|b","broken":0,"proposed_again":0,"ok":true}` |
+| `8|d` | 84 | 0 (0 / 0 / 0) | 0 | `{"head":"gottlieb2022career/8|d","broken":0,"proposed_again":0,"ok":true}` |
+
+- Term relink: `{"ok":true,"complete":true,"book":"gottlieb2022career","cards_changed":4,"links_added":4,"links_repaired":0,"cards_refused":0,"rounds":1,"applied":true}`; `-PlanOnly`: `{"ok":true,"complete":true,"book":"gottlieb2022career","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`.

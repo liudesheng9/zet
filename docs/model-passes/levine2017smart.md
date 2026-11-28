@@ -182,3 +182,16 @@ All writes executed through `zt_mutex.py` on `D:\zt` following `zt-model-fold/SK
 - `list_broken_links`: **PASS** — `[]` (0 broken links total, 0 in `levine2017smart/`).
 - Card count in `levine2017smart`: **374** (unchanged).
 - Next stage: `zt-evidence-dialogue` (Stage 5) on empirical models `4|a`, `5|a`, `5|b`, `6|a`, then `zt-literature-organize` (Stage 6).
+
+## Stage 5: evidence dialogue
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; judged by Gemini 4 Neon Medium swarm workers, 0 DeepSeek cost). Backup: `D:\zt\backups\zt-before-iof10-stage5-dialogue-2026-11-27.sqlite3`.
+
+| Model | Unique pairs judged | Same estimand (印证 / 反驳 / 对照) | Cards written | Check |
+|---|---|---|---|---|
+| `4|a` | 10 | 0 (0 / 0 / 0) | 0 | `{"head":"levine2017smart/4|a","broken":0,"proposed_again":0,"ok":true}` |
+| `5|a` | 0 | 0 (0 / 0 / 0) | 0 | 0 candidate pairs |
+| `5|b` | 18 | 0 (0 / 0 / 0) | 0 | `{"head":"levine2017smart/5|b","broken":0,"proposed_again":0,"ok":true}` |
+| `6|a` | 0 | 0 (0 / 0 / 0) | 0 | `{"head":"levine2017smart/6|a","broken":0,"proposed_again":0,"ok":true}` |
+
+- Term relink: not needed (0 Cards edited).

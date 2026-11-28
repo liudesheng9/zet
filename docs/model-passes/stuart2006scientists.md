@@ -156,3 +156,10 @@ Executed via `fold.mjs` under `zt_mutex.py` (no math or prose changed; no Links 
 | Card rules (`5\|a`) | `zt-check --model 'stuart2006scientists/5\|a' --skip-shared` | `faults: 0` (advisory R20 only) | 0 |
 | Final (`3\|a`) | `zt-check --model 'stuart2006scientists/3\|a' --stage final` | `members 4 (main:3, side:1)`, `loose 0`, `self_sufficient true`, `stage(final) pass` | 0 |
 | Broken links | `list_broken_links` (`stuart2006scientists/`) | `{"broken":[]}` (0 broken links) | 0 |
+
+## Stage 5: evidence dialogue
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run). Backup: `D:\zt\backups\zt-before-iof10-stage5-dialogue-2026-11-27.sqlite3`.
+
+- `dialogue.mjs survey 'stuart2006scientists/5|a'`: `ours: 22`, `theirs: 2701`, `pairs: 0` (0 candidate pairs; dialogue complete with no edits needed).
+- Gate: `dialogue.mjs check` not needed / clean (`0` pairs proposed).

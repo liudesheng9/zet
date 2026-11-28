@@ -186,3 +186,15 @@ Date: 2026-11-27, live box (`D:\zt`). Pre-Stage-4 backup: `D:\zt\backups\zt-befo
 - `zt-check --model '<head>' --network`: exit 0 (`network: clean`) on `4|a` (5 blocks, 4 layers), `6|a` (11 blocks, 7 layers, both `共用` shelves), `7|a` (9 blocks, 6 layers, both `共用` shelves).
 - `zt-check --model '<head>' --skip-shared`: exit 0 (`faults: 0`; advisory R20 only) on `4|a`, `6|a`, `7|a`.
 - `list_broken_links` (`agent` workspace): `[]` (0 total, 0 for `babina2024entrepreneurial/`).
+
+## Stage 5: evidence dialogue
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; judged by Gemini 4 Neon Medium swarm workers, 0 DeepSeek cost). Backup: `D:\zt\backups\zt-before-iof10-stage5-dialogue-2026-11-27.sqlite3`.
+
+| Model | Unique pairs judged | Same estimand (印证 / 反驳 / 对照) | Cards written | Check |
+|---|---|---|---|---|
+| `4|a` | 41 | 0 (0 / 0 / 0) | 0 | `{"head":"babina2024entrepreneurial/4|a","broken":0,"proposed_again":0,"ok":true}` |
+| `6|a` | 64 | 0 (0 / 0 / 0) | 0 | `{"head":"babina2024entrepreneurial/6|a","broken":0,"proposed_again":0,"ok":true}` |
+| `7|a` | 9 | 0 (0 / 0 / 0) | 0 | `{"head":"babina2024entrepreneurial/7|a","broken":0,"proposed_again":0,"ok":true}` |
+
+- Term relink: not needed (0 Cards edited).

@@ -196,3 +196,15 @@ Term relink (`zt-digest term-link -Step relink -CitationKey shaw2019productivity
 
 - `list_broken_links` (`prefix: shaw2019productivity/`): `{"broken":[]}` (0 broken links).
 - Tree card count: 284 Cards (unchanged).
+
+## Stage 5: evidence dialogue
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; judged by Gemini 4 Neon Medium swarm workers, 0 DeepSeek cost). Backup: `D:\zt\backups\zt-before-iof10-stage5-dialogue-2026-11-27.sqlite3`.
+
+| Model | Unique pairs judged | Same estimand (印证 / 反驳 / 对照) | Cards written | Check |
+|---|---|---|---|---|
+| `4|a` | 174 | 3 (1 / 0 / 2) | 4 | `{"head":"shaw2019productivity/4|a","broken":0,"proposed_again":0,"ok":true}` |
+| `5|a` | 145 | 0 (0 / 0 / 0) | 0 | `{"head":"shaw2019productivity/5|a","broken":0,"proposed_again":0,"ok":true}` |
+| `5|b` | 48 | 0 (0 / 0 / 0) | 0 | `{"head":"shaw2019productivity/5|b","broken":0,"proposed_again":0,"ok":true}` |
+
+- Term relink: `{"ok":true,"complete":true,"book":"shaw2019productivity","cards_changed":3,"links_added":4,"links_repaired":0,"cards_refused":0,"rounds":1,"applied":true}`; `-PlanOnly`: `{"ok":true,"complete":true,"book":"shaw2019productivity","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`.

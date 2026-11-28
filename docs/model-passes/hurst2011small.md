@@ -172,3 +172,16 @@ Folded `hurst2011small/7|a` into `hurst2011small/6|a` (all writes serialized via
 - **Term relink:** `zt-digest term-link -Step relink -CitationKey hurst2011small` (under `zt_mutex.py`): `cards_changed: 0, links_added: 0, links_repaired: 0, cards_refused: 0`; `-PlanOnly` confirmed `cards_changed: 0, links_added: 0`.
 - **Broken links:** `list_broken_links` for `hurst2011small/` (and full agent workspace): `[]` (0 broken links).
 
+
+## Stage 5: evidence dialogue
+
+Date: 2026-11-27, live box (`D:\zt`, user-authorized autonomous run; judged by Gemini 4 Neon Medium swarm workers, 0 DeepSeek cost). Backup: `D:\zt\backups\zt-before-iof10-stage5-dialogue-2026-11-27.sqlite3`.
+
+| Model | Unique pairs judged | Same estimand (印证 / 反驳 / 对照) | Cards written | Check |
+|---|---|---|---|---|
+| `2|a` | 80 | 0 (0 / 0 / 0) | 0 | `{"head":"hurst2011small/2|a","broken":0,"proposed_again":0,"ok":true}` |
+| `3|a` | 34 | 1 (0 / 0 / 1) | 2 | `{"head":"hurst2011small/3|a","broken":0,"proposed_again":0,"ok":true}` |
+| `5|a` | 5 | 0 (0 / 0 / 0) | 0 | `{"head":"hurst2011small/5|a","broken":0,"proposed_again":0,"ok":true}` |
+| `10|a` | 32 | 0 (0 / 0 / 0) | 0 | `{"head":"hurst2011small/10|a","broken":0,"proposed_again":0,"ok":true}` |
+
+- Term relink: `{"ok":true,"complete":true,"book":"hurst2011small","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`; `-PlanOnly`: `{"ok":true,"complete":true,"book":"hurst2011small","cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"rounds":0,"applied":false}`.
